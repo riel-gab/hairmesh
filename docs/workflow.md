@@ -91,11 +91,13 @@ A confirmed mesh stays as it is when you edit the curves. The Conversion tab the
 
 ## Groups and the Outliner
 
-![The HairMesh Outliner pop-up](img/outliner.png)
+![The HairMesh Outliner: the project, the head, a group with its two curves, its wall and its converted mesh (hidden)](img/outliner.png)
+<!-- claims outliner: groups=1 curves=2 walls=1 confirmed=1 view=live -->
 
-Groups organize the hair and decide what becomes one mesh. Press **O** to open the HairMesh Outliner. It lists the head,
-the groups as a tree and, inside each group, its curves and walls. The same tree is at the top of the HairMesh tab of
-the sidebar (N).
+Groups organize the hair and decide what becomes one mesh. Press **O** to open the HairMesh Outliner. It lists the
+project, the head, and the groups as a tree. Inside each group: its curves, the walls in the column beside them (a wall
+shows by its default name, **Surface 1**, **Surface 2**…), and its converted meshes (dimmed while hidden). The same tree
+is at the top of the HairMesh tab of the sidebar (N).
 
 - **Select:** click a name. **Shift+click** adds. **Ctrl+click** a group selects what is inside it. The Outliner is
   where you select a group.
@@ -103,7 +105,7 @@ the sidebar (N).
 - **Curves mode:** **Auto** (curves and anchors show only while you work inside the group), **Show**, or **Hide**.
 - **Color:** the swatch of a group colors its curves and meshes.
 - **Conversion:** the tick of a group.
-- **Move:** **Cut** and **Paste**, the arrow icon on a group row (it moves the selection into that group), or **Move to
+- **Move:** **Cut** and **Paste**, the arrow icon that appears on a group row the selection can move into, or **Move to
   Group** in the menus. **P** puts the selection
   into the group selected last; **Shift+P** takes it out to the root level.
 - **Rename:** **F2**, a double-click on the name, or the name field of the bar.

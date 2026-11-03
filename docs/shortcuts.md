@@ -71,7 +71,9 @@ Over the viewport and the sidebar (N):
 |---|---|---|---|
 | F2 | Any sub-tool | Rename HairMesh Item | Rename the selected item: F2 in the viewport and over the N panel while the tool is active, a double click on its name in the outliner, the pencil of the outliner's bar |
 
-## Sub-tools (Q pie)
+## Sub-tools
+
+These keys switch sub-tools directly, without opening a pie. In the Q pie each sub-tool has a direction instead, and the numpad number the pie shows beside it ([Tools](tools.md#switching-sub-tools)).
 
 | Key | Sub-tool | What it does |
 |---|---|---|

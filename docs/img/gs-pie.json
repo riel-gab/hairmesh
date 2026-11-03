@@ -1,0 +1,60 @@
+{
+ "color": [],
+ "confirmed": 0,
+ "curves": 0,
+ "groups": 0,
+ "meshes_shown": 0,
+ "pending": 0,
+ "pie": {
+  "name": "HAIRMESH_MT_pie",
+  "slots": [
+   {
+    "dir": "W",
+    "label": null,
+    "numpad": 4
+   },
+   {
+    "dir": "E",
+    "label": null,
+    "numpad": 6
+   },
+   {
+    "dir": "S",
+    "label": "New Group",
+    "numpad": 2
+   },
+   {
+    "dir": "N",
+    "label": null,
+    "numpad": 8
+   },
+   {
+    "dir": "NW",
+    "label": "Drag on Head",
+    "numpad": 7
+   },
+   {
+    "dir": "NE",
+    "label": "HairMesh Menu",
+    "numpad": 9
+   },
+   {
+    "dir": "SW",
+    "label": "Save .hairmesh",
+    "numpad": 1
+   },
+   {
+    "dir": "SE",
+    "label": "HairMesh Outliner",
+    "numpad": 3
+   }
+  ]
+ },
+ "selected_anchors": 0,
+ "selected_curves": 0,
+ "selected_items": 0,
+ "subtool": "SELECT",
+ "view": null,
+ "walls": 0,
+ "walls_shown": 0
+}

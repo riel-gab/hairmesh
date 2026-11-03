@@ -168,7 +168,8 @@ def render():
     out += table(head, key_rows(keymaps.TOOL_ITEMS)) + ['']
     out += ['Over the viewport and the sidebar (N):', '']
     out += table(head, key_rows(keymaps.GENERIC_ITEMS)) + ['']
-    out += ['## Sub-tools (Q pie)', '']
+    out += ['## Sub-tools', '', 'These keys switch sub-tools directly, without opening a pie. In the Q pie each sub-tool has a '
+            'direction instead, and the numpad number the pie shows beside it ([Tools](tools.md#switching-sub-tools)).', '']
 
     def what(t):
         s = first_sentence(t[2].split(': ', 1)[-1])

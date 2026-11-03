@@ -8,7 +8,7 @@ with the author's permission. The method and the original application are theirs
 Stylized and anime hair for Blender. Draw curves over a head, stretch walls between them to form locks, and convert
 everything to a clean quad mesh with evenly spread loops.
 
-![Drawing a curve with Freehand](docs/img/freehand.gif)
+![Curves to mesh and Live/Baked](docs/img/overview.gif)
 
 ## What it does
 

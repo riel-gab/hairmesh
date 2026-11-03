@@ -1,0 +1,17 @@
+{
+ "color": [
+  "light"
+ ],
+ "confirmed": 1,
+ "curves": 2,
+ "groups": 1,
+ "meshes_shown": 1,
+ "pending": 0,
+ "selected_anchors": 0,
+ "selected_curves": 0,
+ "selected_items": 1,
+ "subtool": "SELECT",
+ "view": "baked",
+ "walls": 1,
+ "walls_shown": 0
+}

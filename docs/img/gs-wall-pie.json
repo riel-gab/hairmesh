@@ -1,0 +1,60 @@
+{
+ "color": [],
+ "confirmed": 0,
+ "curves": 2,
+ "groups": 1,
+ "meshes_shown": 0,
+ "pending": 0,
+ "pie": {
+  "name": "HAIRMESH_MT_pie",
+  "slots": [
+   {
+    "dir": "W",
+    "label": "Reverse Direction",
+    "numpad": 4
+   },
+   {
+    "dir": "E",
+    "label": "Optimize Anchors (Keep Shape)",
+    "numpad": 6
+   },
+   {
+    "dir": "S",
+    "label": "Delete 2 Curves",
+    "numpad": 2
+   },
+   {
+    "dir": "N",
+    "label": "Roundness / Smoothing / Even Out Anchors",
+    "numpad": 8
+   },
+   {
+    "dir": "NW",
+    "label": "Move to Group",
+    "numpad": 7
+   },
+   {
+    "dir": "NE",
+    "label": "HairMesh Menu",
+    "numpad": 9
+   },
+   {
+    "dir": "SW",
+    "label": "Walls / Lock",
+    "numpad": 1
+   },
+   {
+    "dir": "SE",
+    "label": "Gizmo",
+    "numpad": 3
+   }
+  ]
+ },
+ "selected_anchors": 0,
+ "selected_curves": 2,
+ "selected_items": 2,
+ "subtool": "SELECT",
+ "view": null,
+ "walls": 0,
+ "walls_shown": 0
+}

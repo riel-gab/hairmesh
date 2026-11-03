@@ -4,27 +4,41 @@ HairMesh is one tool in the Object Mode toolbar, with sub-tools inside it. This 
 pie is for. For the order of work, see [Workflow](workflow.md). For every key, see [Shortcuts](shortcuts.md).
 
 Turn the tool on with **Shift+Alt+H** in Object Mode. Its header shows the sub-tools as icons, the HairMesh Menu, the
-project, **Set Head**, **Convert** and, once there are meshes, **Live** and **Baked**.
+project, **Set Head** (once a head is set, it shows **Head:** and the head's name), **Convert** and, once there are meshes, **Live** and **Baked**.
 
 ## Switching sub-tools
 
 ![The Q pie with the sub-tools](img/subtool-pie.png)
 
-Press **Q** for the sub-tool pie:
+Press **Q** for the sub-tool pie. Click an item, or press the number the pie shows beside it on the numpad:
 
-| Direction | Item |
+| Direction | Numpad | Item |
+|---|---|---|
+| Left | 4 | Select |
+| Right | 6 | Draw |
+| Bottom | 2 | Scissors |
+| Top | 8 | HairMesh Menu |
+| Top left | 7 | Guides |
+| Top right | 9 | Crown |
+| Bottom left | 1 | Modifiers: the HairMesh Menu on its Modifiers tab |
+| Bottom right | 3 | More Tools: Brush, Edges, HairMesh Outliner |
+
+<!-- claims subtool-pie: pie.W=Select pie.E=Draw pie.S=Scissors pie.N="HairMesh Menu" pie.SE="More Tools" -->
+
+Without opening the pie, these keys switch directly (the number row, not the numpad):
+
+| Key | Sub-tool |
 |---|---|
-| Left | Select (1) |
-| Right | Draw (2) |
-| Bottom | Scissors (3) |
-| Top | HairMesh Menu |
-| Top left | Guides (4) |
-| Top right | Crown (5) |
-| Bottom left | Modifiers (6): the HairMesh Menu on its Modifiers tab |
-| Bottom right | More Tools: Brush (M), Edges (V), HairMesh Outliner |
+| 1 | Select |
+| 2 | Draw |
+| 3 or K | Scissors |
+| 4 | Guides |
+| 5 | Crown |
+| 6 | Modifiers (the HairMesh Menu on its Modifiers tab) |
+| M | Brush |
+| V | Edges |
 
-The number keys and the icons in the tool header switch sub-tools too. **Esc** goes back to Select from most
-sub-tools.
+The icons in the tool header switch sub-tools too. **Esc** goes back to Select from most sub-tools.
 
 ## Select
 
@@ -174,7 +188,8 @@ smooths. The loops are rebuilt when you release.
 
 ## The HairMesh Menu (D)
 
-![The HairMesh Menu pop-up](img/menu.png)
+![The HairMesh Menu on the Selection tab, two curves selected](img/menu.png)
+<!-- claims menu: selected_curves=2 subtool=SELECT -->
 
 Press **D**. The top row has the sub-tools, the HairMesh Outliner, and **Undo** / **Redo** (Ctrl+Z does not reach
 Blender while a pop-up is open). The tabs on the left:
@@ -189,8 +204,8 @@ Blender while a pop-up is open). The tabs on the left:
 
 The **?** below the tabs shows the How To of the current sub-tool or page; click it for the full text.
 
-Settings are grouped in blocks you can open and close. A dimmed control explains why in its tooltip, or in the **i**
-button next to it.
+Settings are grouped in blocks you can open and close. A dimmed control explains why in its tooltip, or in the **i** at
+the right of its block's title.
 
 The same menu is in **Object > HairMesh** as a plain list, and many sheets are in the **HairMesh** tab of the sidebar
 (N).

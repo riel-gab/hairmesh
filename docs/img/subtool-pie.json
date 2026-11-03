@@ -1,0 +1,60 @@
+{
+ "color": [],
+ "confirmed": 1,
+ "curves": 2,
+ "groups": 1,
+ "meshes_shown": 0,
+ "pending": 0,
+ "pie": {
+  "name": "HAIRMESH_MT_subtools",
+  "slots": [
+   {
+    "dir": "W",
+    "label": "Select",
+    "numpad": 4
+   },
+   {
+    "dir": "E",
+    "label": "Draw",
+    "numpad": 6
+   },
+   {
+    "dir": "S",
+    "label": "Scissors",
+    "numpad": 2
+   },
+   {
+    "dir": "N",
+    "label": "HairMesh Menu",
+    "numpad": 8
+   },
+   {
+    "dir": "NW",
+    "label": "Guides",
+    "numpad": 7
+   },
+   {
+    "dir": "NE",
+    "label": "Crown",
+    "numpad": 9
+   },
+   {
+    "dir": "SW",
+    "label": "Modifiers",
+    "numpad": 1
+   },
+   {
+    "dir": "SE",
+    "label": "More Tools",
+    "numpad": 3
+   }
+  ]
+ },
+ "selected_anchors": 0,
+ "selected_curves": 0,
+ "selected_items": 0,
+ "subtool": "SELECT",
+ "view": "live",
+ "walls": 1,
+ "walls_shown": 1
+}

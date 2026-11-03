@@ -29,7 +29,7 @@ Click **Show HairMesh Here** in the tool header. It adds HairMesh to that worksp
 ## A button is grayed out
 
 HairMesh dims a control when it would have no effect right now. Hover over it: the tooltip says why and where to go.
-For sliders, the reason is in the **i** button next to them. Two common ones:
+For sliders, the reason is also in the **i** at the right of the block's title. Two common ones:
 
 - **Bulge** does nothing on a wall with Width Segments 0.
 - **Project On** (Freehand) needs a visible head.

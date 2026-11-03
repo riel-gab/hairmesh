@@ -1,5 +1,9 @@
-"""The images of the documentation (docs/img/), from a procedural scene: a sphere for a head and a few curves drawn on
-it by the add-on's own operators. Runs in a Blender with a window (on the second monitor, without taking the focus):
+"""The images of the documentation (docs/img/), each with a .json beside it: the state of the scene when it was taken
+(tools/doc_tutorial.py, measure()). The Getting Started images are taken while the steps of that page run
+(doc_tutorial.STEPS: the same operators, in the same order), each at the step it belongs to; the images of the other
+pages after them. tests/test_doc_claims.py checks what the pages say about each image against its .json.
+
+Runs in a Blender with a window (on the second monitor, without taking the focus):
 
     python tools/blender_run.py -- --factory-startup --enable-event-simulate --python tools/gen_doc_images.py [-- <out dir>]
 
@@ -10,6 +14,7 @@ key was pressed. Nothing is saved; the default out dir is docs/img (public/docs/
 import json
 import math
 import os
+import shutil
 import sys
 import tempfile
 import traceback
@@ -17,12 +22,14 @@ import traceback
 import bpy
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+for p in (ROOT, os.path.join(ROOT, 'tools')):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
 _pub = os.path.join(ROOT, 'public')
 OUT = os.path.abspath(argv[0]) if argv else os.path.join(_pub if os.path.isdir(_pub) else ROOT, 'docs', 'img')
 os.makedirs(OUT, exist_ok=True)
+STAGE = tempfile.mkdtemp(prefix='hairmesh_doc_img_')               # (every image lands here first: OUT only gets a whole run)
 
 import addon_utils                                                  # noqa: E402
 import numpy as np                                                  # noqa: E402
@@ -32,11 +39,9 @@ bpy.context.preferences.use_preferences_save = False              # nothing of t
 bpy.context.preferences.view.show_tooltips = False                 # (a tooltip would cover the pop-ups)
 addon_utils.enable('hairmesh', default_set=True)
 bpy.context.window_manager.keyconfigs.update()
-from hairmesh.blender import keymaps, session                       # noqa: E402
+import doc_tutorial as T                                            # noqa: E402
+from hairmesh.core import conversion as CONV                        # noqa: E402
 
-HAIR = (0.47, 0.20, 0.62, 1.0)
-SKIN = (0.93, 0.76, 0.66, 1.0)
-CURVES = 7                                                          # across the front of the head
 log = {'shots': [], 'errors': []}
 
 
@@ -52,44 +57,50 @@ def ov():
     return bpy.context.temp_override(window=win, area=area, region=region)
 
 
-def ev(type_, value, rx, ry):
+def ev(type_, value, rx, ry, **mods):
     win, _area, region = view3d()
     x, y = region.x + int(rx), region.y + int(ry)
     if type_ != 'MOUSEMOVE':
-        win.event_simulate(type='MOUSEMOVE', value='NOTHING', x=x, y=y)
-    win.event_simulate(type=type_, value=value, x=x, y=y)
+        win.event_simulate(type='MOUSEMOVE', value='NOTHING', x=x, y=y, **mods)
+    win.event_simulate(type=type_, value=value, x=x, y=y, **mods)
 
 
-def press(key, rx, ry):
-    ev(key, 'PRESS', rx, ry)
-    ev(key, 'RELEASE', rx, ry)
+def press(key, rx, ry, **mods):
+    ev(key, 'PRESS', rx, ry, **mods)
+    ev(key, 'RELEASE', rx, ry, **mods)
 
 
 def window_pixels():
     """the whole window, (H, W, 4) floats, row 0 at the bottom"""
     path = os.path.join(tempfile.gettempdir(), f'hairmesh_doc_window_{os.getpid()}.png')   # (never beside the images: a crash would leave it there)
-    with ov():
-        bpy.ops.screen.screenshot(filepath=path)
-    im = bpy.data.images.load(path)
-    w, h = im.size
-    px = np.array(im.pixels[:], dtype=np.float32).reshape(h, w, 4)
-    bpy.data.images.remove(im)
-    os.remove(path)
+    try:
+        with ov():
+            bpy.ops.screen.screenshot(filepath=path)
+        im = bpy.data.images.load(path)
+        w, h = im.size
+        px = np.array(im.pixels[:], dtype=np.float32).reshape(h, w, 4)
+        bpy.data.images.remove(im)
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
     return px
 
 
-def save(name, px):
-    """a PNG of these pixels (row 0 at the bottom), opaque"""
+def save(name, px, state):
+    """a PNG of these pixels (row 0 at the bottom), opaque, and the state measured with it"""
     h, w = px.shape[:2]
     px = px.copy()
     px[..., 3] = 1.0
     im = bpy.data.images.new(name, w, h, alpha=False)
     im.pixels.foreach_set(px.ravel())
-    im.filepath_raw = os.path.join(OUT, name + '.png')
+    im.filepath_raw = os.path.join(STAGE, name + '.png')
     im.file_format = 'PNG'
     im.save()
     bpy.data.images.remove(im)
-    log['shots'].append({'name': name, 'size': [w, h]})
+    with open(os.path.join(STAGE, name + '.json'), 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(state, f, indent=1, sort_keys=True)
+        f.write('\n')
+    log['shots'].append({'name': name, 'size': [w, h], 'state': state})
 
 
 def area_box():
@@ -98,9 +109,14 @@ def area_box():
     return area.x, area.y, area.x + area.width, area.y + area.height
 
 
+def measure(pie=None):
+    with ov():
+        return T.measure(bpy.context, pie)
+
+
 def shot_area(name):
     x0, y0, x1, y1 = area_box()
-    save(name, window_pixels()[y0:y1, x0:x1])
+    save(name, window_pixels()[y0:y1, x0:x1], measure())
 
 
 def changed_box(before, after, pad=6):
@@ -117,36 +133,22 @@ def changed_box(before, after, pad=6):
             min(w, x0 + xs.max() + 1 + pad), min(h, y0 + ys.max() + 1 + pad))
 
 
-def shot_popup(name, key, at):
+def shot_popup(name, key, at, pie=None, **mods):
+    """the pop-up or pie `key` opens at `at`; its state is measured while it is open (the pie: what it was drawn from)"""
     ev('MOUSEMOVE', 'NOTHING', *at)                                 # (the cursor in place first: its hover is in both screenshots)
     yield 0.6
     before = window_pixels()
-    press(key, *at)
+    state = measure(pie)
+    press(key, *at, **mods)
     yield 1.2
     after = window_pixels()
     bx0, by0, bx1, by1 = changed_box(before, after)
-    save(name, after[by0:by1, bx0:bx1])
+    save(name, after[by0:by1, bx0:bx1], state)
     press('ESC', *at)
     yield 0.6
 
 
-def root():
-    return next(o for o in bpy.data.objects if session.is_root(o))
-
-
-def curve_points(k):
-    """anchors of curve k, in the model space (the original's: Y up), just off a unit sphere: from the crown down over
-    the forehead, spread across the front"""
-    a = math.radians(35 + 110 * k / (CURVES - 1))                 # around the vertical axis, across the front (+z)
-    pts = []
-    for i in range(6):
-        t = math.radians(12 + 17 * i)                               # down from the top
-        r = 1.04
-        pts.append([r * math.sin(t) * math.cos(a), r * math.cos(t), r * math.sin(t) * math.sin(a)])
-    return pts
-
-
-def look(space, yaw=20.0, pitch=78.0, dist=4.2):
+def look(space, yaw=-12.0, pitch=78.0, dist=3.6):
     rv3d = space.region_3d
     rv3d.view_perspective = 'PERSP'
     rv3d.view_rotation = Euler((math.radians(pitch), 0.0, math.radians(yaw)), 'XYZ').to_quaternion()
@@ -159,80 +161,46 @@ def steps():
     space = area.spaces.active
     mid = (region.width // 2, region.height // 2)
     corner = (region.width - 60, 60)
+    pie_at = (mid[0] + 220, mid[1])                                 # (beside the head: the pie does not cover the curves)
     press('ESC', *mid)                                              # (the splash)
     yield 0.4
-    with ov():
-        bpy.ops.object.select_all(action='SELECT')
-        bpy.ops.object.delete()
-        bpy.ops.mesh.primitive_uv_sphere_add(segments=48, ring_count=24, radius=1.0)
-    head = bpy.context.active_object
-    head.name = 'Head'
-    head.color = SKIN
-    with ov():
-        bpy.ops.object.shade_smooth()
-        bpy.ops.hairmesh.new_project(name='hair')
-        bpy.ops.hairmesh.add_group(name='Bangs')                    # (Convert takes the ticked groups; a new one is ticked)
-        bpy.ops.wm.tool_set_by_id(name=keymaps.TOOL_ID)
-    space.shading.color_type = 'OBJECT'
-    space.overlay.show_floor = False
-    space.overlay.show_axis_x = space.overlay.show_axis_y = False
-    space.overlay.show_cursor = False
-    look(space)
-    yield 0.6
+    for step, _what, key, shot in T.STEPS:
+        if key is not None:
+            press(key, *corner)
+            yield 0.4
+        T.run(step, ov)
+        if step == 'head':
+            space.overlay.show_floor = False
+            space.overlay.show_axis_x = space.overlay.show_axis_y = False
+            space.overlay.show_cursor = False
+            look(space)
+        area.tag_redraw()                                           # (an operator run from a timer does not redraw the overlay)
+        ev('MOUSEMOVE', 'NOTHING', *corner)
+        yield 2.0 if step == 'preview' else 0.8
+        if shot is None:
+            continue
+        name, kind = shot
+        if kind == 'area':
+            shot_area(name)
+            yield 0.3
+        else:
+            yield from shot_popup(name, 'RIGHTMOUSE', pie_at, pie='main', shift=True)
 
-    # Draw: the first curves, the sub-tool active
-    with ov():
-        for k in range(3):
-            bpy.ops.hairmesh.draw_curve(points_json=json.dumps(curve_points(k)))
-    press('TWO', *corner)
-    yield 0.8
-    shot_area('draw')
-    yield 0.3
-
-    # the rest of the curves, the walls between them
-    with ov():
-        for k in range(3, CURVES):
-            bpy.ops.hairmesh.draw_curve(points_json=json.dumps(curve_points(k)))
-    P = session.get_project(root())
-    hm = bpy.context.scene.hairmesh
-    hm.sel_curves = json.dumps([c.id for c in P.curves()])
-    with ov():
-        bpy.ops.hairmesh.create_walls()
-    hm.sel_curves = '[]'
-    press('ONE', *corner)
-    yield 1.0
-    shot_area('walls')
-    yield 0.3
-
-    # the pop-ups and the pie, over the head; two curves selected, so the menu shows their sheet
-    hm.sel_curves = json.dumps([c.id for c in P.curves()][2:4])
-    area.tag_redraw()
-    yield 0.4
-    yield from shot_popup('menu', 'D', (mid[0] - 260, mid[1] + 200))
-    yield from shot_popup('outliner', 'O', (mid[0] - 260, mid[1] + 200))
-    hm.sel_curves = '[]'
-    yield from shot_popup('subtool-pie', 'Q', mid)
-
-    # the conversion
-    with ov():
-        if bpy.ops.hairmesh.convert() != {'FINISHED'}:
-            raise RuntimeError('Convert did nothing')
-    yield 2.0
-    with ov():
-        if bpy.ops.hairmesh.confirm_conversion() != {'FINISHED'}:
-            raise RuntimeError('Confirm did nothing')
-    yield 1.0
-    for ob in bpy.data.objects:
-        if ob.type == 'MESH' and ob is not head:
-            ob.color = HAIR
-            ob.data.shade_smooth()
-            ob.show_wire = True                                     # (the quad loops)
-    with ov():
-        bpy.ops.wm.tool_set_by_id(name='builtin.select_box')        # (the tool off: the mesh alone, no curves over it)
-    ev('MOUSEMOVE', 'NOTHING', *corner)
-    yield 0.8
-    shot_area('converted')
-    yield 0.3
+    # the other pages: in the Live view, nothing selected for the Q pie, the two curves for the menu and the outliner
+    if CONV.viewOf(T.project()) != 'live':
+        with ov():
+            T.ok(T.view_op('live'), 'Live')
+    for name, key, pie in T.PAGE_SHOTS:
+        if name == 'subtool-pie':
+            with ov():
+                T.ok(bpy.ops.hairmesh.select(deselect_all=True), 'Deselect')
+            at = mid
+        else:
+            T.select_curves(ov)
+            at = (mid[0] - 260, mid[1] + 200)
+        area.tag_redraw()
+        yield 0.4
+        yield from shot_popup(name, key, at, pie=pie)
 
 
 _gen = steps()
@@ -246,6 +214,11 @@ def tick():
         pass
     except Exception:
         log['errors'].append(traceback.format_exc())
+    if not log['errors']:
+        # the whole run replaces the images it took (a failed one leaves docs/img as it was)
+        for n in sorted(os.listdir(STAGE)):
+            shutil.move(os.path.join(STAGE, n), os.path.join(OUT, n))
+    shutil.rmtree(STAGE, ignore_errors=True)
     print(json.dumps(log, indent=1))
     sys.stdout.flush()
     if log['errors']:
