@@ -1,0 +1,35 @@
+schema_version = "1.0.0"
+
+id = "hairmesh"
+version = "1.0.0"
+name = "HairMesh"
+tagline = "Port of Stylized HairMesh Creator by catarackta"
+maintainer = "Riel"
+type = "add-on"
+
+blender_version_min = "5.1.0"
+
+# Port of Stylized HairMesh Creator by catarackta (https://catarackta.netlify.app/; reference version 1.0.1): stylized
+# hair, curves and walls converted to quad hair meshes. Released under the GPL with the author's written permission
+# (CREDITS.md). The icons are CC0-1.0 (blender/icons/LICENSE-ICONS).
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 Riel", "2026 catarackta"]
+
+tags = ["Modeling", "Object", "Import-Export"]
+
+[permissions]
+files = "Import .hairmesh project files"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.pyc",
+  ".*",
+  "/tests/",
+  "/docs/",
+  "/reference/",
+  "/tools/",
+  "*.hairmesh",
+  "*.blend",
+  "*.blend1",
+]

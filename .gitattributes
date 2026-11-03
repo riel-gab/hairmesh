@@ -1,0 +1,5 @@
+# Working copies always use LF.
+* text=auto eol=lf
+*.png binary
+*.gif binary
+*.dat binary

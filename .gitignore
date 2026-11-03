@@ -1,0 +1,10 @@
+# never in this repository: project files and .blend files (the original's example among them)
+*.hairmesh
+*.blend
+__pycache__/
+*.pyc
+*.blend1
+*.blend2
+tests/output/
+dist/
+.vscode/
