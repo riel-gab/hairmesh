@@ -2,11 +2,11 @@
 # Copyright (C) 2026 Riel
 """The N panel (sidebar tab "HairMesh"), the same tabs as the HairMesh Menu (U5 / U6, 15/10/2026): Outliner (the
 HairMesh Outliner, ops_outliner), Selection (the properties of the selection: anchors first, else the last selected
-item — curve, wall, group — as the original's renderProps, 8627; sub-panels Anchors / Curve / Wall / Group), Conversion,
+item — curve, wall, group — as the original's renderProps, 12548; sub-panels Anchors / Curve / Wall / Group), Conversion,
 Project (with the tool switch), Options, Shortcuts. The rows come from the same descriptions as the pop-up (tool.py)."""
 import bpy
 
-from . import fit, icons, keymaps, select, session, tool
+from . import fit, icons, select, session, tool
 from ..core.hairmesh_io import ProjectFormatError
 from .props import SUBTOOLS
 
@@ -56,7 +56,7 @@ class HAIRMESH_PT_selection(bpy.types.Panel):
 
 
 class HAIRMESH_PT_scissors(bpy.types.Panel):
-    """The Scissors panel: its two modes, what is cut, Cut / Cancel while a wall is
+    """The Scissors panel: its three modes, what is cut, Cut / Cancel while a wall is
     being cut — shown with the Scissors sub-tool"""
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -217,6 +217,7 @@ class HAIRMESH_PT_project(bpy.types.Panel):
         root = session.find_root(context)
         active = tool.is_active(context)
         row = layout.row()
+        row.alignment = 'LEFT'                                      # (G12: the switch at the width of its text, the D's icon beside it)
         row.operator('hairmesh.toggle_tool', text='Tool: on' if active else 'Tool: off', icon='TOOL_SETTINGS', depress=active)
         row.popover(panel=tool.POPUP_ID, text='', **icons.icon_kw(tool.LOGO))   # the HairMesh Menu pop-up (D)
         if root is None:
@@ -225,24 +226,29 @@ class HAIRMESH_PT_project(bpy.types.Panel):
             _rows(layout, context, tool.project_rows(context, None, None), sub=False)
             return
         hm = context.scene.hairmesh
-        row = layout.row(align=True)
-        for key, label, _desc, icon, _n in SUBTOOLS:                # buttons, not the expanded prop: they also switch the tool on
-            op = row.operator('hairmesh.set_subtool', text=label, icon=icon, depress=active and hm.subtool == key)
+        col = layout.column()
+        row = col.row()
+        row.alignment = 'LEFT'                                      # (as the D's top row: the sub-tools as icons joined, each named by its tooltip, the active one's name beside them)
+        bar = row.row(align=True)
+        for key, _label, _desc, icon, _n in SUBTOOLS:               # buttons, not the expanded prop: they also switch the tool on
+            op = bar.operator('hairmesh.set_subtool', text='', icon=icon, depress=active and hm.subtool == key)
             op.subtool = key
             op.activate = True
+        name = tool.subtool_name(hm)
+        if len(SUBTOOLS) * fit.ICON + fit.label_need(name, False) > room(context, sub=False):
+            row = col.row()                                         # (a narrow sidebar: the name under the icons, never cut)
+        row.label(text=name)
         try:
             P = session.get_project(root)
         except (ValueError, ProjectFormatError) as e:
             _rows(layout, context, [[tool.text(f'Project text unreadable: {e}', 'ERROR')]], sub=False)
             return
-        rows = tool.project_rows(context, root, P)
-        if P.head:
-            rows.insert(2, [('label', f'Loop step: {P.settings.step if P.settings.step else P.S.headH / 24:.4g}', 'MOD_ARRAY')])
+        rows = tool.project_rows(context, root, P)                  # (lot 1.2c, item 9.4.8: no "Loop step" line: the Conversion tab's Loop Step field says it)
         _rows(layout, context, rows, sub=False)
 
 
 class HAIRMESH_PT_options(bpy.types.Panel):
-    """The Viewport tab: the live preview, Drag on Head, the x-ray, the guide lines' opacity."""
+    """The Viewport tab: the live preview, Drag on Head, the X-Ray, the guide lines' opacity."""
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'HairMesh'
@@ -266,15 +272,10 @@ class HAIRMESH_PT_shortcuts(bpy.types.Panel):
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
-        rows = []
-        for _km, kmi, (km_name, idname, event, props) in keymaps.user_items():
-            if kmi is not None:
-                key = kmi.to_string(); name = kmi.name; off = not kmi.active   # kmi.name: the operator's label, or the menu / panel label for wm.call_*
-            else:
-                key = keymaps.event_label(event); name = idname; off = True
-            rows.append([tool.text(f'{key}: {name}' + ('  (off)' if off else ''), 'BLANK1' if km_name == keymaps.GLOBAL_KM else 'DOT')])   # (wrapped in a narrow sidebar: part 2b of the lot ux7)
-        rows.append([tool.text('Edit them in the add-on preferences', 'PREFERENCES')])
-        _rows(self.layout, context, rows, sub=False)
+        # (lot 1.2c, item 9.4.7, the owner's call: the list of keys was read-only, with "Edit them in the add-on
+        # preferences" under it; the button opens the add-on's own page of the preferences, where they are edited)
+        from . import prefs
+        _rows(self.layout, context, [[tool.buttons(context, ('op', 'preferences.addon_show', 'Edit Shortcuts in Preferences...', 'PREFERENCES', {'module': prefs.PACKAGE}))]], sub=False)
 
 
 _CLASSES = (HAIRMESH_PT_selection, HAIRMESH_PT_scissors, HAIRMESH_PT_anchors, HAIRMESH_PT_curve, HAIRMESH_PT_wall, HAIRMESH_PT_group, HAIRMESH_PT_conversion,

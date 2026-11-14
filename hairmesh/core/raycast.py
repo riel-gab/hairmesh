@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Port of the three.js r160 raycast path the disc guide uses (rebuildDisc, hair-modeler.clean.html:1140):
 Raycaster.set / .far, intersectObject(mesh) -> Mesh.raycast -> Ray.intersectTriangle, with the bounding sphere
 and box early-outs and the final sort by distance.

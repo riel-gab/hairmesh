@@ -4,7 +4,7 @@
 screen points -> one polyline on the surface -> one curve through fitPolyline, and only that finished curve goes off the
 surface. Pure Python; the viewport only supplies the rays and the hit functions.
 
-The search for a point follows the steps of surfacePoint (hair-modeler.clean.html:6271) without its pickCurve: the nearest
+The search for a point follows the steps of surfacePoint (hair-modeler.clean.html:9493) without its pickCurve: the nearest
 of the `hits` (Project On: the head and the meshes, or the head alone), then the plane. A point that hits nothing keeps the
 depth of the last point that hit (the plane facing the view through it); before the first hit, the plane through the pivot,
 as planeHit(m, pivot, camDir()).
@@ -55,7 +55,7 @@ def lifted(p, n, lift):
 
 def landing(ray, hits):
     """the answer of `hits` (each hit(ray) -> (point, unit normal or None) or None) nearest along the ray, or None: hair over
-    the head wins, as pickObjects over pickables() (surfacePoint, 6272)"""
+    the head wins, as pickObjects over pickables() (surfacePoint, 9493)"""
     best = None; near = math.inf
     for hit in hits:
         h = hit(ray)

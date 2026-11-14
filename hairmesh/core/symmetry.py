@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
-"""Symmetry applied once (4.10): port of applySymmetry (hair-modeler.clean.html:9858, 1.0.1), the group panel's
-"Apply symmetry" button (8687-8689). The live mirrored display (syncMirrors, 9832) is the Blender side's; the mirror
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+"""Symmetry applied once (4.10): port of applySymmetry (hair-modeler.clean.html:14074), the group panel's
+"Apply symmetry" button (8687-8689). The live mirrored display (syncMirrors, 14047) is the Blender side's; the mirror
 of the converted meshes at conversion time (mirrorData) lives in convert.py.
 
 Pure Python, no bpy. Ids come from Project.uid and names from nextNumber, as in the original, so the parity scripts
@@ -14,6 +14,7 @@ from .convert import mirrorPt
 from .duplicate import makeGuide
 from .edit import addItem, makeCurve, newAnchor
 from .js import index_of
+from .tube import extrasOf
 
 
 def symmetryMessage(mg):
@@ -22,7 +23,7 @@ def symmetryMessage(mg):
 
 
 def applySymmetry(P, g):
-    """port of applySymmetry (hair-modeler.clean.html:9858): bake the mirrored copy into real, editable curves and
+    """port of applySymmetry (hair-modeler.clean.html:14074): bake the mirrored copy into real, editable curves and
     surfaces (anchors lying on the plane stay shared). The copy goes into its own group "<name> mirror" right after
     the original (sub-groups are recreated inside it), with the same colour and conversion settings.
 
@@ -36,13 +37,16 @@ def applySymmetry(P, g):
       smoothness and the cross-section `sec` (1.0.1) of its source; the handle overrides mirrored (the axis component
       negated). Not copied: closed, ring, junc, conn, Even out (asm / asrc), the anchors' pass / att;
     - every wall: "<name> mirror" between the mirrored curves (a curve outside the group stays as it is), its p copied;
-    - every guide in the group (makeGuide, 9890: in the Guides group, whatever its parent — makeGuide ignores it):
+    - every guide in the group (makeGuide, 14106: in the Guides group, whatever its parent — makeGuide ignores it):
       a guide LINE "<name> mirror" through the same arc fractions of the mirrored curves, its p copied. A disc in the
       group is no exception: its hits (where the hair pierces it, found by rebuildDisc every frame) become the hits of
       a guide line "Disc N mirror" — the disc itself (its rings) is not mirrored;
     - every converted mesh not mirrored yet (symBaked false): "<name> mirror", the points mirrored and every face
       reversed, confirmed (pending false), with no source walls;
-    - tubes, extras, crowns, caps, fill holes, density items: not copied.
+    - every Profile modifier of a mirrored curve (12526): "<name> mirror" on the mirrored curve, the profile mirrored
+      across the lock (x negated, the order reversed so it keeps its winding; the three profiles of `profs` too), rot0 /
+      rot1 / rot2 negated, its extras (xmod) copied with the twist's `deg` negated, the masks copied;
+    - crowns, caps, fill holes, density items: not copied.
     Then the group's symmetry is switched off (g.sym = {...sym, on: false}) and every curve is dirty.
 
     Returns (the mirror group, the toast), or (None, None) when the group's symmetry is not on (the original returns
@@ -116,6 +120,23 @@ def applySymmetry(P, g):
     for gd in [i for i in lst if i.type == 'guide']:
         n = makeGuide(P, gd.parent, [{'c': imap.get(h.get('c'), h.get('c')), 't': h.get('t')} for h in gd.hits], dict(gd.p))
         n.name = gd.name + ' mirror'; n.visible = gd.visible
+    # profile modifiers on the mirrored curves: the profile is mirrored across the lock (x -> -x, the order reversed so it
+    # keeps its winding), the rotations and the twist turn the other way; the extras go with them (12526)
+    def flipProf(Pr):
+        return [[-q[0], q[1]] for q in Pr][::-1]
+    for t in [i for i in lst if i.type == 'tube' and i.src in imap]:
+        p = dict(t.p)
+        for k in ('rot0', 'rot1', 'rot2'):
+            if p.get(k):
+                p[k] = -p[k]
+        n = addItem(P, 'tube', par(t), {'name': t.name + ' mirror', 'visible': t.visible, 'src': imap[t.src], 'profile': flipProf(t.profile), 'p': p, 'dirty': True})
+        if t.profs:
+            n.profs = [flipProf(Pr) for Pr in t.profs]; n.profile = n.profs[0]
+        for x in extrasOf(P, t):
+            xp = dict(x.p)
+            if x.kind == 'twist' and xp.get('deg'):
+                xp['deg'] = -xp['deg']
+            addItem(P, 'xmod', par(x), {'name': x.name + ' mirror', 'visible': x.visible, 'tube': n.id, 'kind': x.kind, 'p': xp, 'mask': list(x.mask) if x.mask else None})
     for m in [i for i in lst if i.type == 'mesh' and not i.symBaked]:
         data = M.MeshData(pos=[mirrorPt(P, p, ax) for p in m.data.pos], faces=[list(reversed(f)) for f in m.data.faces])
         addItem(P, 'mesh', par(m), {'name': m.name + ' mirror', 'pending': False, 'srcSurfs': [], 'data': data, 'token': new_token()})

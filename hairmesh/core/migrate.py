@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Migration (1.0.1): another project's hair — curves, NURBS surfaces (the walls), modifiers and crowns, with their
 groups — brought into this project. port of headFit / migrateIn / migrateData / baseName / migrateFile
 (hair-modeler.clean.html:10408-10499): ids renumbered by the UID; the head, the guides, the meshes, the imported meshes
@@ -9,7 +9,7 @@ own group). Hair made around another head comes in fitted to this scene's head (
 scene the frame comes from the hair (fitToHair).
 
 Pure (no bpy): the caller stores the selection the result names, commits and refreshes the views
-(blender/migrate_op.py). What migrateData does to the original's scene through restore (1220) is done here on the
+(blender/migrate_op.py). What migrateData does to the original's scene through restore (1358) is done here on the
 model directly: the project's items and anchors stay as they are and the migrated ones are appended in the order the
 snapshot would hold them."""
 import copy
@@ -47,12 +47,12 @@ class Migrated:
 
 
 def baseName(n):
-    # port of baseName (10495): the file's name without .hairmesh / .json
+    # port of baseName (14730): the file's name without .hairmesh / .json
     return PROJ_RE.sub('', n or 'project', count=1)
 
 
 def head_box(src):
-    """The box Box3.setFromObject gives the head the original builds from the file `src` (headPartsFromSrc 3313 ->
+    """The box Box3.setFromObject gives the head the original builds from the file `src` (headPartsFromSrc 5173 ->
     headFromOBJ 3266): every position of the OBJ as a Float32BufferAttribute holds it (computeBoundingBox reads the
     whole attribute, the vertices no face uses too), as ((min x, y, z), (max x, y, z)). (None, True) for a file
     without a vertex (Box3.isEmpty); (None, False) for a head the port cannot read (a GLB: not ported, as on import)."""
@@ -73,7 +73,7 @@ def _top(b):
 
 
 def headFit(proj, P):
-    """port of headFit (10414): the uniform scale k and the shift that take the source project's head (stored in its
+    """port of headFit (14649): the uniform scale k and the shift that take the source project's head (stored in its
     file, P.head.src) onto this scene's head, box to box — the tops and the middles across matched, k the geometric
     mean of the three axis ratios (Math.cbrt: fdlibm.cbrt, V8's bits). None: nothing to do — no head on one side, an
     empty head, the same head (k within 1e-3 of 1 and the tops within 1e-3 of the head's height)."""
@@ -124,12 +124,12 @@ def rebuild_key(proj):
 
 
 def migrateIn(proj, P, name, wrap=True):
-    # port of migrateIn (10425)
+    # port of migrateIn (14660)
     return migrateData(proj, P, name, wrap, headFit(proj, P))
 
 
 def migrateFile(proj, text, filename):
-    """port of migrateFile (10496): the file's text read as a project; a preset comes in under its own name, as its
+    """port of migrateFile (14731): the file's text read as a project; a preset comes in under its own name, as its
     own group (no wrapping group); any other file under a new group named after the file"""
     try:
         P = json.loads(text)
@@ -148,7 +148,7 @@ def migrateFile(proj, text, filename):
 
 
 def migrateData(proj, P, name, wrap=True, fit=None):
-    """port of migrateData (10427). The project is changed only when the result is ok: everything is read and built
+    """port of migrateData (14662). The project is changed only when the result is ok: everything is read and built
     first, then put in at once (ours: a file the original would choke on halfway — a record missing a key, a value of
     the wrong kind — gives a message and leaves the project as it was). `fit` (headFit): positions go
     through it (anchors, the anchors of Even out, asrc), lengths are scaled by k (frozen handles, the radii of the

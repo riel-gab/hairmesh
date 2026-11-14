@@ -8,7 +8,7 @@ detaches, the Attach pie after a release near a connector).
   Crown       a click on the head puts the whorl there (createCrown); Create fits a crown on the head's top; an anchor
               is dragged as in Select. New crowns are Symmetric when the D says so (Scene.hairmesh.crown_sym).
   The crown   Rings, Whorl (WindowManager properties through deferred.py), + Crown Curve, Symmetric (the side pie,
-              askCrownSym 7799), Mirror Again; the parting line, the lower connector and the crown curves are clicked
+              askCrownSym 11409), Mirror Again; the parting line, the lower connector and the crown curves are clicked
               in Select (curves) or picked from the pie (Shift + RMB: a selection no click gives at once).
 
 The data part is core/crowntool.py (bit for bit with the original: tests/test_crowntool_parity.py); its frame step
@@ -421,7 +421,7 @@ def _set_whorl(self, v):
 
 
 class HairMeshCrownProps(PropertyGroup):
-    """The crown's panel (crownProps 7805): on the WindowManager, so the rebuild and the undo step follow the slider when
+    """The crown's panel (crownProps 11415): on the WindowManager, so the rebuild and the undo step follow the slider when
     it stops or is let go (deferred.py). Views on the model, nothing is stored here."""
     crown_rings: IntProperty(name='Rings', description='Rings between the lower connector and the parting line (0: from the loop step)', min=0, max=40, get=_get_rings, set=_set_rings)
     crown_whorl: EnumProperty(name='Whorl', description='Where many loops meet at the whorl',
@@ -438,25 +438,29 @@ CROWN_ATTRS = frozenset(HairMeshCrownProps.__annotations__)
 def crown_rows(context, P, k, room):
     """The crown sheet (crownProps 7805-7841) by category: the crown (name, group; what crownData says), Rings and Whorl,
     + Crown Curve, Symmetric (the side pie) and Mirror Again. The parts are selected by a click (Select) or the pie."""
-    from .tool import group_label, label_and, text, why_item
+    from .tool import GAP, align_fields, buttons, field, group_label, text, why_item
     sy = k.p.get('sym') if isinstance(k.p.get('sym'), dict) else None
     on = bool(sy and sy.get('on'))
     delete = ('op', 'hairmesh.delete_selected', 'Delete Crown', 'X', {'keep_shape': False})
-    rows = [[('label', k.name, 'FORCE_VORTEX')], *label_and(group_label(P, k), delete, room), [text(CT.infoText(k), 'INFO')],
-            [('prop', 'crown_rings', 'Rings'), ('op', 'hairmesh.crown_add_curve', '+ Crown Curve', 'ADD', {})], [('prop', 'crown_whorl', 'Whorl')]]
+    # (lot 1.2b: Whorl stays a menu — its two options, "Merge Loops" and "Seam on the Crown Curve", side by side do not
+    # fit the D's row)
+    rows = [[('label', k.name, 'FORCE_VORTEX')], [buttons(context, group_label(P, k), delete)], [text(CT.infoText(k), 'INFO')],
+            [field('Rings', ('prop', 'crown_rings', ''))], [field('Whorl', ('prop', 'crown_whorl', ''))],
+            [GAP], [buttons(context, ('op', 'hairmesh.crown_add_curve', '+ Crown Curve', 'ADD', {}))]]
     sym = [('op', 'hairmesh.crown_sym_ask', 'Symmetric', 'MOD_MIRROR', {}, {'depress': on})]
     if on:
         sym += [('op', 'hairmesh.crown_sym_ask', 'Mirror Again', 'MOD_MIRROR', {'again': True}),
                 why_item(f'Symmetric: {CT.sym_text(sy["master"])}, plane X = {P.S.center.x:.2f}. Crown curves added later are not mirrored: Mirror Again.')]
-    rows.append(sym)
-    return rows
+    rows.append([buttons(context, *sym)])
+    return align_fields(rows)
 
 
 def crown_tool_rows(context, room):
     """the Crown's tool panel (renderToolPanel 8960-8968) as rows: Symmetric (for new crowns), Create, then the selected
     crown's sheet; its help (HELP) is the "?" of the D's tab column (item 9 of the lot after 4.8: tool.how_to)"""
-    rows = [[('toggle', 'crown_sym', 'Symmetric (New Crowns)', 'MOD_MIRROR')],
-            [('op', 'hairmesh.crown_create', 'Create Crown', 'ADD', {})]]
+    from .tool import buttons
+    rows = [[('prop', 'crown_sym', 'Symmetric (New Crowns)')],     # (a checkbox with its text: a boolean of a sheet is no wide button)
+            [buttons(context, ('op', 'hairmesh.crown_create', 'Create Crown', 'ADD', {}))]]
     return rows
 
 

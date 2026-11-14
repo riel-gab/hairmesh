@@ -6,6 +6,7 @@ selected wall's overlay geometry."""
 import json
 import os
 import unittest
+from tests.helpers.dlist import d_items                            # noqa: E402  (the D as a list: Object > HairMesh lists actions only since lot 1.2a)
 
 try:
     import bpy
@@ -56,6 +57,8 @@ class TestWallOperators(unittest.TestCase):
                 out.extend(TestWallOperators.ops(it[1]))
             elif it[0] == 'block':
                 out.extend(TestWallOperators.ops([x for row in it[4] for x in row]))
+            elif it[0] == 'cols':                                   # (lot 1.2b: a row of columns, the form of every sheet)
+                out.extend(TestWallOperators.ops([x for c in it[1] for x in c[1]]))
             elif it[0] == 'op':
                 out.append((it[1], it[4]))
             elif it[0] in ('menu', 'prop', 'toggle'):
@@ -77,7 +80,7 @@ class TestWallOperators(unittest.TestCase):
         popup = self.popup()
         self.assertIn(('hairmesh.create_walls', {'closed': False, 'exact': False}), popup); self.assertIn(('hairmesh.average_curve', {}), popup)
         self.assertIn(('menu', 'HAIRMESH_MT_walls'), self.ops(self.tool.pie_items(bpy.context)))
-        self.assertIn(('hairmesh.fill_hole', {}), self.ops(self.tool.menu_items(bpy.context)))
+        self.assertIn(('hairmesh.fill_hole', {}), self.ops(d_items(self.tool, bpy.context)))
         self.assertEqual(bpy.ops.hairmesh.create_walls(), {'FINISHED'})
         P = self.session.get_project(self.root)
         self.assertEqual(len(P.surfaces()), 1)
@@ -102,7 +105,7 @@ class TestWallOperators(unittest.TestCase):
         self.assertEqual([it[2] for row in self.tool.popup_tabs(ctx)['SELECTION'] for it in row if it[0] == 'block'], ['Shape'], 'the blocks of the wall sheet: Second Surface with one on, the two curves beside the group')
         popup = self.popup()
         self.assertIn(('prop', 'wall_bulge'), popup); self.assertNotIn(('hairmesh.select_wall_curves', {'which': 'BOTH'}), popup)   # (4.3, item 1: the pie only)
-        menu = self.ops(self.tool.menu_items(ctx))
+        menu = self.ops(d_items(self.tool, ctx))
         self.assertNotIn(('hairmesh.select_wall_curves', {'which': 'A'}), menu); self.assertIn(('prop', 'wall_clean'), menu)
         self.assertEqual(self.ops(self.ops_walls.walls_menu_items(ctx))[:3], [('hairmesh.select_wall_curves', {'which': 'A'}), ('hairmesh.select_wall_curves', {'which': 'B'}), ('hairmesh.select_wall_curves', {'which': 'BOTH'})])
         # select the driver curves, the wall from the curve panel's list, Shift adds
@@ -135,6 +138,32 @@ class TestWallOperators(unittest.TestCase):
         for name in ('create_walls', 'fill_hole', 'average_curve', 'segments_to_curves', 'select_wall', 'select_wall_curves'):
             self.assertTrue(hasattr(bpy.ops.hairmesh, name), name)
         self.assertTrue(hasattr(bpy.types, 'HAIRMESH_PT_wall'))
+
+    def test_walls_round_an_x(self):
+        """1.1f: two curves crossing at a shared anchor (an X): the curve pie's wall items are the 1.0.2 X branch
+        (surfaceMenuItems 8303-8307) and Create Walls Around the X makes a wall per zone, the curves left whole"""
+        from hairmesh.core import weld
+        P, A = self.curve((0, 0, 0), (10, 30, 0), (20, 60, 0), (30, 90, 0), (40, 120, 0))
+        P, B = self.curve((40, 0, 0), (30, 30, 0), (21, 60, 0), (10, 90, 0), (0, 120, 0))
+        P = self.session.get_project(self.root); A, B = P.items[A.id], P.items[B.id]
+        weld.weld(P, B.anchors[2], A.anchors[2])
+        self.session.save_project(self.root, P)
+        bpy.ops.hairmesh.select(curve=A.id); bpy.ops.hairmesh.select(curve=B.id, extend=True)
+        P = self.session.get_project(self.root); A, B = P.items[A.id], P.items[B.id]
+        items = self.ops_walls.curve_wall_items(P, [A, B])
+        self.assertEqual([(i[1], i[2], i[4]) for i in items],
+                         [('hairmesh.x_path_walls', 'Create Walls Around the X', {}), ('hairmesh.create_walls', 'One Wall Through the X', {'closed': False, 'exact': True}),
+                          ('hairmesh.fill_hole', 'Fill the Hole Between These Curves', {}), ('hairmesh.merge_coincident', 'Merge Anchors at Identical Places', {})])
+        self.assertEqual([i[2] for i in self.ops_walls.curve_wall_items(P, [A, B], short=True)][:2], ['Around the X', 'Through the X'])
+        self.assertEqual(bpy.ops.hairmesh.x_path_walls(), {'FINISHED'})
+        P = self.session.get_project(self.root)
+        self.assertEqual(len(P.surfaces()), 2, 'a wall above the X and one below it')
+        self.assertEqual(self.sel().items, [s.id for s in P.surfaces()], 'the walls made are the selection (8102)')
+        self.assertEqual([len(c.anchors) for c in P.curves() if not c.junc], [5, 5], 'the curves stay whole')
+        self.assertTrue(all(c.path for c in P.curves() if c.junc), 'the walls run on edge curves that follow the curves')
+        bpy.ops.hairmesh.select(curve=A.id); bpy.ops.hairmesh.select(curve=B.id, extend=True)
+        self.assertEqual(bpy.ops.hairmesh.x_path_walls(), {'FINISHED'})
+        self.assertEqual(len(self.session.get_project(self.root).surfaces()), 2, 'again: the missing ones only (none)')
 
     def test_wall_properties_and_live_preview(self):
         P, A = self.curve((0, 0, 0), (2, 40, 0), (4, 80, 0), (6, 120, 0))

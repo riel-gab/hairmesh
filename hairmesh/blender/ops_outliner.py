@@ -18,7 +18,7 @@ of the N tab. The rows are ordinary layout buttons (an add-on makes no editor):
   - the switches in fixed columns, the same in every row (1b): the loop step, the mode A / ∿ / ⌀ (8488) with the
     color swatch, the Container tag, ⏻ (only while some row carries one: a guide, or a group holding guides,
     8510-8523), the conversion tick, the drop column (Paste while something is cut, else Move here), the eye
-    (toggleHide 8192; the eye of a wall hides that wall alone in the live mesh, 1a);
+    (toggleHide 12071; the eye of a wall hides that wall alone in the live mesh, 1a);
   - the bar: the name field of the selected item (type to rename, 1d), Reveal (the F of the original), New Group,
     Rename (the dialog; F2 in the viewport and over the N panel), Cut / Paste (a clipboard on the WindowManager),
     Delete (hairmesh.delete_selected: groups too, deleteSelected 8106).
@@ -31,7 +31,7 @@ import time
 import bpy
 from bpy.props import BoolProperty, IntProperty, StringProperty
 
-from ..core import conversion, edit, groups as G, outliner as OL
+from ..core import conversion, edit, groups as G, outliner as OL, scene as SC
 from ..core.effects import modeActs
 from ..core.selection import Selection
 from . import brush as BRU, fit, icons, live, ops_groups, owner, pick, prefs, select, session
@@ -41,9 +41,9 @@ OUTLINER_ID = 'HAIRMESH_PT_outliner'
 UNITS_X = 20
 MAX_UNITS_X = 30                                                    # the pop-up widens up to this for a long name or "Color from <group>" (21/10/2026; part 3 of the lot ux7)
 COL = 1.0                                                           # an icon column, in UI units
-STEP_COL = 3.0                                                      # the loop step column ("15.5 ≠", "1550 ≠", "0.0155 ≠" in a project in metres)
+STEP_COL = 3.0                                                      # the loop step column at its narrowest; wider for the texts it shows (step_col: "1.55 cm ≠", "0.0155 m ≠")
 MODE_COL = 2.0                                                      # the mode button with the colour swatch
-MODE_ICONS = {'auto': 'HM:auto', 'show': 'IPO_BEZIER', 'hide': 'CANCEL'}   # a group's curves mode: Auto, Show, Hide (the original's letters A, ∿, ⌀)
+MODE_ICONS = {'auto': 'HM:auto', 'show': 'IPO_BEZIER', 'hide': 'HIDE_ON'}   # a group's curves mode: Auto, Show, Hide (the original's letters A, ∿, ⌀; Hide: Blender's closed eye, lot 1.2c, item 9.4.1 — the no-entry sign read as Delete)
 LAST_INVOKE = []                                                    # (what, item id) of the last rename_item.invoke: read by the real-event simulations (tools/sim_ux2_shots.py)
 _last_click = None                                                  # (item id, time) of the last row click, for the double click
 
@@ -111,8 +111,22 @@ def rows_of(context, P, root=None):
     preference says so), the filter, the project name"""
     sel = select.load(context.scene.hairmesh).prune(P)
     root = root if root is not None else session.find_root(context)
-    return OL.outliner_rows(P, sel.items, sel.anchors, collapsed(context, P), context.window_manager.hairmesh_outliner_filter,
-                            project_name=project_name(root), open_selected=prefs.open_on_select(context))
+    rows, info = OL.outliner_rows(P, sel.items, sel.anchors, collapsed(context, P), context.window_manager.hairmesh_outliner_filter,
+                                  project_name=project_name(root), open_selected=prefs.open_on_select(context))
+    info['step_texts'] = {r.id: step_label(r.group, root) for r in rows if r.type == 'group' and r.group is not None and r.group.get('step') is not None}
+    info['step_col'] = step_col(info['step_texts'].values())
+    return rows, info
+
+
+def step_label(g, root=None):
+    """the loop step a group row says, in Blender's unit (ops_groups.step_text), "≠" when it is not the project's"""
+    from .ops_groups import step_text
+    return step_text(g['step'], root) + (' ≠' if g['off'] else '')
+
+
+def step_col(texts):
+    """the loop step column's width: STEP_COL, or wider so that every text it shows is whole"""
+    return max([STEP_COL, *(fit.label_need(t, False) for t in texts)])
 
 
 def _poll(context):
@@ -136,7 +150,7 @@ class HAIRMESH_OT_select_item(bpy.types.Operator):
 
     item: IntProperty(name='Item', description='The item id (a group, a curve, a wall, ...)', default=-1)
     extend: BoolProperty(name='Extend', description='Shift: add to the selection (or take out)', default=False, options={'SKIP_SAVE'})
-    contents: BoolProperty(name='Contents', description='Ctrl on a group: select everything inside it', default=False, options={'SKIP_SAVE'})
+    contents: BoolProperty(name='Contents', description="Ctrl on a group: select everything inside it (with a NURBS disc selected, Ctrl on any row puts its group into the disc's Groups list)", default=False, options={'SKIP_SAVE'})
     rename: BoolProperty(name='Rename', description='A double click: select and open the rename dialog', default=False, options={'SKIP_SAVE'})
 
     @classmethod
@@ -160,6 +174,11 @@ class HAIRMESH_OT_select_item(bpy.types.Operator):
         if it is None or it.type == 'head':
             self.report({'ERROR'}, f'No item {self.item} in the project')
             return {'CANCELLED'}
+        if self.contents:                                           # (1.0.2, selectItem 11472: Ctrl with a NURBS disc selected — its Groups list)
+            from .ops_guides import disc_excl_click
+            if disc_excl_click(context, root, P, sel, it.id, self.report):
+                _redraw_all(context)
+                return {'FINISHED'}
         if it.type == 'group' and self.contents:
             ids = []
 
@@ -172,7 +191,7 @@ class HAIRMESH_OT_select_item(bpy.types.Operator):
                         walk(x.children)
                     else:
                         ids.append(iid)
-            walk(it.children)                                       # selectContents (8463): not the sub-groups themselves
+            walk(it.children)                                       # selectContents (12347): not the sub-groups themselves
             sel = Selection(ids, [])
             self.report({'INFO'}, f'Selected {len(ids)} item{"" if len(ids) == 1 else "s"} inside {it.name}')
         else:
@@ -183,7 +202,7 @@ class HAIRMESH_OT_select_item(bpy.types.Operator):
         session.save_project(root, P)
         BRU.follow_active(context)                                  # (a line of the list of the Extras, or the Outliner: the running weight brush paints it)
         _redraw_all(context)
-        if self.rename and not bpy.app.background:                  # the double click: the rename dialog over the row (startRename, 8270)
+        if self.rename and not bpy.app.background:                  # the double click: the rename dialog over the row (startRename, 12150)
             bpy.ops.hairmesh.rename_item('INVOKE_DEFAULT', item=it.id)
         return {'FINISHED'}
 
@@ -256,11 +275,19 @@ class HAIRMESH_OT_outliner_reveal(bpy.types.Operator):
 
 
 def _touch_extra(root, P, it):
-    # touchExtra (8200, 4.4): a Density on / off — the locks of its group
-    if it.type == 'tip':
-        g = P.items.get(it.parent)
-        if g is not None and g.type == 'group':
-            live.touch(root, [c.id for c in G.curvesIn(P, g)])
+    # touchExtra (12077, 4.4; 12077 in 1.0.3): a Density, Proxy shell or Even loops on / off — the locks of its group
+    # (a converted shell: every lock, its rings are taken by locks of any group — scene.evenshell_touch)
+    if it.type in ('tip', 'shell', 'even'):
+        live.touch(root, SC.evenshell_touch(P, it))
+
+
+def head_eye(root, P):
+    """the head's object follows the head's eye (lot 1.1e: the eye switched the model's flag alone — the picking and the
+    drawing on the head stopped, the head stayed on screen). Applied where the eye changes, inside the operator: the
+    object's own switches (Blender's H, its outliner) stay the user's"""
+    ob = session.head_object(root)
+    if ob is not None and P.head is not None and ob.hide_viewport != (not P.head.visible):
+        ob.hide_viewport = not P.head.visible
 
 
 class HAIRMESH_OT_toggle_visible(bpy.types.Operator):
@@ -282,12 +309,13 @@ class HAIRMESH_OT_toggle_visible(bpy.types.Operator):
                 self.report({'INFO'}, 'No head')
                 return {'CANCELLED'}
             P.head.visible = not P.head.visible; name = P.head.name
+            head_eye(root, P)
         else:
             it = P.items.get(self.item)
             if it is None:
                 self.report({'ERROR'}, f'No item {self.item} in the project')
                 return {'CANCELLED'}
-            it.visible = not it.visible; name = it.name              # toggleHide (8192)
+            it.visible = not it.visible; name = it.name              # toggleHide (12071)
             _touch_extra(root, P, it)
         P.rev += 1
         session.save_project(root, P)
@@ -329,10 +357,11 @@ def _selected_ids(P, sel):
 
 def _hidden_by_the_view(P):
     """what Live / Baked keeps hidden, which only its buttons show: a mesh's sources, or the mesh while one of them is on
-    screen; pending, what Convert hid"""
+    screen; pending, what Convert hid and the confirmed meshes the pending ones replace (hidden since, or already hidden
+    by Live: Confirm deletes them, Cancel decides; seed 963775 of the stress)"""
     c = P.conv or {}
-    out = {*(c.get('hidden') or ()), *(c.get('shown') or ())}
     replaced = set(c.get('replaced') or ())
+    out = {*(c.get('hidden') or ()), *(c.get('shown') or ()), *replaced}
     ms = [m for m in conversion.meshes(P) if m.id not in replaced]
     owners = {m.parent for m in ms}
     for m in ms:
@@ -348,6 +377,23 @@ def _revealable(P):
     """(items, head): what Alt+H shows"""
     view = _hidden_by_the_view(P)
     return [it for it in P.items.values() if not it.visible and it.id not in view], P.head is not None and not P.head.visible
+
+
+def reveal_why(P):
+    """why Reveal Hidden shows nothing now (pure). The meshes a preview replaces first (lot 1.0.4, the owner's decision);
+    then what the view hides (lot 1.1e, issue #6: right after the first Convert the walls and curves are hidden, by the
+    view — "nothing is hidden" was not true), with the button that shows it; else nothing is hidden"""
+    if P.conv and any(i in P.items and not P.items[i].visible for i in P.conv.get('replaced') or ()):
+        return 'The meshes the preview replaces stay hidden until Confirm or Cancel'
+    held = [P.items[i] for i in _hidden_by_the_view(P) if i in P.items and not P.items[i].visible]
+    if not held:
+        return 'Nothing of the HairMesh is hidden'
+    meshes = [it for it in held if it.type == 'mesh']
+    if meshes and len(meshes) == len(held):
+        return 'What Live / Baked hides stays with its buttons: Baked shows the meshes (D > Conversion)'
+    if not meshes:
+        return 'What Live / Baked hides stays with its buttons: Live shows the walls and curves (D > Conversion)'
+    return 'What Live / Baked hides stays with its buttons (D > Conversion)'
 
 
 def _unselected(P, keep):
@@ -366,7 +412,7 @@ def _unselected(P, keep):
                 return True
             it = P.parentOf(it)
         return False
-    return [it for it in P.items.values() if it.visible and it.id not in up and it.type not in ('tip', 'cap', 'skin', 'xmod') and not in_kept(it)
+    return [it for it in P.items.values() if it.visible and it.id not in up and it.type not in ('tip', 'cap', 'skin', 'xmod', 'shell', 'even') and not in_kept(it)
             and (P.parentOf(it) is None or P.parentOf(it).id in up)]
 
 
@@ -442,7 +488,7 @@ class HAIRMESH_OT_reveal_hidden(bpy.types.Operator):
         _r, P, _s = select.current(context)
         if P is not None and any(_revealable(P)):
             return True
-        cls.poll_message_set('Nothing of the HairMesh is hidden')
+        cls.poll_message_set(reveal_why(P) if P is not None else 'Nothing of the HairMesh is hidden')
         return False
 
     def execute(self, context):
@@ -453,6 +499,7 @@ class HAIRMESH_OT_reveal_hidden(bpy.types.Operator):
             _touch_extra(root, P, it)
         if head:
             P.head.visible = True
+            head_eye(root, P)
         n = len(its) + head
         self.report({'INFO'}, _shown(context, root, P, sel, f'Revealed {n} item{"" if n == 1 else "s"}'))
         return {'FINISHED'}
@@ -720,7 +767,7 @@ def group_side_units(info):
     the pop-up (O) and in the group's sheet"""
     if info.get('compact'):
         return COL + COL
-    return STEP_COL + MODE_COL + COL + (COL if info.get('guides') else 0.0) + COL + COL + COL
+    return info.get('step_col', STEP_COL) + MODE_COL + COL + (COL if info.get('guides') else 0.0) + COL + COL + COL
 
 
 def pair_cells(row):
@@ -870,14 +917,14 @@ def _power(side, row, info):
     c = _col(side, COL)
     # ⏻ (not the ☑ of the conversion tick): on = the filled circle, off = its outline at full strength (4a of the second
     # manual test of 21/10/2026: dimmed, the off state could hardly be seen); a guide's is dimmed only when it is on
-    # but a group above switches its guides off (guideOn 722; a group's own switch is never dimmed, as before)
+    # but a group above switches its guides off (guideOn 825; a group's own switch is never dimmed, as before)
     c.active = not on or row.type != 'guide' or row.power_effective
     op = c.operator('hairmesh.toggle_guide_power', text='', icon='RADIOBUT_ON' if on else 'RADIOBUT_OFF', emboss=False)
     op.item = row.id
 
 
 def can_drop(P, ids, gid):
-    """whether the items can go into the group `gid` (None: the root level): what moveItems (8568) moves — not the head
+    """whether the items can go into the group `gid` (None: the root level): what moveItems (12476) moves — not the head
     nor the target itself, no group inside itself — and at least one of them is not there already"""
     ids = [i for i in ids if i != gid and i in P.items and P.items[i].type != 'head']
     if gid is not None and any(G.isDescendant(P, gid, i) for i in ids):
@@ -901,14 +948,13 @@ def _group_columns(side, context, row, hm, sel_items, info):
     """the switches of a group row, in fixed columns: the step, the mode with the color, the Container tag, ⏻,
     the tick, the drop, the eye (the Free curves tag left the row on 16/10/2026: the curves say "(free)" and the
     group's sheet in the HairMesh Menu has the switch)"""
-    from .ops_groups import step_text
     g = row.group
     compact = info.get('compact')
     if not compact:
-        c = _col(side, STEP_COL)
+        c = _col(side, info.get('step_col', STEP_COL))
         if g['step'] is not None:
             c.active = not g['off']
-            c.label(text=step_text(g['step']) + (' ≠' if g['off'] else ''))
+            c.label(text=info.get('step_texts', {}).get(row.id) or step_label(g))
         else:
             c.label(text='')
     mc = _col(side, COL if compact else MODE_COL, 'EXPAND')
@@ -1026,14 +1072,18 @@ def draw_row(layout, context, row, hm, sel_items, info):
         _draw_single(col, context, cell, hm, sel_items, info, lead, H, right_cell=k == 1)
 
 
+BAR_GAP = 0.3                                                       # the room a separator of the bar is counted at, in units (drawn with factor 0.5: a little less)
+
+
 def _bar_op(b, idname, icon, ok):
     r = b.row(align=True); r.active = ok
     return r.operator(idname, text='', icon=icon)
 
 
 def bar_units(popup):
-    """the buttons of the bar: expand / collapse all, reveal, new group, cut, paste, delete (and undo / redo in the pop-up)"""
-    return 6.0 + (2.5 if popup else 0.0)
+    """the buttons of the bar: expand / collapse all and reveal, new group, cut and paste, delete — four families, a
+    space between two of them (BAR_GAP) — and undo / redo in the pop-up"""
+    return 6.0 + 3 * BAR_GAP + (2.5 if popup else 0.0)
 
 
 def footer_text(P, info):
@@ -1088,10 +1138,13 @@ def draw_outliner(layout, context, units_x=None, width=None):
     picked = bool(P is not None and (sel.items or sel.anchors))     # part 1 of the lot ux7: dimmed while there is nothing to act on (they say so when clicked)
     _bar_op(b, 'hairmesh.expand_all', icons.EXPAND_ALL, bool(P is not None and P.groups()))   # (the same button as the Conversion tab's group tree, ours)
     _bar_op(b, 'hairmesh.outliner_reveal', 'ZOOM_SELECTED', picked)
+    b.separator(factor=0.5)                                         # (G14: joined only within a family — the view's two, New Group, the clipboard's two, Delete)
     b.operator('hairmesh.add_group', text='', icon='ADD')
+    b.separator(factor=0.5)
     _bar_op(b, 'hairmesh.outliner_cut', 'UNLINKED', bool(P is not None and sel.items))
     g = select.selected_group(P, sel) if P is not None else None
     op = _bar_op(b, 'hairmesh.outliner_paste', 'PASTEDOWN', bool(clipboard(context))); op.group = g.id if g is not None else -1
+    b.separator(factor=0.5)
     _bar_op(b, 'hairmesh.delete_selected', 'X', picked).keep_shape = False
     if P is None:
         layout.label(text='No HairMesh project', icon='INFO')

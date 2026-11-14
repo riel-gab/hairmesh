@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """The union of locks, Y / X junctions (4.10): port of the section "Union of locks" (hair-modeler.clean.html:
-3129-3251, 1.0.1) — unionSelectedLocks, the main pie's "Unite locks (Y / X junction)" (7927), with anchorFrac,
-sharedRun (walls.py), unionLocks, facingWelded, facingGeometric, weldBand and closeJunction.
+3438-3627, 1.0.2) — unionSelectedLocks (4540), the main pie's "Unite locks (Y / X junction)" (10156), with anchorFrac,
+sharedRun (walls.py), unionLocks, facingWelded, facingGeometric, weldBand, closeJunction, recalcGroup (4579) and
+gluedLocks (4590). (The section was 3129-3251 in 1.0.1: tools/refline.py.)
 
 Pure Python, no bpy. Ids come from Project.uid and names from nextNumber, as in the original, so the parity scripts
 (tests/test_union_parity.py) get the very same project file. The selection is ids (S.sel); the new one, the toast and
 the undo step (commit) are the caller's.
 
-The original's comment on the section (3130):
+The original's comment on the section (3439):
 Locks (rings of walls) that run into each other. Where they overlap, their facing edge curves become one (shared
 anchors — a common trunk) and the facing walls are removed. Where the trunk ends, the inner side of each lock is
 closed by a new wall: one of its curves runs along one edge, crosses the lock along the junction line (from where one
@@ -24,12 +25,14 @@ from .convert import lockGrid, lockGroups, lockQuery
 from .curves import markAnchorsDirty, rebuildCurve
 from .edit import addItem, deleteItem, makeCurve, newAnchor
 from .geom import pointOnCurve
-from .js import js_div, js_max, js_round
+from .groups import serviceName
+from .hairmesh_io import defaultStep
+from .js import index_of, js_div, js_max, js_or, js_round
 from .rows import buildRowTables, surfaceComponents
 from .surfaces import surfaceData
 from .walls import sharedRun
 
-# the toasts of unionSelectedLocks (3224, 3246, 3249)
+# the toasts of unionSelectedLocks (4540, 3246, 3249)
 UNION_NONE_SEL = 'Select walls (or curves) of two locks that run into each other'
 UNION_NO_OVERLAP = 'No overlapping locks found: their facing walls must share curves or run into each other'
 
@@ -41,7 +44,7 @@ def unionMessage(nY, nX, nWeld):
 
 
 def anchorFrac(c, i):
-    # port of anchorFrac (hair-modeler.clean.html:3137): the arc fraction of anchor i along the anchors' polyline
+    # port of anchorFrac (hair-modeler.clean.html:4417): the arc fraction of anchor i along the anchors' polyline
     L = 0; d = 0
     for k in range(1, len(c.anchors)):
         s = c.anchors[k].pos.distanceTo(c.anchors[k - 1].pos); L += s
@@ -51,9 +54,9 @@ def anchorFrac(c, i):
 
 
 def unionLocks(P, sel_items):
-    """port of unionLocks (hair-modeler.clean.html:3149): the locks touched by the selection (walls and curves):
+    """port of unionLocks (hair-modeler.clean.html:4461): the locks touched by the selection (walls and curves):
     whole rings, without second surfaces. `sel_items` = S.sel (ids). The pie offers "Unite locks" when this gives two
-    or more (7927)."""
+    or more (10156)."""
     cs = set()
     for iid in sel_items:
         it = P.items.get(iid)
@@ -64,29 +67,38 @@ def unionLocks(P, sel_items):
         if it.type == 'curve':
             cs.add(iid)
     comps = [cp for cp in surfaceComponents(P) if any(i in cs for i in cp)]
-    return lockGroups([s for s in P.surfaces() if any(s.a in cp for cp in comps)])
+    return lockGroups(P, [s for s in P.surfaces() if any(s.a in cp for cp in comps)])
 
 
 def canUnite(P, sel_items):
-    # the pie's condition for its "⊕ Unite locks (Y / X junction)" item (7927)
+    # the pie's condition for its "⊕ Unite locks (Y / X junction)" item (10156)
     return len(unionLocks(P, sel_items)) >= 2
 
 
-def facingWelded(P, A, B):
-    # port of facingWelded (hair-modeler.clean.html:3156): facing walls already welded: both edges of wa share a run of
-    # anchors with the edges of wb
+def facingWeldedAll(P, A, B):
+    """port of facingWeldedAll (hair-modeler.clean.html:4471, 1.0.2): facing walls already welded: both edges of wa
+    share a run of anchors with the edges of wb. Every such pair, the deepest first: a wall can share runs with two
+    walls of the other lock (a lock branching off at a slant shares the root with its outer wall too) — the one
+    sharing more anchors is the facing one (Unite locks takes it); ties keep their order."""
+    out = []
+
+    def common(x, y):
+        s = {id(a) for a in y.anchors}
+        return len([a for a in x.anchors if id(a) in s])
     for wa in A:
         for wb in B:
             for x1, x2 in ((wb.a, wb.b), (wb.b, wb.a)):
                 a1 = P.items.get(wa.a); a2 = P.items.get(wa.b); b1 = P.items.get(x1); b2 = P.items.get(x2)
+                if a1 is a2 or b1 is b2:
+                    continue
                 r1 = sharedRun(a1, b1); r2 = sharedRun(a2, b2)
                 if r1 and r2:
-                    return {'wa': wa, 'wb': wb, 'a1': a1, 'a2': a2, 'b1': b1, 'b2': b2, 'r1': r1, 'r2': r2}
-    return None
+                    out.append({'wa': wa, 'wb': wb, 'a1': a1, 'a2': a2, 'b1': b1, 'b2': b2, 'r1': r1, 'r2': r2, 'score': common(a1, b1) + common(a2, b2)})
+    return sorted(out, key=lambda f: -f['score'])                  # (.sort((x, y) => y.score - x.score): stable, as sorted)
 
 
 def facingGeometric(P, A, B, T):
-    """port of facingGeometric (hair-modeler.clean.html:3166): facing walls found by geometry: the walls reaching
+    """port of facingGeometric (hair-modeler.clean.html:4483): facing walls found by geometry: the walls reaching
     deepest into the other lock; per edge pair the stretch (arc fractions) where the edges run inside the other lock"""
     GA = lockGrid(P, A, T); GB = lockGrid(P, B, T)
     if GA is None or GB is None:
@@ -151,7 +163,7 @@ def facingGeometric(P, A, B, T):
 
 
 def weldBand(P, a, b, ta, tb):
-    """port of weldBand (hair-modeler.clean.html:3188): make curves a and b one over the given stretches: new shared
+    """port of weldBand (hair-modeler.clean.html:4505): make curves a and b one over the given stretches: new shared
     anchors along their average path replace both stretches. The curves are not resampled (dirty): a later pair of the
     same union reads their old samples, as the original does. Ours: the anchors no curve uses any more leave
     P.anchors (as weld.weldInto does; the file only holds the anchors curves use)."""
@@ -186,7 +198,7 @@ def weldBand(P, a, b, ta, tb):
 
 
 def closeJunction(P, w, p, q, p0, p1, q0, q1):
-    """port of closeJunction (hair-modeler.clean.html:3204): replace the facing wall w (edges p, q; trunk on p =
+    """port of closeJunction (hair-modeler.clean.html:4521): replace the facing wall w (edges p, q; trunk on p =
     anchors p0..p1, on q = q0..q1) by the walls closing its inner side. Returns the new curves and walls, in order
     (curve, wall, curve, wall)."""
     def sub(c, i, j):
@@ -204,7 +216,7 @@ def closeJunction(P, w, p, q, p0, p1, q0, q1):
         pieces.append([[*sub(q, 0, q0), *sub(p, p0, end(p))], p] if anchorFrac(q, q0) <= anchorFrac(p, p0) else [[*sub(p, 0, p0), *sub(q, q0, end(q))], q])
     made = []
     for lst, other in pieces:
-        c = makeCurve(P, w.parent); c.anchors = dedupe(lst); c.name = 'Junction ' + c.name; c.junc = True
+        c = makeCurve(P, w.parent); c.anchors = dedupe(lst); c.junc = True; c.name = serviceName(P, 'JC')   # 1.0.2 (closeJunction, 3560)
         # { segs: w.p.segs, bulge: w.p.bulge, flip: w.p.flip, jfade: 0.3 }: a key the wall does not have is undefined
         # there, which the file does not write
         sp = {k: w.p[k] for k in ('segs', 'bulge', 'flip') if k in w.p}
@@ -215,8 +227,8 @@ def closeJunction(P, w, p, q, p0, p1, q0, q1):
     return made
 
 
-def unionSelectedLocks(P, sel_items, tables=None):
-    """port of unionSelectedLocks (hair-modeler.clean.html:3221). `sel_items` = S.sel (ids of walls or curves of the
+def unionSelectedLocks(P, sel_items, tables=None, allPairs=False):
+    """port of unionSelectedLocks (hair-modeler.clean.html:4540). `sel_items` = S.sel (ids of walls or curves of the
     locks). Every pair of the locks touched (unionLocks) is tried in order: facing walls already welded (facingWelded)
     or found by geometry (facingGeometric, whose edges are first welded over the overlap: weldBand); a pair whose
     facing walls were used by an earlier pair is skipped; each facing wall is replaced by the walls closing its lock's
@@ -228,6 +240,9 @@ def unionSelectedLocks(P, sel_items, tables=None):
     does (3247-3248): S.surfDirty (the row tables), regenConversion when a conversion is pending, S.asel = [],
     S.sel = the walls among `made`, onSelChange, commit. When nothing was united the selection stays and the original
     makes no undo step — but edges welded by geometry (welded > 0) stay welded: the model changed.
+
+    `allPairs` (1.0.2): every pair of facing walls of two locks (a lock lying along two walls of the other has two),
+    not only the deepest one; the Y / X count is the first pair's.
 
     Two guards of the original never fire, since closeJunction deletes both facing walls (A and B hold only live walls)
     and weldBand puts the same run of new anchors into both curves in the same order: a wall in `used`, and a weld that
@@ -247,8 +262,8 @@ def unionSelectedLocks(P, sel_items, tables=None):
             A = [s for s in locks[i] if s.id in P.items]; B = [s for s in locks[j] if s.id in P.items]
             if not A or not B:
                 continue
-            f = facingWelded(P, A, B)
-            if f is None:
+            fs = facingWeldedAll(P, A, B)
+            if not fs:
                 if T is None:
                     T = tables() if tables is not None else buildRowTables(P).T   # (`tables`, ours: the caller's row tables of the model as it is now — Blender's live ones, kept up to date incrementally: the same tables)
                 g = facingGeometric(P, A, B, T)
@@ -259,24 +274,141 @@ def unionSelectedLocks(P, sel_items, tables=None):
                 f = {**g, 'r1': sharedRun(g['a1'], g['b1']), 'r2': sharedRun(g['a2'], g['b2'])}
                 if not f['r1'] or not f['r2']:
                     continue
-            if f['wa'].id in used or f['wb'].id in used:
-                continue
-            used.add(f['wa'].id); used.add(f['wb'].id)
-            wa = f['wa']; wb = f['wb']; a1 = f['a1']; a2 = f['a2']; b1 = f['b1']; b2 = f['b2']; r1 = f['r1']; r2 = f['r2']
-            # wa = (a1, a2) in this order? closeJunction gets the edges as the wall has them
-            xa = [a1, a2, r1['i0'], r1['i1'], r2['i0'], r2['i1']] if wa.a == a1.id else [a2, a1, r2['i0'], r2['i1'], r1['i0'], r1['i1']]
-            xb = [b1, b2, r1['j0'], r1['j1'], r2['j0'], r2['j1']] if wb.a == b1.id else [b2, b1, r2['j0'], r2['j1'], r1['j0'], r1['j1']]
-            mid = r1['i0'] > 0 or r2['i0'] > 0 or r1['j0'] > 0 or r2['j0'] > 0
-            if mid:
-                nX += 1
-            else:
-                nY += 1
-            made += closeJunction(P, wa, *xa)
-            made += closeJunction(P, wb, *xb)
-            T = None
+                fs = [f]
+            if not allPairs:
+                fs = fs[:1]
+            first = True
+            for f in fs:
+                if f['wa'].id in used or f['wb'].id in used or f['wa'].id not in P.items or f['wb'].id not in P.items:
+                    continue
+                used.add(f['wa'].id); used.add(f['wb'].id)
+                wa = f['wa']; wb = f['wb']; a1 = f['a1']; a2 = f['a2']; b1 = f['b1']; b2 = f['b2']; r1 = f['r1']; r2 = f['r2']
+                # wa = (a1, a2) in this order? closeJunction gets the edges as the wall has them
+                xa = [a1, a2, r1['i0'], r1['i1'], r2['i0'], r2['i1']] if wa.a == a1.id else [a2, a1, r2['i0'], r2['i1'], r1['i0'], r1['i1']]
+                xb = [b1, b2, r1['j0'], r1['j1'], r2['j0'], r2['j1']] if wb.a == b1.id else [b2, b1, r2['j0'], r2['j1'], r1['j0'], r1['j1']]
+                if first:                                           # (only the first pair is counted)
+                    if r1['i0'] > 0 or r2['i0'] > 0 or r1['j0'] > 0 or r2['j0'] > 0:
+                        nX += 1
+                    else:
+                        nY += 1
+                first = False
+                made += closeJunction(P, wa, *xa)
+                made += closeJunction(P, wb, *xb)
+                T = None
     if not made:
         return [], UNION_NO_OVERLAP, nWeld
     for c in P.curves():
         c.dirty = True
     P.gen += 1; P.rev += 1
     return made, unionMessage(nY, nX, nWeld), nWeld
+
+
+def weldRejoins(P, cs, tol):
+    """port of weldRejoins (hair-modeler.clean.html:4432, 1.0.2): a curve that leaves an anchor shared with another
+    curve and comes back to that curve's very next anchor, staying close to it (an anchor put into one of them only —
+    e.g. 37 -> 198 -> 42 along another curve's 37 -> 42), runs along the same stretch: its in-between anchors are put
+    onto the other curve (the other curve's shape kept — insertKeepShape) and shared, so the common trunk runs on to
+    where the curves really part. Within tol only. Returns how many stretches were welded.
+    Ours: an anchor no curve uses any more leaves P.anchors (as weldBand does)."""
+    from .curves import bez, curveSegs
+    from .scissors import insertKeepShape
+    n = 0
+    for X in cs:
+        for Y in cs:
+            if X is Y:
+                continue
+            i = 0
+            while i + 1 < len(X.anchors):
+                p = X.anchors[i]; q = X.anchors[i + 1]; j = index_of(Y.anchors, p); k = index_of(Y.anchors, q)
+                if j < 0 or k < 0 or abs(k - j) < 2:
+                    i += 1
+                    continue
+                mids = Y.anchors[min(j, k) + 1:max(j, k)]
+                if any(index_of(X.anchors, a) >= 0 for a in mids):
+                    i += 1
+                    continue
+                seg = curveSegs(P, X)[i]
+                hits = []
+                for a in mids:
+                    u = 0; d = math.inf
+                    for s in range(97):
+                        e = bez(seg[0], seg[1], seg[2], seg[3], s / 96).distanceTo(a.pos)
+                        if e < d:
+                            d = e; u = s / 96
+                    hits.append({'a': a, 'u': u, 'd': d})
+                if j > k:
+                    hits.reverse()                                  # (in order along X)
+                if any(h['d'] > tol or h['u'] < 0.02 or h['u'] > 0.98 or (m and h['u'] <= hits[m - 1]['u']) for m, h in enumerate(hits)):
+                    i += 1
+                    continue
+                # the furthest first: what is left of segment i is its start up to the last cut, re-parameterized
+                top = 1
+                for h in reversed(hits):
+                    a = insertKeepShape(P, X, i, h['u'] / top); top = h['u']
+                    for c in P.curves():
+                        x = index_of(c.anchors, h['a'])
+                        if x >= 0 and c is not X:
+                            c.anchors[x] = a; c.ovr.pop(h['a'].id, None); c.dirty = True
+                    if not any(index_of(c.anchors, h['a']) >= 0 for c in P.curves()):
+                        P.anchors.pop(h['a'].id, None)
+                P.gen += 1                                          # (the curves' anchors changed: memos key on gen)
+                X.dirty = True; Y.dirty = True; n += 1; i += len(hits)
+                i += 1
+    return n
+
+
+def gluedLocks(P, g):
+    # port of gluedLocks (hair-modeler.clean.html:4590, 1.0.2): how many locks of group g are glued to another lock of
+    # g (their curves share anchors)
+    from .convert import collect
+    locks = lockGroups(P, [s for s in collect(P, g.id, set(), ['surface']) if not s.twin])
+    if len(locks) < 2:
+        return 0
+    owner = {}
+    for li, L in enumerate(locks):
+        for s in L:
+            for iid in (s.a, s.b):
+                c = P.items.get(iid)
+                if c is not None:
+                    for a in c.anchors:
+                        owner.setdefault(a, set()).add(li)
+    glued = set()
+    for s in owner.values():
+        if len(s) > 1:
+            glued |= s
+    return len(glued)
+
+
+def recalcGroup(P, g, tables=None):
+    """port of recalcGroup (hair-modeler.clean.html:4579, 1.0.2): the group's glued locks recalculated for the
+    conversion — curves wandering off a shared stretch and coming back are welded onto it (the trunk ends where the
+    locks really part), then every pair of facing walls is closed from the fork (Unite locks): the wall between the
+    trunks goes, the inner sides below the fork start at the fork row.
+    Returns (made, message, changed, sel): `made` = what the union made (as unionSelectedLocks), the toast, whether the
+    model changed (welds or a union) and the new S.sel (the new walls after a union, else the group's walls). The
+    caller does what the original does when `changed` (commit, regenConversion)."""
+    from .convert import collect
+    walls = [s for s in collect(P, g.id, set(), ['surface']) if not s.twin]
+    for c in P.curves():
+        if c.dirty:
+            rebuildCurve(P, c)
+    cs = []
+    for iid in dict.fromkeys(x for s in walls for x in (s.a, s.b)):
+        c = P.items.get(iid)
+        if c is not None and c.type == 'curve' and not c.ring and not c.junc:
+            cs.append(c)
+    welded = weldRejoins(P, cs, 0.75 * js_or(P.settings.step, defaultStep(P)))
+    if welded:
+        for c in P.curves():
+            if c.dirty:
+                rebuildCurve(P, c)
+    made, msg, nweld = unionSelectedLocks(P, [s.id for s in walls], tables, allPairs=True)
+    wall_ids = [s.id for s in walls]
+    if made:
+        return made, msg, True, [x.id for x in made if x.type == 'surface']   # (it commits — one undo step with the welds)
+    if welded:
+        for c in P.curves():
+            c.dirty = True
+        P.gen += 1; P.rev += 1
+        return [], f"{welded} stretch{'es' if welded > 1 else ''} welded; no facing walls to replace", True, wall_ids
+    return [], msg, bool(nweld), wall_ids

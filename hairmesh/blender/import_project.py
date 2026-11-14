@@ -29,6 +29,7 @@ class HAIRMESH_OT_import_project(bpy.types.Operator, ImportHelper):
         items=(('AUTO', 'Automatic', 'A power of ten that makes the head between 0.1 m and 1 m tall'),
                ('MANUAL', 'Manual', 'Use the scale below (project units to meters)')),
         default='AUTO')
+    # (6 decimals on purpose: a scale factor, 0.001 for the example's head; 2 decimals would show 0.00)
     scale: FloatProperty(name='Manual Scale', description='Blender units per project unit', default=1.0, min=1e-9, soft_min=1e-6, soft_max=1000.0, precision=6)
     curve_mode: EnumProperty(
         name='Curves',
@@ -79,6 +80,11 @@ class HAIRMESH_OT_import_project(bpy.types.Operator, ImportHelper):
         self.report({'INFO'}, f'HairMesh: {len(proj.curves())} curves in {stats["groups"]} groups'
                               f'{", head" if stats["head"] else ""}; scale {scale:g}'
                               f'{" (automatic)" if self.scale_mode == "AUTO" else ""}; project kept in text "{root["hairmesh_text"]}"')
+        from ..core.effects import laterToolsText
+        later = laterToolsText(proj)
+        if later:
+            self.report({'WARNING'}, later[1])                      # (lot 1.1a: curves of tools this version lacks, kept)
+            live.notify(context, f'{later[0]} (D > Project says which)')   # (1.1a-2: in the status bar too, after the rebuild's own line)
         return {'FINISHED'}
 
 

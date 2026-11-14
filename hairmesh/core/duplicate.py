@@ -1,23 +1,25 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
-"""Duplicate (3.8b): port of duplicateSelection (hair-modeler.clean.html:9904) and the guide makers it uses.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+"""Duplicate (3.8b): port of duplicateSelection (hair-modeler.clean.html:14132) and the guide makers it uses.
 
 A module of its own, as scissors.py: it needs groups.outlinerOrder / convTargets, and groups.py imports edit.py.
 Pure Python, no bpy. The selection is ids (selection.Selection); the new selection is returned for the caller to store;
 toasts, undo steps (commit) and display objects are the caller's."""
+from typing import Any
+
 from . import model as M
 from .edit import addItem, makeCurve, newAnchor
 from .groups import convTargets, curvesIn, outlinerOrder
 from .guides import discBasis, discRings
-from .hairmesh_io import defaultStep
-from .js import clamp, index_of, js_or
+from .hairmesh_io import defaultStep, js_json_copy
+from .js import clamp, index_of, js_or, truthy
 from .rowbase import groupConv
 from .vec3 import V3
 
 
 def topSelected(P, sel_items):
-    # port of topSelected (hair-modeler.clean.html:8561): the selected items in outliner order, without the items whose
+    # port of topSelected (hair-modeler.clean.html:12469): the selected items in outliner order, without the items whose
     # ancestor is also selected
     sel = set(sel_items)
     out = []
@@ -36,7 +38,7 @@ def topSelected(P, sel_items):
 
 
 def guidesGroup(P):
-    # port of guidesGroup (1035): the Guides group, made when there is none
+    # port of guidesGroup (1170): the Guides group, made when there is none
     g = next((i for i in P.items.values() if i.type == 'group' and i.guidesGroup), None)
     if g is None:
         g = addItem(P, 'group', None, {'name': 'Guides'})
@@ -45,7 +47,7 @@ def guidesGroup(P):
 
 
 def guidesGroupForNew(P):
-    # port of guidesGroupForNew (1044): a hidden Guides group is shown again, the guides that were in it stay hidden one
+    # port of guidesGroupForNew (1179): a hidden Guides group is shown again, the guides that were in it stay hidden one
     # by one (the toast after 2.3 s is the caller's)
     g = guidesGroup(P)
     if not g.visible or g.guides == 'hide':
@@ -61,25 +63,25 @@ def guidesGroupForNew(P):
 
 
 def curStep(P):
-    # port of curStep (1054): the first ticked group's loop step, else the default
+    # port of curStep (1189): the first ticked group's loop step, else the default
     t = convTargets(P)
     return js_or(groupConv(P, t[0]).get('step') if t else None, defaultStep(P))   # (convTargets gives the groups themselves; the review of 4.2)
 
 
 def guideDefaultsNow(P):
-    # port of guideDefaultsNow (1055)
+    # port of guideDefaultsNow (1190)
     d = P.settings.guideDefaults
     r = d.get('radius')
     return {**d, 'radius': r if r is not None else clamp(4 * curStep(P) / P.S.headH, 0.002, 0.5)}
 
 
 def makeGuide(P, parent, hits, p=None):
-    # port of makeGuide (1056), the data part: a guide line in the Guides group (`parent` is not used, as there)
+    # port of makeGuide (1191), the data part: a guide line in the Guides group (`parent` is not used, as there)
     return addItem(P, 'guide', guidesGroupForNew(P).id, {'kind': 'line', 'hits': hits, 'p': p if p is not None else guideDefaultsNow(P),'samples': [], 'dirty': True})
 
 
 def makeDisc(P, C, N, rOut, rIn, outPts=None, inPts=None):
-    # port of makeDisc (1070), the data part: a NURBS disc and its two rings (closed curves of 6 anchors each)
+    # port of makeDisc (1205), the data part: a NURBS disc and its two rings (closed curves of 6 anchors each)
     from .fdlibm import cos, sin
     G = guidesGroupForNew(P)
     g = addItem(P, 'guide', G.id, {'kind': 'disc', 'hits': [], 'p': {**guideDefaultsNow(P), 'rOut': rOut, 'rIn': rIn}, 'samples': [], 'dirty': True})
@@ -97,14 +99,29 @@ def makeDisc(P, C, N, rOut, rIn, outPts=None, inPts=None):
 
 
 def onlyList(P, m):
-    # port of onlyList (6445)
+    # port of onlyList (9667)
     o = m.p.get('only')
     lst = o if isinstance(o, list) else ([o] if o is not None else [])
     return [i for i in lst if i in P.items]
 
 
+def cloneLook(L):
+    # port of cloneLook (hair-modeler.clean.html:4810): the textures / flat shading of an imported mesh, one level of sets
+    # and maps copied (the map entries themselves are shared, as there)
+    if not L:
+        return L
+    out = {k: L[k] for k in ('tex', 'flat') if k in L}             # (a key L lacks is undefined there: JSON.stringify leaves it out)
+    out['sets'] = [{**s, 'maps': dict(s.get('maps') or {})} for s in L.get('sets') or ()]
+    return out
+
+
+def meshMods(P, m):
+    # port of meshMods (5251): the modifiers hanging on the imported mesh m (xmods() order)
+    return [x for x in P.of_type('xmod') if x.mesh == m.id]
+
+
 def duplicateMessage(made):
-    # the toasts of duplicateSelection (9907, 9981): `made` None = nothing to duplicate (no top item, no anchor's curve)
+    # the toasts of duplicateSelection (14132, 9981): `made` None = nothing to duplicate (no top item, no anchor's curve)
     return 'Nothing to duplicate' if made is None else f"Duplicated {len(made)} item(s) — the copy's anchors are selected"
 
 
@@ -117,7 +134,7 @@ def surfDirtyCurves(P, made):
         it = todo.pop()
         if it.type == 'group':
             todo.extend(P.items[c] for c in it.children if c in P.items)
-        elif it.type in ('cap', 'skin', 'tip'):
+        elif it.type in ('cap', 'skin', 'tip', 'shell', 'even'):   # (1.0.3: shell / even too, 14185-14186 there)
             g = P.items.get(it.parent) if it.parent is not None else None
             for c in (curvesIn(P, g) if g is not None else P.curves()):
                 out[c.id] = True
@@ -125,7 +142,7 @@ def surfDirtyCurves(P, made):
 
 
 def duplicateSelection(P, sel_items, sel_anchors):
-    """port of duplicateSelection (hair-modeler.clean.html:9904), the data part. `sel_items` = S.sel (ids),
+    """port of duplicateSelection (hair-modeler.clean.html:14132), the data part. `sel_items` = S.sel (ids),
     `sel_anchors` = S.asel (ids, pick order). Returns (made, new_sel_items, new_sel_anchors): the copies of the top
     items, the new S.sel (their ids) and the new S.asel (the copy's anchors, so the gizmo moves the copy right away);
     made is None when there is nothing to duplicate ("Nothing to duplicate" is the caller's toast; the selection stays),
@@ -204,6 +221,14 @@ def duplicateSelection(P, sel_items, sel_anchors):
                 n.junc = True
             if it.para:
                 n.para = True
+            if truthy(it.rib):                                      # (12577) a flat lock: its settings on the copied anchors; free of the two anchors
+                rib: dict[str, Any] = js_json_copy(it.rib); rib['ends'] = None
+                kc: dict[str, Any] = {}; rib['k'] = kc; n.rib = rib          # JSON.parse(JSON.stringify(it.rib))
+                k0 = it.rib.get('k')
+                for a in it.anchors:
+                    v: Any = k0.get(str(a.id)) if truthy(k0) else None
+                    if truthy(v):
+                        kc[str(cpA(a).id)] = dict(v)
             for aid, o in it.ovr.items():
                 a = next((x for x in it.anchors if x.id == aid), None)
                 if a is not None:
@@ -227,13 +252,13 @@ def duplicateSelection(P, sel_items, sel_anchors):
                 # copies would be two meshes of one group shown together
                 return None
             # (the same data object, as the original's `data: it.data`; setItemObj is the Blender side's)
-            n = addItem(P, 'mesh', parent, {'data': it.data, 'pending': False, 'srcSurfs': list(it.srcSurfs), 'symBaked': it.symBaked, 'token': it.token})
+            n = addItem(P, 'mesh', parent, {'data': it.data, 'pending': False, 'srcSurfs': list(it.srcSurfs), 'symBaked': it.symBaked, 'smoothN': bool(it.smoothN), 'token': it.token})   # smoothN: 1.0.2 (12589)
         elif it.type == 'crown':
             n = addItem(P, 'crown', parent, {'part': it.part, 'low': it.low, 'p': {**it.p, 'sym': None}, 'dirty': True}); new_crowns.append(n)
         elif it.type == 'xmod' and it.mesh is not None:             # a mesh modifier: copied with its mesh when that is copied too
             if it.mesh in roots:
                 return None
-            n = addItem(P, 'xmod', parent, {'mesh': it.mesh, 'kind': it.kind, 'p': dict(it.p), 'mask': list(it.mask) if it.mask else None}); new_x.append(n)
+            n = addItem(P, 'xmod', parent, {'mesh': it.mesh, 'kind': it.kind, 'p': dict(it.p), 'mask': list(it.mask) if it.mask else None, 'hold': list(it.hold) if it.hold else None}); new_x.append(n)   # hold: 1.0.2 (12597)
         elif it.type == 'xmod':
             n = addItem(P, 'xmod', parent, {'tube': it.tube, 'kind': it.kind, 'p': dict(it.p), 'mask': list(it.mask) if it.mask else None}); new_x.append(n)
         elif it.type == 'tube':
@@ -244,13 +269,16 @@ def duplicateSelection(P, sel_items, sel_anchors):
             n = addItem(P, 'cap', parent, {'p': dict(it.p), 'srcSurfs': []})
         elif it.type == 'skin':
             n = addItem(P, 'skin', parent, {'p': dict(it.p), 'cands': []})
-        elif it.type == 'tip':
-            n = addItem(P, 'tip', parent, {'p': dict(it.p)})
+        elif it.type in ('tip', 'even'):                            # (1.0.3: even too, 14185 there)
+            n = addItem(P, it.type, parent, {'p': dict(it.p)})
+        elif it.type == 'shell':                                    # 1.0.3 (14186 there): baked and def copied; no mask (below) nor off
+            D = it.def_
+            n = addItem(P, 'shell', parent, {'p': dict(it.p), 'baked': bool(it.baked), 'def_': M.ShellDef(ns=D.ns, na=D.na, d=list(D.d), v=D.v) if D is not None else None})
         elif it.type == 'imesh':
-            n = addItem(P, 'imesh', parent, {'src': it.src, 'dirty': True})
+            n = addItem(P, 'imesh', parent, {'src': it.src, 'dirty': True, 'collide': bool(it.collide), 'smoothN': bool(it.smoothN), 'look': cloneLook(it.look) if it.look else None})   # 1.0.2 (12604)
             aft = n.id
-            for x in [x for x in P.of_type('xmod') if x.mesh == it.id]:
-                y = addItem(P, 'xmod', parent, {'mesh': n.id, 'kind': x.kind, 'p': dict(x.p), 'mask': list(x.mask) if x.mask else None, 'name': x.name + ' copy', 'visible': x.visible})
+            for x in meshMods(P, it):
+                y = addItem(P, 'xmod', parent, {'mesh': n.id, 'kind': x.kind, 'p': dict(x.p), 'mask': list(x.mask) if x.mask else None, 'hold': list(x.hold) if x.hold else None, 'name': x.name + ' copy', 'visible': x.visible})
                 place(y, aft); aft = y.id
         else:
             return None
@@ -261,9 +289,9 @@ def duplicateSelection(P, sel_items, sel_anchors):
         n.name = it.name + ' copy'; n.visible = it.visible; imap[it.id] = n.id; place(n, after)
         return n
     made = [n for n in (copy(P.items[iid], P.items[iid].parent, iid) for iid in roots) if n is not None]
-    for oid, nid in imap.items():                                   # a Tip mask follows its copied curves (9966)
+    for oid, nid in imap.items():                                   # a Tip / Proxy shell / Even loops mask follows its copied curves (14201 in 1.0.3)
         o = P.items.get(oid); n = P.items.get(nid)
-        if o is not None and n is not None and o.type == 'tip' and o.mask:
+        if o is not None and n is not None and o.type in ('tip', 'shell', 'even') and truthy(o.mask):   # (JS truth: an empty mask {} is copied too)
             n.mask = {imap.get(int(cid), cid): list(W) for cid, W in o.mask.items()}
     for s in new_surfs:
         s.a = imap.get(s.a, s.a); s.b = imap.get(s.b, s.b)

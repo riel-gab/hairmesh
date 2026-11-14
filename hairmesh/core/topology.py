@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Lot 4.4 (docs/fase-4-plano.md, step 4.4): the Topology tab of the Modifier tool — Cap, Fill holes and Density, items
-of a group (types 'cap', 'skin', 'tip') that shape the mesh of its locks. Ports of capTargets (hair-modeler.clean.html:7204),
-capRef (7207), addCaps (7252), addTips (7318), addSkin (9514), skinCandidates (9347), convertSkin (9474), and the data
-part of rebuildCaps (9526) and rebuildSkins (9461): the previews (D4.5), as {pos, faces} in the model's space.
+of a group (types 'cap', 'skin', 'tip') that shape the mesh of its locks. Ports of capTargets (hair-modeler.clean.html:10554),
+capRef (10557), addCaps (10602), addTips (10668), addSkin (13619), skinCandidates (13452), convertSkin (13579), and the data
+part of rebuildCaps (13631) and rebuildSkins (13566): the previews (D4.5), as {pos, faces} in the model's space.
 
 The original's add / convert functions end in onSelChange, renderOutliner and commit, and S.surfDirty: here they
 return what they made, the toast and the new selection; the caller (blender/ops_topology.py) stores the selection,
@@ -16,7 +16,7 @@ from .convert import capGrid, capOf, collect, lockGrid, lockGroups, lockQuery, l
 from .edit import addItem, makeCurve
 from .geom import resample
 from .js import js_max, js_min, js_or, js_pow, to_int32
-from .model import CAP_DEFAULTS, SKIN_DEFAULTS
+from .model import CAP_DEFAULTS, EVEN_DEFAULTS, SHELL_DEFAULTS, SKIN_DEFAULTS
 from .density import TIP_DEFAULTS
 from .rowbase import settings_conv
 from .surfaces import surfaceData, wallsOf
@@ -30,7 +30,7 @@ FILL_EXISTS = 'These groups already have Fill holes'                            
 
 
 def capTargets(P, sel_items):
-    """port of capTargets (7204): the groups the selected items are in (a selected group itself; a cap counts for none),
+    """port of capTargets (10554): the groups the selected items are in (a selected group itself; a cap counts for none),
     each once, in the order of the selection"""
     out = []
     for iid in sel_items:
@@ -44,7 +44,7 @@ def capTargets(P, sel_items):
 
 
 def capRef(P):
-    """port of capRef (7207): the typical lock width (the median distance from the middle of a wall's first curve to its
+    """port of capRef (10557): the typical lock width (the median distance from the middle of a wall's first curve to its
     second) — the range of the bevel's Size slider"""
     ws = []
     for s in P.surfaces():
@@ -60,7 +60,7 @@ def capRef(P):
 
 
 def addCaps(P, sel_items, defaults=None):
-    """port of addCaps (7252): a cap in every target group with the defaults for new caps (S.capDefaults) — a group
+    """port of addCaps (10602): a cap in every target group with the defaults for new caps (S.capDefaults) — a group
     that has one gets the defaults instead (one cap per group). Returns (made, toast); made None: nothing to do."""
     gs = capTargets(P, sel_items)
     if not gs:
@@ -76,7 +76,7 @@ def addCaps(P, sel_items, defaults=None):
 
 
 def addTips(P, sel_items, defaults=None):
-    """port of addTips (7318): a Density in every target group (one per group: an existing one takes the density of the
+    """port of addTips (10668): a Density in every target group (one per group: an existing one takes the density of the
     defaults, its mask stays). Returns (made, toast); made None: nothing to do. (The original turns its brush on: 4.8.)"""
     gs = capTargets(P, sel_items)
     if not gs:
@@ -92,8 +92,43 @@ def addTips(P, sel_items, defaults=None):
     return made, f'{lead} — now paint where it works (Ctrl — erase, Shift — smooth)'
 
 
+def addEvens(P, sel_items, defaults=None):
+    """port of addEvens (hair-modeler.clean.html:10732, 1.0.3), the data part: an Even loops in every target group (one
+    per group: an existing one takes the strength of the defaults, its mask stays). Returns (made, toast); made None:
+    nothing to do. The original then switches its brush on (evenBrushFor) and sets S.surfDirty (the caller touches the
+    locks; nothing is painted yet, so nothing changes)."""
+    gs = capTargets(P, sel_items)
+    if not gs:
+        return None, NO_TARGET
+    made = []; df = defaults or EVEN_DEFAULTS
+    for g in gs:
+        old = next((x for x in (P.items.get(i) for i in g.children) if x and x.type == 'even'), None)
+        if old:
+            old.p = {**old.p, 'str': df['str']}; made.append(old); continue
+        k = addItem(P, 'even', g.id, {'p': dict(df)})
+        k.name = f'Even loops ({g.name})'; made.append(k)
+    lead = f'{len(made)} Even loops modifiers' if len(made) > 1 else made[0].name
+    return made, f'{lead} — now paint where the loops are evened out (Ctrl — erase, Shift — smooth)'
+
+
+def addShells(P, sel_items):
+    """port of addShells (hair-modeler.clean.html:10870, 1.0.3), the data part: a new Proxy shell in every target group
+    (a group can hold several: one per stretch), not converted, nothing painted. Returns (made, toast); made None:
+    nothing to do. (The original then switches its brush on.)"""
+    gs = capTargets(P, sel_items)
+    if not gs:
+        return None, NO_TARGET
+    made = []
+    for g in gs:
+        n = sum(1 for x in (P.items.get(i) for i in g.children) if x and x.type == 'shell')
+        k = addItem(P, 'shell', g.id, {'p': dict(SHELL_DEFAULTS), 'baked': False, 'mask': None})
+        k.name = f'Proxy shell {n + 1} ({g.name})'; made.append(k)
+    lead = f'{len(made)} proxy shells' if len(made) > 1 else made[0].name
+    return made, f'{lead} — paint the stretch (Ctrl — erase, Shift — lasso, Shift+Ctrl — lasso erase), then Convert to shell'
+
+
 def addSkin(P, sel_items, defaults=None):
-    """port of addSkin (9514): Fill holes in every target group that has none. Returns (made, toast): made None with
+    """port of addSkin (13619): Fill holes in every target group that has none. Returns (made, toast): made None with
     the toast when nothing was made; no toast otherwise (the original says nothing)."""
     gs = capTargets(P, sel_items)
     if not gs:
@@ -123,7 +158,7 @@ def _key(p, tol):
 
 
 def skinCandidates(P, k, T):
-    """port of skinCandidates (9347): the walls Fill holes would make in its group — the holes (closed outlines of curve
+    """port of skinCandidates (13452): the walls Fill holes would make in its group — the holes (closed outlines of curve
     pieces between welded anchors) and, with `open`, a wall between each open edge curve and its nearest neighbour —
     where no wall of the group covers and not inside a closed lock. Returns [{'kind': 'hole', 'X', 'Y', 'a', 'b'} |
     {'kind': 'pair', 'ca', 'cb', 'a', 'b'}]: X / Y the two anchor lists of a hole's outline, ca / cb the two curves of a
@@ -169,7 +204,7 @@ def skinCandidates(P, k, T):
         widths.append(pos[rh * M].distanceTo(pos[rh * M + M - 1]))
     widths.sort()
     wRef = widths[len(widths) >> 1] if widths else 3 * h
-    closed = [G for G in (lockGrid(P, w, T) for w in lockGroups(wallsOf(walls))) if G]
+    closed = [G for G in (lockGrid(P, w, T) for w in lockGroups(P, wallsOf(walls))) if G]
 
     def inside(p):
         for G in closed:
@@ -338,7 +373,7 @@ def skinCandidates(P, k, T):
 
 
 def skinPreview(P, k, T):
-    """the data part of rebuildSkins (9461) for one Fill holes: k.cands set (the panel counts them) and the preview's
+    """the data part of rebuildSkins (13566) for one Fill holes: k.cands set (the panel counts them) and the preview's
     strips as {pos, faces} (quads between the two point rows of each candidate), None without a candidate"""
     k.cands = skinCandidates(P, k, T) if k.visible else []
     pos = []; faces = []
@@ -352,13 +387,13 @@ def skinPreview(P, k, T):
 
 
 def capPreview(P, k, T):
-    """the data part of rebuildCaps (9526) for one cap: k.srcSurfs (the walls of the locks it closes) and its fill and
+    """the data part of rebuildCaps (13631) for one cap: k.srcSurfs (the walls of the locks it closes) and its fill and
     bevel rings as {pos, faces} (capGrid's capFaces on each closed lock), None when it closes nothing"""
     parts = []; k.srcSurfs = []
     g = P.items.get(k.parent)
     if g and g.type == 'group' and k.visible:
         surfs = [s for s in collect(P, g.id, set(), ['surface']) if capOf(P, s) is k]
-        for walls in lockGroups(wallsOf(surfs)):
+        for walls in lockGroups(P, wallsOf(surfs)):
             lg = lockGrid(P, walls, T); c = capGrid(lg, k.p) if lg else None
             for w in walls:
                 k.srcSurfs.append(w.id)
@@ -373,8 +408,8 @@ def capPreview(P, k, T):
 
 
 def convertSkin(P, k, T=None):
-    """port of convertSkin (9474): the previewed walls become NURBS walls — a pair, a wall between its two curves; a
-    hole, two junction curves along its outline ("Hole Curve N") and a wall between them. `T`: the row tables of the
+    """port of convertSkin (13579): the previewed walls become NURBS walls — a pair, a wall between its two curves; a
+    hole, two junction curves along its outline ("HC1", "HC2"…, 1.0.2) and a wall between them. `T`: the row tables of the
     current state (buildRowTables after the dirty curves are rebuilt; built here when None). Returns (made, toast):
     made None with the toast when there is nothing to fill. Every curve is marked dirty, as the original does (the
     sampling memo gives the unchanged ones back as they were)."""
@@ -397,7 +432,8 @@ def convertSkin(P, k, T=None):
             continue
 
         def mk(lst):
-            cv = makeCurve(P, g.id); cv.anchors = lst; cv.junc = True; cv.name = 'Hole ' + cv.name
+            from .groups import serviceName
+            cv = makeCurve(P, g.id); cv.anchors = lst; cv.junc = True; cv.name = serviceName(P, 'HC')   # 1.0.2 (convertSkin, 12005)
             return cv
         x = mk(c['X']); y = mk(c['Y'])
         made.append(addItem(P, 'surface', g.id, {'a': x.id, 'b': y.id, 'dirty': True, 'p': {'segs': 1, 'bulge': bulge, 'flip': False}}))

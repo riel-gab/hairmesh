@@ -11,8 +11,10 @@ nothing happened, the mesh came out exactly over the live walls"): a pending mes
 conversion converted are hidden by it (the original's startConversion), and the tool draws a banner at the top of the
 viewport (banner, drawn by draw.py).
 
-While a conversion is pending, every edit rebuilds the pending meshes (the original's regenConversion), but only the
-ones whose signature changed (conversion.meshSignature over the grid revisions of live.py): follow_conversion."""
+While a conversion is pending, every edit rebuilds the pending meshes, from the curves settled, but only the ones whose
+signature changed (conversion.meshSignature over the grid revisions of live.py): follow_conversion. A declared
+difference (docs/features-adicionadas.md, 3.7): the original's regenConversion runs at the end of some ops only, before
+the frame rebuilds the curves the op left dirty, and not at all after others."""
 import json
 import weakref
 import time
@@ -156,7 +158,13 @@ def sync(context, root, P, commit=True):
             pend = bool(m.pending)
             if ob.get('hairmesh_pending') != pend:
                 mat = _material(MAT_PREVIEW, COLOR_PREVIEW) if pend else _material(MAT_MESH, COLOR_MESH)
-                ob.data.materials.clear(); ob.data.materials.append(mat)
+                mats = ob.data.materials
+                if pend or all(s is None or s.get('hairmesh_material') for s in mats):
+                    mats.clear(); mats.append(mat)
+                else:                                               # (lot 1.1d: the materials the user gave stay; only the orange one goes)
+                    for k, s in enumerate(mats):
+                        if s is not None and s.name == MAT_PREVIEW and s.get('hairmesh_material'):
+                            mats[k] = mat
                 ob.show_wire = pend
                 ob.hide_select = pend                               # a preview is not a deliverable yet
                 ob['hairmesh_pending'] = pend
@@ -181,10 +189,36 @@ def sync(context, root, P, commit=True):
     if root.get(MADE_KEY, '[]') != now:
         root[MADE_KEY] = now
     _purge_data()
-    for name in (MAT_PREVIEW, MAT_MESH):                            # (the orange one once everything is confirmed: nothing left over)
-        mat = bpy.data.materials.get(name)
-        if mat is not None and mat.get('hairmesh_material') and mat.users == 0:
-            bpy.data.materials.remove(mat)
+
+
+def adopt(context, root, P, pairs):
+    """lot 1.1d (item 4): at Confirm, a pending mesh item takes the object of the confirmed mesh it replaces
+    ({pending id: confirmed id}, conversion.adoptions) — the modifiers, the materials, the name and the collection the
+    user gave it stay, and the next sync refills it with the new item's geometry (_fill: the token no longer matches;
+    the geometry is new, so shape keys go, and what lives on the old vertices — UV maps, vertex groups — is lost).
+    The preview object goes. Called inside the Confirm operator, before live.update. The new item may be another
+    group's (a sub-group's mesh replaced by its parent's): the name follows it unless the user gave one (hairmesh_model_name
+    is the replaced item's), and the object moves to the new group's collection unless the user put it in another"""
+    from .convert_op import collection_of_group
+    existing = mesh_objects(root)
+    root_col = next((c for c in bpy.data.collections if c.get('hairmesh_root') == root.name), None) or context.scene.collection
+    for new_id, old_id in pairs.items():
+        old, new = existing.get(old_id), existing.get(new_id)
+        if old is None or new is None or new_id not in P.items:
+            continue
+        _remove(new)
+        old['hairmesh_id'] = new_id
+        old['hairmesh_token'] = ''                                  # (MADE_KEY: the new id is there since the preview; sync drops the old one)
+        if old.data is not None and old.data.shape_keys is not None:
+            old.shape_key_clear()                                   # (keys of the old vertices: the new geometry has other ones)
+        m = P.items[new_id]
+        if old.name != old.get('hairmesh_obname'):
+            old['hairmesh_model_name'] = m.name                     # (a name the user gave stays: sync renames only an item renamed in the model)
+        gid = m.parent if m.parent is not None else -1
+        if old.get('hairmesh_group_id', -1) != gid:
+            ours = collection_of_group(root_col, old.get('hairmesh_group_id', -1) if old.get('hairmesh_group_id', -1) != -1 else None)
+            if [c.name for c in old.users_collection] != [ours.name]:
+                old['hairmesh_group_id'] = gid                      # (the user's collection: sync leaves it there)
 
 
 def deleted_by_user(root, P, existing=None):
@@ -211,6 +245,12 @@ def deleted_by_user(root, P, existing=None):
 def _purge_data():
     for me in [me for me in bpy.data.meshes if me.users == 0 and me.get('hairmesh_data')]:
         bpy.data.meshes.remove(me)                                  # (the data of an object Blender's delete removed)
+    for name in (MAT_PREVIEW, MAT_MESH):                            # (the orange one once everything is confirmed; the grey one once Blender's delete took the
+        mat = bpy.data.materials.get(name)                          # last confirmed mesh and deleted_by_user purged its data: seed 2 of the stress)
+        if mat is not None and mat.get('hairmesh_material') and mat.users == 0:
+            bpy.data.materials.remove(mat)
+    from .live import purge_rib_material
+    purge_rib_material()                                            # (1.1f: the ribbons' one, when Blender's delete took the last live mesh holding it)
 
 
 def object_name(P, m, names=None):
@@ -262,10 +302,13 @@ def remember(root, P, ms):
     sigs = signatures(root, P)
     recent = _recent.setdefault(root.name, {})
     made = st.get('baked') or {}
+    fps = st.setdefault('mesh_fp', {})
     for m in ms:
         made.pop(m.token, None)                                     # (a build gave it: what was baked, or came in a file, has its signature from now on)
+        (st.get('baked_fp') or {}).pop(m.token, None)
         sig = CONV.meshSignature(P, m, rev)
         sigs[m.token] = sig
+        fps[m.token] = _content_signature(st, P, m)
         if sig is not None and m.data is not None:
             k = _recent_key(m, sig)
             recent.pop(k, None)
@@ -309,6 +352,28 @@ def baked(root, P):
         if v == BAKING:
             m = by.get(tok)
             b[tok] = CONV.meshSignature(P, m, rev) if m is not None else None
+            st.setdefault('baked_fp', {})[tok] = _content_signature(st, P, m) if m is not None else None
+
+
+def _content_signature(st, P, m):
+    """lot 1.1e (issue #4): the signature of mesh m with each wall's grid named by what it was computed from (live.py's
+    grid_fp: the fingerprint of its lock's tables and the wall itself) instead of its revision. The revisions are
+    counters of this session: Ctrl+Z then Ctrl+Shift+Z computes the grids of the walls in between again, equal, under
+    new numbers, and the signature by revision no longer matches although nothing of the walls changed. None when a
+    wall's grid has no fingerprint (its lock built without the history): unknown"""
+    return CONV.meshSignature(P, m, st.get('grid_fp') or {})
+
+
+def _walls_changed(st, P, m, then, then_fp):
+    """(changed, the signature by revision now): whether what mesh m is built from differs from when the signatures
+    `then` (by revision) and `then_fp` (by content) were taken — the same revisions, or else the same content, is
+    unchanged; neither known, or both differing, is changed"""
+    now = CONV.meshSignature(P, m, st.get('grid_rev') or {})
+    if then is not None and now is not None and then == now:
+        return False, now
+    if then_fp is not None and then_fp == _content_signature(st, P, m):
+        return False, now
+    return True, now
 
 
 def changed(root, P, m):
@@ -320,35 +385,38 @@ def changed(root, P, m):
     if f is not None and f[0]() is P and f[1] == (P.rev, P.gen) and m.token in f[2]:
         return False
     st = session.state(root, P)
-    rev = st.get('grid_rev') or {}
     b = st.get('baked')
     if b and m.token in b:
         v = b[m.token]
         if v == BAKING:
             return False
-        now = CONV.meshSignature(P, m, rev)
-        return v is None or now is None or v != now
-    old = signatures(root, P).get(m.token)
-    now = CONV.meshSignature(P, m, rev)
-    return old is None or now is None or old != now
+        differs, now = _walls_changed(st, P, m, v, (st.get('baked_fp') or {}).get(m.token))
+        if not differs and now is not None:
+            b[m.token] = now                                        # (the same walls under new revisions: compared by number from here on)
+        return differs
+    sigs = signatures(root, P)
+    differs, now = _walls_changed(st, P, m, sigs.get(m.token), (st.get('mesh_fp') or {}).get(m.token))
+    if not differs and now is not None:
+        sigs[m.token] = now
+    return differs
 
 
 def out_of_date(root, P):
     """ours: the confirmed meshes an edit has touched since they were made (known only for the meshes made or
     checked in this session: the others are not claimed)"""
-    rev = session.state(root, P).get('grid_rev') or {}
+    st = session.state(root, P)
     sigs = signatures(root, P)
     out = []
     for m in CONV.meshes(P):
         if m.pending or sigs.get(m.token) is None:
             continue
-        if CONV.meshSignature(P, m, rev) != sigs[m.token]:
+        if _walls_changed(st, P, m, sigs[m.token], (st.get('mesh_fp') or {}).get(m.token))[0]:
             out.append(m)
     return out
 
 
 def follow_conversion(context, root, P, save=True):
-    """regenConversion (10026) after an edit, for the pending meshes whose signature changed; writes the project when
+    """regenConversion (14259) after an edit, for the pending meshes whose signature changed; writes the project when
     one was rebuilt and `save` (live.update's commit). Returns the meshes rebuilt."""
     if not P.conv:
         return []

@@ -26,13 +26,13 @@ from mathutils import Matrix, Vector
 from ..core import curves as CM, groups as G, scissors as SC
 from ..core.raycast import Raycaster
 from ..core.selection import Selection
-from . import clicks, draw as drawmod, live, meshes, modal_keys, owner, pick, select, session
+from . import draw as drawmod, live, meshes, modal_keys, owner, pick, select, session
 from .coords import to_blender
 from .ops_draw import NAV_EVENTS
 from .ops_select import PICK_CURVE_PX, View
 from .props import CUT_MODES
 
-CLICK_PX = 5                                                        # a stroke this short is a click: it picks a curve (6012)
+CLICK_PX = 5                                                        # a stroke this short is a click: it picks a curve (8836)
 MODES = (('SPLIT', 'Split into Two Curves', 'Each curve crossed is split in two at the crossing (the shape kept)', 'SCULPTMODE_HLT', 0),
          ('UP', 'Split, Delete the Upper Part', 'Split, then delete the part whose free end is higher', 'TRIA_UP', 1),
          ('DOWN', 'Split, Delete the Lower Part', 'Split, then delete the part whose free end is lower', 'TRIA_DOWN', 2))
@@ -42,7 +42,7 @@ NO_WALL = 'Click the wall to cut'
 HELP_CURVE = '\n'.join(('Click or RMB on a curve: pick it (Shift + click adds more; or select curves before).',
                         'Drag a line across it with LMB: the pie opens.',
                         'The pie: split it in two, or split it and delete the upper / lower part (the part whose free end is higher / lower).',
-                        'The shape is kept; the walls of the cut curves are deleted (make new ones from the pieces).'))
+                        'The shape is kept. A wall between two cut curves is cut too (cut the whole lock: it stays a lock); a wall with only one of its curves cut is deleted.'))
 HELP_SURFACE = '\n'.join(('Click the wall to cut.',
                           "Click one of its curves where the cut starts (on an anchor, or a new anchor goes in keeping the curve's shape).",
                           'Click on the wall: add anchors.',
@@ -50,6 +50,13 @@ HELP_SURFACE = '\n'.join(('Click the wall to cut.',
                           'Drag an anchor: move it. RMB on the cut: insert one. Double click: delete one.',
                           'Enter (or Shift + RMB > Cut): split the wall in two along a new curve.',
                           'Backspace: remove the last anchor while placing. Esc: cancel.'))
+HELP_SPLIT = '\n'.join(('Click a curve: from there to its tip it splits into two branches, a new curve sharing its trunk (a Y).',
+                        'Near an anchor the split starts at that anchor; elsewhere a new one goes in, the shape kept.',
+                        'Hovering a curve shows both branches. The ends move apart by the Spread: the circle at the cursor.',
+                        'Spread: [ ] or F (move, then click), Ctrl + right drag, or the field in the panel.',
+                        'A wall on one side stays with the curve, a wall on the other side goes over to the new branch.',
+                        'RMB on a curve: pick it. Esc: back to Select.'))
+HELP = {'CURVE': HELP_CURVE, 'SURFACE': HELP_SURFACE, 'SPLIT': HELP_SPLIT}
 
 pending = None                                                      # a stroke's hits waiting for the pie: {'root', 'hits': [(curve id, seg, u)], 'title'}
 CURVE_KEYS = ((('LMB Drag',), 'Cut the Selected Curves'), (('RMB',), 'Pick a Curve'), (('Shift',), 'Add'), (('Esc',), 'Cancel'))
@@ -142,7 +149,7 @@ class HAIRMESH_OT_cut_dismiss(bpy.types.Operator):
 
 
 class HAIRMESH_OT_cut_curves(bpy.types.Operator):
-    """Cut the curves the Scissors' line crossed: each is split in two at the crossing, the shape kept (curves welded along the cut go with it); or split and delete the upper / lower part. The walls of the cut curves are deleted"""
+    """Cut the curves the Scissors' line crossed: each is split in two at the crossing, the shape kept (curves welded along the cut go with it); or split and delete the upper / lower part. A wall between two cut curves is cut too; a wall with only one of its curves cut is deleted"""
     bl_idname = 'hairmesh.cut_curves'
     bl_label = 'Cut HairMesh Curves'
     bl_options = {'REGISTER', 'UNDO'}
@@ -247,7 +254,7 @@ class HAIRMESH_OT_scissors(bpy.types.Operator):
         v = self.view; P = v.P; hm = context.scene.hairmesh
         project = pick.region_projector(context.region, context.region_data, v.root.matrix_world)   # (the view as it is now: the stroke may have been navigated through)
         sel = select.load(hm).prune(P)
-        if hypot(x - self.x0, y - self.y0) <= v.px(CLICK_PX):      # a click picks a curve (6012)
+        if hypot(x - self.x0, y - self.y0) <= v.px(CLICK_PX):      # a click picks a curve (8836)
             ch = pick.pick_curve(v.curves(), project, x, y, v.px(PICK_CURVE_PX))
             if ch is None:
                 return {'CANCELLED'}
@@ -287,14 +294,14 @@ def _world(root, p):
 
 
 def view_cut(root, P, cut):
-    """drawSurfCut (5344): the cut's line and dots for the draw handler (world space), the HUD text"""
+    """drawSurfCut (8091): the cut's line and dots for the draw handler (world space), the HUD text"""
     line, dots, hud = SC.surfCutView(P, cut)
     drawmod.wall_cut = ([_world(root, p) for p in line], [(_world(root, p), kind) for p, kind in dots])
     return hud
 
 
 def start_cut(context, root, P, wid, report=None):
-    """startSurfCut (5334): the cut begins on wall `wid` (it alone and its two curves count from then on), selected"""
+    """startSurfCut (8081): the cut begins on wall `wid` (it alone and its two curves count from then on), selected"""
     global cutting
     sf = P.items.get(wid)
     if sf is None or sf.type != 'surface':
@@ -319,7 +326,7 @@ def end_cut():
 def cut_of(context):
     """the cut in progress of this scene's project, or None. A cut whose model is no longer the one in use (an undo
     — from the D's Undo too —, a reload) or whose wall went (deleted from a menu meanwhile) is dropped, as drawSurfCut
-    (5352) and restore (1221) drop it."""
+    (5352) and restore (1358) drop it."""
     if cutting is None:
         return None
     root = session.find_root(context)
@@ -337,7 +344,7 @@ def cut_of(context):
 
 
 def apply_cut(context, root, P, cut, report, keep=False):
-    """Enter (applySurfCut, 5386): the new curve along the cut, the wall split in two; one undo step (the caller's).
+    """Enter (applySurfCut, 8133): the new curve along the cut, the wall split in two; one undo step (the caller's).
     Refused (cutBuild's text), the cut stays to be edited when `keep` (the session: the original only toasts), unless
     its ends already went in (the model then is the text's again, forget_model, and the cut goes)."""
     CM.rebuild_dirty(P)
@@ -352,6 +359,8 @@ def apply_cut(context, root, P, cut, report, keep=False):
         return {'CANCELLED'}
     end_cut()
     select.store(context.scene.hairmesh, Selection([c.id], []))
+    from . import tool
+    tool.show_selection(context)                                    # (the new curve's sheet in sight under the Scissors page)
     session.save_project(root, P)
     live.update(context, root)                                      # (no live.touch: as for cut_curves — the new curve, the walls made / gone, the curves resampled)
     select.redraw(context)
@@ -386,6 +395,32 @@ def _hit_on(root, P, cut, region, rv3d, x, y):
     return hits[0]['point'] if hits else None
 
 
+_launch = {'popup': None}                                           # the pop-up of the D button that starts a cut (set_cut_mode): its context's region_popup, which the override of the invoke may drop
+
+
+class _Press:
+    """a left press the session passed on to the tool keymap, as _click reads it (its type, value and region pixels):
+    what the session clicks itself when the press never comes back through the keymap"""
+    __slots__ = ('type', 'value', 'mouse_region_x', 'mouse_region_y')
+
+    def __init__(self, event):
+        self.type = event.type; self.value = 'PRESS'
+        self.mouse_region_x = event.mouse_region_x; self.mouse_region_y = event.mouse_region_y
+
+
+def keymap_takes_clicks(context):
+    """the tool keymap's left-button item of hairmesh.wall_cut is on in the user keyconfig, on a plain left press
+    (Tool Shortcuts on, the item neither removed, nor turned off, nor moved to another key or modifier): the presses
+    the session passes on come back through it"""
+    from . import keymaps
+    kc = context.window_manager.keyconfigs.user
+    km = kc.keymaps.get(keymaps.TOOL_KM) if kc is not None else None
+    return km is not None and any(
+        k.idname == 'hairmesh.wall_cut' and k.active and k.type == 'LEFTMOUSE' and k.value == 'PRESS'
+        and k.key_modifier == 'NONE' and (k.any or all(getattr(k, m) != 1 for m in ('ctrl', 'shift', 'alt', 'oskey')))
+        for k in km.keymap_items)
+
+
 class HAIRMESH_OT_wall_cut(bpy.types.Operator):
     """Click a wall, then put the cut on it like a curve — from one of its curves, over the wall, to its other curve; Enter splits the wall in two along a new curve"""
     bl_idname = 'hairmesh.wall_cut'
@@ -406,14 +441,22 @@ class HAIRMESH_OT_wall_cut(bpy.types.Operator):
         if v is None:
             return {'PASS_THROUGH'}
         if self.wall < 0 and cut_of(context) is not None and cutting.get('op') is not None:
-            # a click the session let pass (over a panel of the sidebar or the toolbar with Region Overlap) that Blender
-            # gave to the viewport after all: it is the cut's click, not a new cut
+            # a left click while a cut is on: the session passes every one on to the tool keymap (this item and its
+            # DOUBLE_CLICK twin, keymaps.DOUBLE_PRESS), so a double click arrives as Blender pairs it; the same for a
+            # click over a panel of the sidebar or the toolbar with Region Overlap that Blender gave to the viewport.
+            # It is the cut's click, not a new cut
             cutting['op']._click(context, event)
             return {'CANCELLED'}
         if event.type == 'RIGHTMOUSE' and self.wall < 0:
             return {'CANCELLED'}                                    # (no wall yet: RMB does nothing, 5434)
+        from . import tool
+        if self.wall >= 0 and not tool.activate(context, self.report):
+            # a button started it (Scissors > Wall with one wall selected, from the N panel, the D or a menu, with
+            # another tool on): the cut's left clicks come through the tool keymap, so the tool goes on first
+            return {'CANCELLED'}
         self.view = v; self.root = v.root; self.P = v.P; self.drag = None
-        self.clicks = clicks.DoubleClick()                          # (the double click that deletes a cut's anchor: a modal never sees DOUBLE_CLICK, clicks.py)
+        self.press = None                                           # (a left press passed on to the keymap, until it comes back: _click)
+        self.popup = getattr(context, 'region_popup', None) or _launch['popup']   # (the D that started it: this modal sits above it, and what is over it is the D's, as the brush's over_popup)
         wid = self.wall if self.wall >= 0 else pick.wall_under(context, v.root, event.mouse_region_x, event.mouse_region_y, head=False)   # (pickObjects over the shown walls alone, 5434)
         if wid is None:
             self.report({'INFO'}, NO_WALL)
@@ -449,14 +492,18 @@ class HAIRMESH_OT_wall_cut(bpy.types.Operator):
         end_cut()                                                   # (the modal killed: a file loaded, the window closed)
 
     def _click(self, context, event, project=None):
-        """surfCutDown (5429) for a press or a double click in the viewport, and what follows from it"""
+        """surfCutDown (8187) for a press or a double click in the viewport, and what follows from it. The left
+        clicks come from the tool keymap (the modal passes them on: a modal handler never sees DOUBLE_CLICK), so the
+        double click is Blender's own, paired by its event clock, its drag threshold and Preferences > Input >
+        Double Click Speed"""
+        self.press = None                                           # (the press came back)
         x, y = event.mouse_region_x, event.mouse_region_y
         P = self.P; cut = self.cut; v = self.view
         if project is None:
             project = pick.region_projector(context.region, context.region_data, self.root.matrix_world)
         hit = _hit_on(self.root, P, cut, context.region, context.region_data, x, y)
         other = pick.wall_under(context, self.root, x, y, head=False)
-        double = event.type == 'LEFTMOUSE' and self.clicks.press(event)   # (e.detail >= 2: paired here, clicks.py)
+        double = event.type == 'LEFTMOUSE' and event.value == 'DOUBLE_CLICK'   # (e.detail >= 2)
         res = SC.surfCutDown(P, cut, (x, y), 0 if event.type == 'LEFTMOUSE' else 2, double, project, hit, other, v.ui)
         if res is None:
             return
@@ -482,6 +529,13 @@ class HAIRMESH_OT_wall_cut(bpy.types.Operator):
         mx, my = event.mouse_x, event.mouse_y
         if not (r.x <= mx < r.x + r.width and r.y <= my < r.y + r.height):
             return True
+        if self.popup is not None:                                  # (the D that started the cut, still open: its buttons and sliders)
+            from .brush import popup_rect
+            pr = popup_rect(context, self.popup)
+            if pr is None:
+                self.popup = None
+            elif pr[0] <= mx < pr[0] + pr[2] and pr[1] <= my < pr[1] + pr[3]:
+                return True
         for o in context.area.regions if context.area is not None else ():
             if o.type in ('TOOLS', 'UI', 'HEADER', 'TOOL_HEADER', 'ASSET_SHELF', 'ASSET_SHELF_HEADER') and o.width > 1 and o.height > 1 \
                     and o.x <= mx < o.x + o.width and o.y <= my < o.y + o.height:
@@ -494,9 +548,18 @@ class HAIRMESH_OT_wall_cut(bpy.types.Operator):
         if not alive:                                               # applied or cancelled elsewhere (the pie, the D menu), undone, its wall gone (the model checked at every event but a move: cut_of reads the project's text)
             self._leave(context)
             return {'CANCELLED'}
-        if hm.subtool != 'SCISSORS' or hm.cut_mode != 'SURFACE' or context.mode != 'OBJECT':   # another sub-tool or mode (setTool, 4714)
+        from . import tool
+        if hm.subtool != 'SCISSORS' or hm.cut_mode != 'SURFACE' or context.mode != 'OBJECT' \
+                or not tool.is_active(context) or not owner.visible(context):   # another sub-tool or mode (setTool, 6724); another tool, the add-on filtered out: the tool keymap that carries the clicks is off
             end_cut(); self._leave(context)
             return {'CANCELLED'}
+        if self.press is not None and not (event.type == 'LEFTMOUSE' and event.value == 'PRESS'):
+            # a press passed on that never came back through the tool keymap: a handler under this one took it (a
+            # click outside the D closes it and goes no further) — the session clicks it now, as a single click. Not
+            # on a left press: a DOUBLE_CLICK nobody took comes back down the window's modal handlers as a PRESS
+            # before the tool keymap sees it (wm_handlers_do), and a press always has its release before the next one
+            p, self.press = self.press, None
+            self._click(context, p)
         t = event.type; val = event.value
         if DEBUG_EVENTS is not None and t not in ('TIMER', 'TIMER_REPORT', 'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'):
             DEBUG_EVENTS.append((t, val, event.shift))
@@ -509,10 +572,7 @@ class HAIRMESH_OT_wall_cut(bpy.types.Operator):
         if t in LEAD_GONE or t.startswith('NDOF') or (t.startswith('NUMPAD_') and val == 'PRESS'):
             self._drop_lead(context)                                # (the view moves, or the window loses the focus: the dot is no longer under the cursor until the next move)
         project = pick.region_projector(context.region, context.region_data, self.root.matrix_world)   # (the view as it is now: navigation passes through)
-        if t not in {'LEFTMOUSE', 'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
-            self.clicks.other(event)                                # (another button or key: no double click across it)
         if t == 'MOUSEMOVE':
-            self.clicks.moved(event)                                # (an anchor dragged: no double click after it)
             hit = _hit_on(self.root, P, cut, context.region, context.region_data, x, y)
             if self.drag is not None:
                 if SC.surfCutPtMove(P, cut, self.drag, (x, y), project, hit, v.ui):
@@ -522,14 +582,24 @@ class HAIRMESH_OT_wall_cut(bpy.types.Operator):
             return {'RUNNING_MODAL'}
         if t == 'RIGHTMOUSE' and val == 'PRESS' and event.shift:
             return {'PASS_THROUGH'}                                 # the context pie (the tool's Shift+RMB): while cutting it holds only the cut (tool.pie_items, 7892)
-        if t in {'LEFTMOUSE', 'RIGHTMOUSE'} and val in {'PRESS', 'DOUBLE_CLICK'}:
+        if t == 'LEFTMOUSE' and val == 'PRESS':
+            if event.alt or event.oskey:
+                return {'PASS_THROUGH'}
+            if not keymap_takes_clicks(context):
+                self._click(context, event, project)                # (the tool's left-button item off or edited: the session takes the press, a double click cannot be told)
+                return {'RUNNING_MODAL'}
+            # (Blender hands a modal its DOUBLE_CLICK as a PRESS and gives it back its DOUBLE_CLICK when the modal
+            # passes it on: the tool keymap's hairmesh.wall_cut takes either and calls _click, so the second press
+            # of a double click reaches surfCutDown as one)
+            self.press = _Press(event)
+            return {'PASS_THROUGH'}
+        if t == 'RIGHTMOUSE' and val in {'PRESS', 'DOUBLE_CLICK'}:
             if event.alt or event.oskey:
                 return {'PASS_THROUGH'}
             self._click(context, event, project)
             return {'RUNNING_MODAL'}
         if t == 'LEFTMOUSE' and val == 'RELEASE':
             self.drag = None
-            self.clicks.release(event)
             return {'RUNNING_MODAL'}
         if t in {'RET', 'NUMPAD_ENTER'} and val == 'PRESS' and self.drag is None:
             why = not_ready(cut)
@@ -558,7 +628,7 @@ class HAIRMESH_OT_wall_cut(bpy.types.Operator):
 
 
 def wall_cut_pie_items(context):
-    """openCutPie (7935), pure, as the slots of the context pie (W, E, S, N): Cut — or what is missing, as a line that
+    """openCutPie (11739), pure, as the slots of the context pie (W, E, S, N): Cut — or what is missing, as a line that
     does nothing —, Cancel the cut, Remove the last anchor while placing, the title"""
     cut = cut_of(context)
     if cut is None:
@@ -667,7 +737,7 @@ class HAIRMESH_OT_wall_cut_cancel(bpy.types.Operator):
 
 
 class HAIRMESH_OT_set_cut_mode(bpy.types.Operator):
-    """Set the Scissors mode: cut curves with a line, or cut a wall in two along a curve placed on it (with one wall selected, the cut starts on it)"""
+    """Set the Scissors mode: cut curves with a line, cut a wall in two along a curve placed on it (with one wall selected, the cut starts on it), or split a curve's end into two branches with a click"""
     bl_idname = 'hairmesh.set_cut_mode'
     bl_label = 'Scissors Mode'
     bl_options = {'REGISTER'}
@@ -682,6 +752,8 @@ class HAIRMESH_OT_set_cut_mode(bpy.types.Operator):
         hm = context.scene.hairmesh
         hm.subtool = 'SCISSORS'
         hm.cut_mode = self.mode
+        from . import ops_split
+        ops_split.follow(context)                                   # (Split Ends: its session, here and not at the next draw — a button of the D: the session has to know that pop-up)
         if self.mode != 'SURFACE':
             end_cut()
         elif cut_of(context) is None:
@@ -693,19 +765,31 @@ class HAIRMESH_OT_set_cut_mode(bpy.types.Operator):
                 area = next((a for a in (win.screen.areas if win else ()) if a.type == 'VIEW_3D'), None)
                 region = next((r for r in area.regions if r.type == 'WINDOW'), None) if area else None
                 if region is not None:
-                    with context.temp_override(window=win, area=area, region=region):
-                        bpy.ops.hairmesh.wall_cut('INVOKE_DEFAULT', wall=walls[0])
+                    _launch['popup'] = getattr(context, 'region_popup', None)   # (the D of this button, if any)
+                    try:
+                        with context.temp_override(window=win, area=area, region=region):
+                            bpy.ops.hairmesh.wall_cut('INVOKE_DEFAULT', wall=walls[0])
+                    finally:
+                        _launch['popup'] = None
         select.redraw(context)
         return {'FINISHED'}
 
 
+def mode_items(hm):
+    """the Scissors' modes as buttons, one per CUT_MODES item (the panel, the D, the tool header: 11383-11395)"""
+    return [('op', 'hairmesh.set_cut_mode', label, icon, {'mode': key}, {'depress': hm.cut_mode == key}) for key, label, _d, icon, _n in CUT_MODES]
+
+
 def scissors_rows(context):
-    """the Scissors' panel (8974-8997) as rows (pure): the two modes; while cutting, what is cut, Cut (dimmed with what
-    is missing) and Cancel; the help of the mode (HELP_CURVE / HELP_SURFACE) is the "?" of the D's tab column and of
-    the N panel's header (item 9 of the lot after 4.8: tool.how_to)"""
+    """the Scissors' panel (11383-11420) as rows (pure): the modes; Curve: what is cut; Wall, while cutting: what is
+    cut, Cut (dimmed with what is missing) and Cancel; Split Ends: the Spread, its name outside the field. The help of
+    the mode (HELP) is the "?" of the D's tab column and of the N panel's header (tool.how_to)"""
+    from .tool import GAP, align_fields, buttons, field
     hm = context.scene.hairmesh
-    rows = [[('op', 'hairmesh.set_cut_mode', 'Curve', 'CURVE_DATA', {'mode': 'CURVE'}, {'depress': hm.cut_mode == 'CURVE'}),
-             ('op', 'hairmesh.set_cut_mode', 'Wall', 'SURFACE_NSURFACE', {'mode': 'SURFACE'}, {'depress': hm.cut_mode == 'SURFACE'})]]
+    rows = [[buttons(context, mode_items(hm))]]                    # (the modes: a family, joined at the width of their texts)
+    if hm.cut_mode == 'SPLIT':
+        rows += [[GAP], [field('Spread', ('prop', 'split_spread', ''))]]   # (11409-11416; px, the circle at the cursor; G15: the modes and the value apart)
+        return align_fields(rows)
     if hm.cut_mode == 'CURVE':
         root, P, sel = select.current(context)
         sc = select.curves_of(P, sel) if P is not None else []
@@ -716,8 +800,8 @@ def scissors_rows(context):
     if cut is not None:
         why = not_ready(cut)
         label = f'Cut ({len(cut.build["mids"]) + 2} anchors)' if not why else 'Cut'
-        rows.append([('op', 'hairmesh.wall_cut_apply', label, 'SCULPTMODE_HLT', {}, {'active': why is None}),
-                     ('op', 'hairmesh.wall_cut_cancel', 'Cancel', 'X', {})])
+        rows.append([buttons(context, [('op', 'hairmesh.wall_cut_apply', label, 'SCULPTMODE_HLT', {}, {'active': why is None}),   # (Cut and Cancel: a family, joined)
+                                       ('op', 'hairmesh.wall_cut_cancel', 'Cancel', 'X', {})])])
         if why:
             rows.append([('text', why, 'BLANK1', {'active': False})])
     return rows
@@ -730,7 +814,7 @@ CLASSES = (HAIRMESH_MT_cut_pie, HAIRMESH_OT_cut_dismiss, HAIRMESH_OT_cut_curves,
 
 @persistent
 def _reset(*_a):
-    """an undo, a redo, a file loaded: the stroke waiting for its pie and the cut in progress go (restore 1221)"""
+    """an undo, a redo, a file loaded: the stroke waiting for its pie and the cut in progress go (restore 1358)"""
     global pending
     pending = None
     end_cut()

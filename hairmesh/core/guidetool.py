@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Phase 4.2: the Guides tool of the original (hair-modeler.clean.html:6187-6351, 1097-1131, 8843-8945, 9015-9024) —
 the data part, pure and bit for bit with the original (tests/test_guidetool_parity.py, harness --script ops
 guideStroke, guideProp, placeDisc, createDisc, discRadius, resetDisc, pencil).
@@ -12,7 +12,7 @@ guideStroke, guideProp, placeDisc, createDisc, discRadius, resetDisc, pencil).
   Pencil  Pencil / pencilAdd / finishPencil: a loop drawn on a plane closes into a 6-point disc.
 
 What needs the viewport (the projector of a screen point, the ray and what it hits) comes in as arguments: `screen(p)`
--> (x, y, z) | None (toScreen 5656), rays in the model's space, hit points already found. The selection is a
+-> (x, y, z) | None (toScreen 8414), rays in the model's space, hit points already found. The selection is a
 core.selection.Selection (S.sel / S.asel)."""
 from .duplicate import makeDisc, makeGuide
 from .fdlibm import cos, sin
@@ -28,7 +28,7 @@ PI = 3.141592653589793
 # ---------------- the line ----------------
 
 def strokeHit(c, A, B, screen):
-    # port of strokeHit (hair-modeler.clean.html:6189): where a screen-space stroke A -> B crosses curve c —
+    # port of strokeHit (hair-modeler.clean.html:9409): where a screen-space stroke A -> B crosses curve c —
     # {u: position along the stroke, t: arc fraction on c}, the crossing nearest the stroke's start
     if not c.arc or len(c.samples) < 2:
         return None
@@ -57,12 +57,12 @@ LINE_NONE_SEL = 'The line must cross at least two selected curves'
 
 
 def selectedCurves(P, sel):
-    # port of selectedCurves (7843): the selected items that are curves, in selection order
+    # port of selectedCurves (8837): the selected items that are curves, in selection order
     return [it for it in (P.items.get(i) for i in sel.items) if it is not None and it.type == 'curve']
 
 
 def createGuide(P, sel, A, B, screen, visible):
-    """port of createGuide (hair-modeler.clean.html:6336): the selected curves (or, with none selected, every visible
+    """port of createGuide (hair-modeler.clean.html:9558): the selected curves (or, with none selected, every visible
     hair curve) crossed by the stroke -> a new guide line; the curves stay selected and the guide becomes the active
     one. `visible(c)`: c.obj.visible. Returns (the guide or None, the toast); `sel` is changed in place (S.sel,
     S.asel). The caller marks the locks dirty (S.surfDirty: the curves guides.guideCurves names)."""
@@ -92,7 +92,7 @@ def createGuide(P, sel, A, B, screen, visible):
 
 
 def pickGuide(P, guides, x, y, screen, radius=7):
-    """port of pickGuide (5672): pickCurve over the guides shown (their samples: a line's points through its hits;
+    """port of pickGuide (8431): pickCurve over the guides shown (their samples: a line's points through its hits;
     a disc has none, it is picked by its surface), the nearest within `radius` px, or None"""
     best = None; bd = radius
     for g in guides:
@@ -122,11 +122,11 @@ def activateGuide(P, sel, g):
 ZONE_FULL = (0xa6 / 255.0, 0xff / 255.0, 0xc4 / 255.0)               # 0xa6ffc4: loops fully follow the guide
 ZONE_NONE = (0x17 / 255.0, 0x4f / 255.0, 0x2e / 255.0)               # 0x174f2e: towards the edge where Blend mixes them back
 ZONE_N = 48
-ZONE_SECONDS = 1.5                                                  # showZone (6210): the zone stays this long after a slider
+ZONE_SECONDS = 1.5                                                  # showZone (9430): the zone stays this long after a slider
 
 
 def zoneWeight(rad, blend, x):
-    # port of zoneWeight (hair-modeler.clean.html:6211): the guide's weight at distance x along the lock (as spineRows)
+    # port of zoneWeight (hair-modeler.clean.html:9431): the guide's weight at distance x along the lock (as spineRows)
     if rad <= 0 or x >= rad:
         return 0
     x0 = rad * (1 - clamp(blend, 0, 1))
@@ -175,7 +175,7 @@ DISC_PLACED = 'NURBS disc created — E / R / T move, rotate, transform it, the 
 
 
 def surfacePointChoice(hit_point, curve_point, plane_point):
-    """the order of surfacePoint (6271): what the click hits among pickables() (not discs, not the reference cube),
+    """the order of surfacePoint (9493): what the click hits among pickables() (not discs, not the reference cube),
     else the curve under it (pickCurve over the hair curves), else the plane through the pivot facing the camera"""
     if hit_point is not None:
         return hit_point.clone()
@@ -185,7 +185,7 @@ def surfacePointChoice(hit_point, curve_point, plane_point):
 
 
 def placeDisc(P, sel, Pt):
-    """port of placeDisc (6277): a horizontal ring around the head axis at the clicked height, sized so the clicked
+    """port of placeDisc (9499): a horizontal ring around the head axis at the clicked height, sized so the clicked
     hair lies between the inner and the outer ring. `Pt` = surfacePoint(m). Returns the disc (None without a point);
     the disc is the selection. The caller marks the locks dirty (S.surfDirty)."""
     if not Pt:
@@ -198,7 +198,7 @@ def placeDisc(P, sel, Pt):
 
 
 def createDiscButton(P, sel, visible):
-    """port of createDiscButton (6286): a disc around the selected curves (or all the visible hair, or the top of the
+    """port of createDiscButton (9508): a disc around the selected curves (or all the visible hair, or the top of the
     model) at their middle height. `visible(c)`: isVisible. The disc is the selection."""
     S = P.S
     cs = [c for c in selectedCurves(P, sel) if not c.ring and c.samples]
@@ -219,12 +219,12 @@ def createDiscButton(P, sel, visible):
 
 
 def discMinR(P):
-    # port of discMinR (1096)
+    # port of discMinR (1231)
     return P.S.scale * 0.002
 
 
 def setDiscRadius(P, g, which, r):
-    """port of setDiscRadius (hair-modeler.clean.html:1097): every point of the ring moves radially by the change, so
+    """port of setDiscRadius (hair-modeler.clean.html:1232): every point of the ring moves radially by the change, so
     hand deformations are kept; a ring never shrinks to nothing (a point there has no direction to grow back in), and
     one that already did takes the directions of the other ring's points. Returns the ring's anchors moved (the
     caller's markAnchorsDirty), or []."""
@@ -261,7 +261,7 @@ def clampedRadius(P, g, which, x):
 
 
 def resetDisc(P, g):
-    """port of resetDisc (hair-modeler.clean.html:1115): both rings back to circles of their radii in the disc's
+    """port of resetDisc (hair-modeler.clean.html:1250): both rings back to circles of their radii in the disc's
     plane, the first anchor's direction kept; smoothness 1, the frozen handles cleared. Returns the anchors moved."""
     t = resetTargets(P, g)
     if t is None:
@@ -304,7 +304,7 @@ class Pencil:
 
 
 def pencilAdd(pc, m, ray, cam_dir, pivot, hit_point, step_px=4, close_len=120, close_px=14):
-    """port of pencilAdd (hair-modeler.clean.html:6301), the data part. `m` the screen point (x, y), `ray` the
+    """port of pencilAdd (hair-modeler.clean.html:9523), the data part. `m` the screen point (x, y), `ray` the
     cursor's ray (rayAt) in the model's space, `hit_point` what pickables() minus the discs hit under it (only read
     for the first point; a callable is called only then), `cam_dir` / `pivot` the view's. The stroke lies on one
     plane: horizontal at the height where it first touched the hair (a ring drawn around the head); when that plane
@@ -332,7 +332,7 @@ def pencilAdd(pc, m, ray, cam_dir, pivot, hit_point, step_px=4, close_len=120, c
 
 
 def finishPencil(P, sel, pc, cam_dir):
-    """port of finishPencil (hair-modeler.clean.html:6318), after cancelPencil: a loop of 6 or more points -> a NURBS
+    """port of finishPencil (hair-modeler.clean.html:9540), after cancelPencil: a loop of 6 or more points -> a NURBS
     disc in the loop's best plane (the drawn loop a little beyond its outer edge, a small hole); the disc is the
     selection. Returns (the disc or None, the toast)."""
     if not pc or len(pc.pts) < 6:
@@ -364,7 +364,7 @@ def finishPencil(P, sel, pc, cam_dir):
     return g, PENCIL_DONE
 
 
-# ---------------- the guide's panel (guideControls, 8843) ----------------
+# ---------------- the guide's panel (guideControls, 12807) ----------------
 
 GUIDE_KEYS = ('radius', 'blend', 'density', 'priority', 'local')
 
@@ -379,7 +379,7 @@ def setGuideParam(g, key, value):
 
 
 def setExclusions(g, lst):
-    """setExcl (8884): the list is replaced, never edited in place (undo snapshots share the p object's arrays)"""
+    """setExcl (12846): the list is replaced, never edited in place (undo snapshots share the p object's arrays)"""
     g.p = {**g.p, 'excl': list(lst)}
 
 
@@ -410,6 +410,53 @@ def exclusionCandidates(P, g):
     return out
 
 
+def canListGroup(P, g, gid):
+    """what the list's choice offers (11286-11297): only a candidate of exclusionCandidates — a group holding curves
+    the guide crosses or a parent of one, not the guides' own group, not already listed"""
+    return any(it.id == gid for it, _d in exclusionCandidates(P, g))
+
+
+# ---------------- a disc selected + Ctrl + click (1.0.2) ----------------
+
+def selectedDisc(P, sel_items):
+    # port of selectedDisc (hair-modeler.clean.html:11457): the FIRST selected item that is a NURBS disc
+    for x in sel_items:
+        g = P.items.get(x)
+        if g is not None and g.type == 'guide' and g.kind == 'disc':
+            return g
+    return None
+
+
+def discExclClick(P, sel_items, iid, ctrl):
+    """port of discExclClick (hair-modeler.clean.html:11458): a NURBS disc selected + Ctrl + click on another group or
+    anything inside one (outliner or viewport) — that group goes into the disc's Groups list (the exclusions; with
+    "Only the listed groups", into the list it works on); again — out. The selection stays on the disc. `ctrl`: the
+    Ctrl key held (keys.ControlLeft / Right). Returns None when it does not apply (the click selects as usual), else
+    {'disc', 'group', 'added', 'toast'}; the list is a new one, the disc dirty. The caller touches the locks
+    (S.surfDirty: guideCurves), regenerates a pending conversion and saves (commit)."""
+    from .groups import isDescendant
+    if not ctrl:
+        return None
+    d = selectedDisc(P, sel_items); it = P.items.get(iid)
+    if d is None or it is None or it.id == d.id or (it.type == 'curve' and it.ring):
+        return None
+    g = it if it.type == 'group' else None
+    p = P.parentOf(it)
+    while g is None and p is not None:
+        if p.type == 'group':
+            g = p
+        p = P.parentOf(p)
+    if g is None or g.guidesGroup or g.meshesGroup or g.importGroup or isDescendant(P, d.id, g.id):
+        return None
+    ex = [x for x in (d.p.get('excl') or []) if (gx := P.items.get(x)) is not None and gx.type == 'group']
+    had = g.id in ex
+    setExclusions(d, [x for x in ex if x != g.id] if had else [*ex, g.id])   # (a new list: undo snapshots share the old one)
+    d.dirty = True
+    only = d.p.get('exclMode') == 'only'
+    toast = f'{d.name}: "{g.name}" {"removed from" if had else "added to"} {"the groups it works on" if only else "the excluded groups"}'
+    return {'disc': d, 'group': g, 'added': not had, 'toast': toast}
+
+
 def crossedCurves(P, g):
-    """"Select crossed curves" (8942): the curves of the line's hits that still exist, then the guide"""
+    """"Select crossed curves" (12906): the curves of the line's hits that still exist, then the guide"""
     return [h['c'] for h in g.hits if h.get('c') in P.items] + [g.id]

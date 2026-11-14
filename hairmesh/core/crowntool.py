@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Phase 4.3: the Crown tool of the original (hair-modeler.clean.html:7345-7841, 5824-5842, 5988-5994, 6037-6040,
 7907, 8960-8968) — the data part, pure and bit for bit with the original (tests/test_crowntool_parity.py, harness
 --script ops createCrown, addCrownCurve, crownProp, attach, detachConn, slide, crownSym, crownSymOff, crownFrame).
@@ -13,7 +13,7 @@
   Symmetry    crownMakeSymmetric (one half mirrored onto the other across X = S.center.x), crownSymSync (the frame's:
               a moved anchor moves its pair, the middle ones stay on the plane).
 
-The frame of the original runs crownSymSync and updateAttachments every frame (12060-12063); here frameSync runs the
+The frame of the original runs crownSymSync and updateAttachments every frame (14804-14808); here frameSync runs the
 same steps at the end of every operator that changes the model (D4.8: session.save_project) and on every move of a
 drag. What needs the viewport (the projector, the picked curve) comes in as arguments; the selection is a
 core.selection.Selection (S.sel / S.asel), changed in place. The crown's last synced positions (k._symLast) live on
@@ -59,7 +59,7 @@ def sym_text(master):
 
 
 def connectors(P):
-    # port of connectors (7368)
+    # port of connectors (10978)
     return [c for c in P.curves() if c.conn]
 
 
@@ -91,7 +91,7 @@ def _head_hits(P, o, d):
 
 
 def headHit(P, o, d):
-    # port of headHit (7648): the nearest hit of a ray on the head, or None
+    # port of headHit (11258): the nearest hit of a ray on the head, or None
     hits = _head_hits(P, o, d.clone().normalize())
     return hits[0] if hits else None
 
@@ -103,7 +103,7 @@ def headVisible(P, shown=True):
 
 
 def crownFit(P, target, normal, head_shown=True):
-    # port of crownFit (hair-modeler.clean.html:7649): fitting the reference to the head — the top of the head (rays
+    # port of crownFit (hair-modeler.clean.html:11259): fitting the reference to the head — the top of the head (rays
     # from above), its width at the height of the lower connector (rays from the sides) -> scale; the back of the head
     # there (a ray from behind) -> where the back of the lower connector goes. `target` (a clicked point): the whorl goes
     # there instead. None without a head.
@@ -141,14 +141,14 @@ def crownFit(P, target, normal, head_shown=True):
 
 
 def attachAnchor(P, a, conn):
-    # port of attachAnchor (7401)
+    # port of attachAnchor (11011)
     if len(conn.samples) < 2:
         CM.rebuildCurve(P, conn)
     a.att = Attachment(c=conn.id, t=nearestT(conn, a.pos)); a.attPos = None
 
 
 def createCrown(P, sel, target=None, normal=None, sym=True, head_shown=True):
-    """port of createCrown (hair-modeler.clean.html:7673): a new crown from the reference, fitted on the head's top
+    """port of createCrown (hair-modeler.clean.html:11283): a new crown from the reference, fitted on the head's top
     (Create: `target` None), or with its whorl on the clicked point `target` (the face normal `normal`). `sym`: the
     tool's Symmetric (S.crownSym !== false); `head_shown`: the head object shown in Blender. The crown is the
     selection. Returns (the crown, the toast). Like every function here it reads the curves' samples as the frame
@@ -202,7 +202,7 @@ def createCrown(P, sel, target=None, normal=None, sym=True, head_shown=True):
 
 
 def addCrownCurve(P, sel, k):
-    """port of addCrownCurve (hair-modeler.clean.html:7705): one more crown curve in the middle of the widest gap
+    """port of addCrownCurve (hair-modeler.clean.html:11315): one more crown curve in the middle of the widest gap
     between the crown curves (shaped like its neighbours); it is the selection. Returns (the curve, the toast), or
     (None, None) when the crown has fewer than two crown curves."""
     part = P.items.get(k.part); low = P.items.get(k.low); rs = crownCurves(P, k)
@@ -249,7 +249,7 @@ def _has(lst, x):
 # ---------------- connectors ----------------
 
 def updateAttachments(P):
-    """port of updateAttachments (hair-modeler.clean.html:7383): attached anchors sit on their connector — the
+    """port of updateAttachments (hair-modeler.clean.html:10993): attached anchors sit on their connector — the
     connector changed: they follow it at the same arc fraction; moved together with it they stay; moved away from it
     (a plain drag) they come off it. Returns (the anchors moved, the toasts)."""
     moved = []; seen = set(); toasts = []
@@ -280,7 +280,7 @@ def updateAttachments(P):
 
 
 def attachCandidates(P, a):
-    """the first half of checkAttach (hair-modeler.clean.html:7406): the connectors an anchor END dragged near them may
+    """the first half of checkAttach (hair-modeler.clean.html:11016): the connectors an anchor END dragged near them may
     attach to (the viewport picks the one under the anchor: pickCurve over them), or [] when this anchor cannot attach
     (already attached, a disc's ring, not the end of a curve that is no connector)"""
     if a.att is not None or any(c.ring for c in edit.curvesWith(P, a)):
@@ -291,7 +291,7 @@ def attachCandidates(P, a):
 
 
 def insertIntoConnector(P, conn, a):
-    # port of insertIntoConnector (hair-modeler.clean.html:7439): the anchor goes into the connector's anchors, on it
+    # port of insertIntoConnector (hair-modeler.clean.html:11049): the anchor goes into the connector's anchors, on it
     if len(conn.samples) < 2:
         CM.rebuildCurve(P, conn)
     t = nearestT(conn, a.pos); p = pointOnCurve(conn, t); L = conn.arc; d = t * L[len(L) - 1]
@@ -306,7 +306,7 @@ def insertIntoConnector(P, conn, a):
 
 
 def connectToConnector(P, a, conn):
-    """port of connectToConnector (hair-modeler.clean.html:7416): a curve end on a connector becomes an anchor OF the
+    """port of connectToConnector (hair-modeler.clean.html:11026): a curve end on a connector becomes an anchor OF the
     connector (shared, like the crown curves made with the crown). Returns the toast."""
     other = [c.anchors[len(c.anchors) - 1] if c.anchors[0] is a else c.anchors[0] for c in edit.curvesWith(P, a)]
     k = next((x for x in P.crowns() if x.low == conn.id), None); part = P.items.get(k.part) if k else None
@@ -317,7 +317,7 @@ def connectToConnector(P, a, conn):
 
 
 def detachFromConnector(P, sel, a):
-    """port of detachFromConnector (hair-modeler.clean.html:7425): Ctrl + click on a curve's anchor on a connector —
+    """port of detachFromConnector (hair-modeler.clean.html:11035): Ctrl + click on a curve's anchor on a connector —
     the curve comes off with an anchor of its own at the same spot (the connector keeps its shape; crown curves stay);
     an old-style attached anchor just lets go. Returns the toast, or None when nothing came off (`sel` changed only
     when a curve came off: the new anchor alone)."""
@@ -351,7 +351,7 @@ def slideTarget(P, a):
 
 
 def slideStep(P, d, m, screen):
-    """port of slideStep (hair-modeler.clean.html:7447): Ctrl + drag of an attached anchor or an anchor of a connector
+    """port of slideStep (hair-modeler.clean.html:11057): Ctrl + drag of an attached anchor or an anchor of a connector
     — it slides along the connector as it was when the drag began. `d` = {'a': the anchor, 'poly': the connector's
     sample points at the start, 'moved'}; `m` = (x, y) the pointer; `screen(p)` -> (x, y, z) (toScreen)."""
     Q = d['poly']; best = None; bd = float('inf'); bl = 0; acc = 0
@@ -377,7 +377,7 @@ def slideStep(P, d, m, screen):
 # ---------------- symmetry ----------------
 
 def crownMakeSymmetric(P, sel, k, master, silent=False):
-    """port of crownMakeSymmetric (hair-modeler.clean.html:7726): the master half (1: the character's left, +X; -1: its
+    """port of crownMakeSymmetric (hair-modeler.clean.html:11336): the master half (1: the character's left, +X; -1: its
     right) copied onto the other across X = S.center.x — the lower connector's anchors there and the crown curves there
     replaced by mirrored copies (lock curves attached on that side stay: their anchors go onto the new connector), the
     parting line and the anchors near the plane onto it. Returns the toast (None when silent)."""
@@ -501,7 +501,7 @@ def crownSymOff(P, k):
 
 
 def crownSymSync(P):
-    """port of crownSymSync (hair-modeler.clean.html:7779): symmetric crowns — an anchor moved on either side since the
+    """port of crownSymSync (hair-modeler.clean.html:11389): symmetric crowns — an anchor moved on either side since the
     last sync moves its pair, the middle ones stay on the plane. The first sync of a crown (after it was made, mirrored
     or read) only records. Returns the anchors it moved."""
     out = []
@@ -579,21 +579,28 @@ def recordSym(P):
         k.sym_last = {i: A[i].pos.clone() for pr in sy.get('pairs') or [] for i in pr if i in A}
 
 
-def frameSync(P):
-    """The crown part of the original's frame (12060-12063): crownSymSync, the dirty curves rebuilt, updateAttachments,
-    the dirty curves rebuilt — D4.8: run at the end of every operator that changes the model and on every move of a
-    drag. Without a crown or an attached anchor nothing could move: nothing is done (the dirty curves wait for the
-    next rebuild). Returns (the anchors moved, the toasts)."""
+def frameSync(P, edges=None):
+    """The crown part of the original's frame (14804-14809): crownSymSync, syncPathCurves (1.0.2), the dirty curves
+    rebuilt, updateAttachments, the dirty curves rebuilt — D4.8: run at the end of every operator that changes the
+    model and on every move of a drag. The edge curves follow always (`edges`, a list, gets the ones changed: the
+    caller touches them, where the original sets S.surfDirty). Without a crown or an attached anchor nothing else could
+    move: nothing more is done (the dirty curves wait for the next rebuild). Returns (the anchors moved, the toasts)."""
     if not P.crowns() and not any(a.att is not None for a in P.anchors.values()):
+        ch = CM.syncPathCurves(P)                                   # (edge curves stay on the curves they run along)
+        if edges is not None:
+            edges.extend(ch)
         return [], []
     moved = crownSymSync(P)
+    ch = CM.syncPathCurves(P)
+    if edges is not None:
+        edges.extend(ch)
     CM.rebuild_dirty(P)
     m2, toasts = updateAttachments(P)
     CM.rebuild_dirty(P)
     return moved + m2, toasts
 
 
-# ---------------- the panel (crownProps 7805) ----------------
+# ---------------- the panel (crownProps 11415) ----------------
 
 def setCrownParam(k, key, value):
     """the crown's panel: Rings (k.p.rings = +r.value, 7810), Whorl (k.p = {...k.p, whorl}, 7818)"""
@@ -605,7 +612,7 @@ def setCrownParam(k, key, value):
 
 
 def infoText(k):
-    # crownProps (7806): what crownData said about the crown
+    # crownProps (11415): what crownData said about the crown
     i = k.info
     if i:
         return f'Vertical loops: {i["loops"]} · rings: {i["rings"]} · parting vertices: {i["part"]}'

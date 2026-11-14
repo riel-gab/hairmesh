@@ -4,6 +4,7 @@ live in (the SW slot of the anchor pie, the rows of the pop-up, the list), and t
 import json
 import os
 import unittest
+from tests.helpers.dlist import d_items                            # noqa: E402  (the D as a list: Object > HairMesh lists actions only since lot 1.2a)
 
 try:
     import bpy
@@ -134,9 +135,9 @@ class TestWeldOperators(unittest.TestCase):
         self.assertEqual(self.ops_weld.junction_items(bpy.context), [], 'two directions only: no junction')
         pie = self.tool.pie_items(bpy.context)
         self.assertEqual(pie[6], ('menu', 'HAIRMESH_MT_anchor_more', 'Weld / Split / Curves', 'DECORATE_KEYFRAME'), 'the SW slot')
-        popup = self.ops([it for _t, _i, rows in self.tool.popup_sections(bpy.context) for row in rows for it in row])
+        popup = self.ops([it for _t, _i, rows in self.tool.popup_sections(bpy.context) for it in self.tool.flat_items(rows)])   # (lot 1.2b: the buttons of a sheet in rows of columns)
         self.assertIn(('hairmesh.split_at_anchor', {}), popup); self.assertIn(('menu', 'HAIRMESH_MT_unweld'), popup)
-        menu = self.ops(self.tool.menu_items(bpy.context))
+        menu = self.ops(d_items(self.tool, bpy.context))
         self.assertIn(('hairmesh.optimize_anchors', {'only': True}), menu)
         self.assertEqual(bpy.ops.hairmesh.split_at_anchor(), {'FINISHED'})
         P = self.session.get_project(self.root)
@@ -199,7 +200,7 @@ class TestWeldOperators(unittest.TestCase):
         # merge coincident anchors of two curves
         P, J = self.curve((300, 0, 0), (300, 40, 0)); P, K = self.curve((300, 40, 0), (340, 60, 0))
         bpy.ops.hairmesh.select(curve=J.id); bpy.ops.hairmesh.select(curve=K.id, extend=True)
-        popup = self.ops([it for _t, _i, rows in self.tool.popup_sections(bpy.context) for row in rows for it in row])
+        popup = self.ops([it for _t, _i, rows in self.tool.popup_sections(bpy.context) for it in self.tool.flat_items(rows)])   # (lot 1.2b: the buttons of a sheet in rows of columns)
         self.assertIn(('hairmesh.merge_coincident', {}), popup); self.assertIn(('hairmesh.optimize_anchors', {'only': False}), popup)
         self.assertEqual(bpy.ops.hairmesh.merge_coincident(), {'FINISHED'})
         P = self.session.get_project(self.root)

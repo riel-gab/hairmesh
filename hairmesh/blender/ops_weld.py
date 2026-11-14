@@ -56,7 +56,7 @@ def _anchor(P, sel, aid):
     return P.anchors.get(sel.last_anchor) if sel.anchors else None
 
 
-# ---------------- the weld pie (checkWeld, 4876) ----------------
+# ---------------- the weld pie (checkWeld, 7340) ----------------
 
 def ask_weld(a, b, P):
     """What the release of a drag found: fills `pending` for the pie. Returns the pie's title."""
@@ -352,10 +352,22 @@ class HAIRMESH_OT_merge_coincident(bpy.types.Operator):
 
 def anchor_more_items(context):
     """The 3.4 part of the anchor pie (openMainPie 7893-7902), for the selected anchors: curve between (exactly 2),
-    curve through (2+), optimize the selected anchors, split at the last anchor (a curve runs through it), the
-    Unweld from submenu (the last anchor is shared), the Rotate junction submenu (3+ directions)."""
+    curve through (2+), the extrude from the end anchors (ours, lot 1.2b: E), optimize the selected anchors, split at the
+    last anchor (a curve runs through it), the Unweld from submenu (the last anchor is shared), the Rotate junction submenu
+    (3+ directions)."""
     root, P, sel = select.current(context)
-    return _anchor_more(P, select.anchors_of(P, sel) if P is not None else [], False)
+    anchors = select.anchors_of(P, sel) if P is not None else []
+    out = _anchor_more(P, anchors, False)
+    if anchors:
+        # 1.1f: Select Lock Curves (lockSelectItem, 10120-10123: in the original's anchor pie after "curve through"), as in
+        # the Walls / Lock submenu of the curve and wall pies; gone without a lock (G4)
+        from .ops_walls import lock_item
+        lk = lock_item(P, sel.prune(P))
+        if lk is not None:
+            out.insert(sum(1 for it in out if it[1] in ('hairmesh.curve_between', 'hairmesh.curve_through')), lk)
+    from .ops_fill import detect_item
+    fill = detect_item(context) if out else None                    # (1.1f: Detect Fill Outline Here, where the pie opened over a 3D View)
+    return out + [('sep',), fill] if fill is not None else out
 
 
 def anchor_more_items_short(P, anchors):
@@ -372,6 +384,11 @@ def _anchor_more(P, anchors, short):
         out.append(('op', 'hairmesh.curve_between', 'Between' if short else 'Create Curve Between the Anchors', 'CURVE_DATA', {}))
     if n >= 2:
         out.append(('op', 'hairmesh.curve_through', 'Through' if short else f'Create Curve Through the Anchors ({n})', 'OUTLINER_OB_CURVE', {}))
+    from .tool import act, dim_op                                   # (lot 1.2b: E, the extrude from the end anchors; dimmed where they cannot grow, the tooltip says why)
+    out.append(dim_op(act('extrude', short=short), edit.extrudeTargets(P, [x.id for x in anchors])[1] is None))
+    from .ops_xjunc import separate_item
+    if (sx := separate_item(P, a, short)) is not None:              # (1.1f: the anchor pie's "Separate the zones at this X", 10124: an X with walls across)
+        out.append(sx)
     out.append(('op', 'hairmesh.optimize_anchors', 'Optimize Selected' if short else 'Optimize Selected Anchors', 'MOD_SIMPLIFY', {'only': True}))
     if any(not c.closed and 0 < index_of(c.anchors, a) < len(c.anchors) - 1 for c in edit.curvesWith(P, a)):
         out.append(('op', 'hairmesh.split_at_anchor', 'Split' if short else 'Split Curve at the Anchor', 'MOD_PHYSICS', {}))

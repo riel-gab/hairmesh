@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Groups and conversion parameters (phase 3.6): the data part of what the original's outliner and panels do with
 groups — creating one, moving items between groups (the outliner's drag and drop), the group panel (colour, the
 curves-and-anchors mode, the labels, the loop step against the project's, Detach from neighbouring groups, the
@@ -8,15 +8,18 @@ symmetry flags) and the Conversion panel (the ticked groups, the sliders that ed
 reference cube), plus what the frame loop derives from them for the display (the active groups, the free curves,
 guidesShown). Pure Python, no bpy; selection, undo steps (commit), toasts and redraws belong to the caller. Line
 numbers refer to hair-modeler.clean.html, 1.0.1."""
+import re
+
 from . import model as M
 from .curves import markAnchorsDirty
 from .edit import addItem, newAnchor
 from .hairmesh_io import defaultStep
-from .rowbase import groupConv
+from .js import truthy
+from .rowbase import groupConv, proxyOn  # noqa: F401  (proxyOn: the Detail Proxy box reads it here)
 
 CONV_KEYS = M.CONV_KEYS
 SYM_AXES = ('x', 'y', 'z')
-GUIDE_MODES = ('auto', 'show', 'hide')                              # GUIDE_MODES (11938): Curves & anchors: Auto / always shown / hidden
+GUIDE_MODES = ('auto', 'show', 'hide')                              # GUIDE_MODES (16469): Curves & anchors: Auto / always shown / hidden
 LABELS = ('container', 'loose')                                     # the group labels the 1.0.1 panel offers (8658): Container, Free curves visible
 DEFAULT_COLOR = '#4a7fd6'                                           # the colour input's value for a group without one (8645)
 
@@ -24,7 +27,7 @@ DEFAULT_COLOR = '#4a7fd6'                                           # the colour
 # ======================= the tree (753, 8557) =======================
 
 def isDescendant(P, iid, ancestor_id):
-    # port of isDescendant (753): `iid` is `ancestor_id` or lies under it
+    # port of isDescendant (856): `iid` is `ancestor_id` or lies under it
     it = P.items.get(iid)
     while it is not None:
         if it.id == ancestor_id:
@@ -34,7 +37,7 @@ def isDescendant(P, iid, ancestor_id):
 
 
 def outlinerOrder(P):
-    # port of outlinerOrder (8557): every item id in the order the outliner shows them (depth first, file order)
+    # port of outlinerOrder (12465): every item id in the order the outliner shows them (depth first, file order)
     out = []
 
     def walk(ids):
@@ -48,7 +51,7 @@ def outlinerOrder(P):
 
 
 def groupsOf(P):
-    """the hair groups the Conversion panel lists (renderConvList, 9031): not the Guides / Meshes groups"""
+    """the hair groups the Conversion panel lists (renderConvList, 13032): not the Guides / Meshes groups"""
     return [g for g in P.groups() if not g.guidesGroup and not g.meshesGroup]
 
 
@@ -67,7 +70,7 @@ def subGroups(P, g):
 
 
 def curvesIn(P, g):
-    """the curves inside g, at any depth (the `walk` of detachGroup, 3002)"""
+    """the curves inside g, at any depth (the `walk` of detachGroup, 4272)"""
     out = []
 
     def walk(ids):
@@ -86,7 +89,7 @@ def curvesIn(P, g):
 # ======================= creating, moving, renaming (7919, 8568, 8278) =======================
 
 def orderRoots(P):
-    # port of orderRoots (8207): the Imported, Meshes and Guides groups first (a stable sort: the rest keeps its order)
+    # port of orderRoots (12086): the Imported, Meshes and Guides groups first (a stable sort: the rest keeps its order)
     def rank(iid):
         it = P.items.get(iid)
         if it is None or it.type != 'group':
@@ -95,14 +98,41 @@ def orderRoots(P):
     P.roots.sort(key=rank)
 
 
+SERVICE_RE = re.compile(r'^(HC|JC|EC)\d+$')                       # (SERVICE_RE, hair-modeler.clean.html:1148)
+_SERVICE_NUM = re.compile(r'^([A-Z]{2})(\d+)$')
+
+
+def serviceName(P, pre):
+    # port of serviceName (hair-modeler.clean.html:1149): the next free number after `pre` among the service curves
+    n = 0
+    for c in P.curves():
+        m = _SERVICE_NUM.match(c.name) if c.junc else None
+        if m and m.group(1) == pre:
+            n = max(n, int(m.group(2)))
+    return pre + str(n + 1)
+
+
+def nameServiceCurves(P):
+    # port of nameServiceCurves (hair-modeler.clean.html:1154, 1.0.2): the service (junction) curves named HC / JC /
+    # EC + a number — an edge curve (c.path or "edge…" / "ec…"), a hole curve ("hole…" / "hc…"), else a junction
+    # curve — and visible (they have no eye: one hidden before stays reachable)
+    for c in P.curves():
+        if not c.junc:
+            continue
+        if not SERVICE_RE.match(c.name):
+            pre = 'EC' if truthy(c.path) or re.match(r'^(edge|ec)', c.name, re.I) else 'HC' if re.match(r'^(hole|hc)', c.name, re.I) else 'JC'
+            c.name = serviceName(P, pre)
+        c.visible = True
+
+
 def panelsRendered(P, selected=None):
     """What the original's re-rendering of the outliner does to the model (renderOutliner, 8211-8261, called after
     every outliner / panel action): orderRoots; renderProps, whose group panel fills the selected group's conv
-    from the defaults (groupConv, 8668: `selected` = the last selected item, the port's active collection) and whose
-    extra panel fills an Extra modifier's missing settings (xmodProps, 7039; 4.7); and renderConvList -> syncConvUI,
+    from the defaults (groupConv, 12612: `selected` = the last selected item, the port's active collection) and whose
+    extra panel fills an Extra modifier's missing settings (xmodProps, 10389; 4.7); and renderConvList -> syncConvUI,
     which fills the first ticked group's conv (9097). Idempotent after the first fill; the parity scripts depend on
-    calling it where the original renders."""
-    orderRoots(P)
+    calling it where the original renders. 1.0.2: nameServiceCurves too (renderOutliner, 12090)."""
+    orderRoots(P); nameServiceCurves(P)
     it = P.items.get(selected) if selected is not None else None
     if it is not None and it.type == 'group' and not it.guidesGroup and not it.meshesGroup:
         groupConv(P, it)
@@ -120,7 +150,7 @@ def panelsRendered(P, selected=None):
 def createGroup(P, parent=None, name=None):
     """The pie's "Create empty group" (7919; the outliner's "+", 3884): addItem('group'), ticked for conversion
     (S.convChecked.add), and selected — which renders its panel, and the panel fills its conv from the defaults
-    (groupConv, 8668). `parent` is an addition of the port (the original creates at the root and the user drags
+    (groupConv, 12612). `parent` is an addition of the port (the original creates at the root and the user drags
     the group in, moveItems 'into'); `name` is the outliner's rename (8278)."""
     g = addItem(P, 'group', parent)
     P.settings.convChecked.append(g.id)
@@ -131,7 +161,7 @@ def createGroup(P, parent=None, name=None):
 
 
 def moveItems(P, ids, target_id=None, zone='into'):
-    """port of moveItems (8568), the outliner's drag and drop: `zone` = 'into' (target = the group to put them in),
+    """port of moveItems (12476), the outliner's drag and drop: `zone` = 'into' (target = the group to put them in),
     'root' (the top level), 'before' / 'after' (target = the sibling to put them next to). The head and the target
     itself are skipped; a group cannot go inside itself (returns (moved ids, "Cannot put a group inside itself")).
     Returns (the ids moved, None)."""
@@ -164,7 +194,7 @@ def moveItems(P, ids, target_id=None, zone='into'):
 
 
 def parentSelection(P, order):
-    """port of parentSelection (hair-modeler.clean.html:8179), P: the selected items (S.sel in pick order) go into
+    """port of parentSelection (hair-modeler.clean.html:12058), P: the selected items (S.sel in pick order) go into
     the LAST one, which must be a group; an item whose ancestor is selected too goes with it. Returns (ids, target
     id, None) for moveItems(ids, target, 'into'), or ([], None, the original's toast) when the selection does not
     serve — the key passes on then (ours, D4.3)."""
@@ -182,7 +212,7 @@ def parentSelection(P, order):
 
 
 def unparentSelection(P, order):
-    """port of unparentSelection (8187), Shift+P: the top selected items that live in a group go to the root level
+    """port of unparentSelection (12066), Shift+P: the top selected items that live in a group go to the root level
     (moveItems(ids, null, 'root')). Returns (ids, None) or ([], the original's toast)."""
     from .duplicate import topSelected
     ids = [i for i in topSelected(P, order) if P.items[i].parent is not None]
@@ -350,17 +380,17 @@ def movedCurveIds(P, moved):
 
 
 def labelOn(P, g, k):
-    # port of labelOn (8268) for the stored labels ('loose' is looseOn: on unless set off)
+    # port of labelOn (12148) for the stored labels ('loose' is looseOn: on unless set off)
     return looseOn(g) if k == 'loose' else bool(g.labels and g.labels.get(k))
 
 
 def looseOn(g):
-    # port of looseOn (11936): "Free curves visible" is on unless the label says false
+    # port of looseOn (16467): "Free curves visible" is on unless the label says false
     return not (g.labels and g.labels.get('loose') is False)
 
 
 def setSym(P, g, on=None, axis=None):
-    """the Symmetry checkbox and axis (8681-8686): it.sym = {...sym, on} / {...sym, axis}; symChanged (9850) is
+    """the Symmetry checkbox and axis (8681-8686): it.sym = {...sym, on} / {...sym, axis}; symChanged (14066) is
     S.surfDirty, the caller's. Returns the sym dict."""
     sym = dict(g.sym) if g.sym else {'on': False, 'axis': 'x'}
     if on is not None:
@@ -382,7 +412,7 @@ def symInfo(P, g):
 
 
 def matchProjectStep(P, g):
-    """port of matchProjectStep (1661): the group and the groups inside it take the project loop step (for locks
+    """port of matchProjectStep (1833): the group and the groups inside it take the project loop step (for locks
     made elsewhere: modifiers, pasted, imported). Returns the step; the caller marks the surfaces dirty."""
     st = projectStep(P)
     for x in subGroups(P, g):
@@ -392,7 +422,7 @@ def matchProjectStep(P, g):
 
 
 def projectStep(P):
-    # port of projectStep = defaultStep (1657): S.step || usedStep() || S.headH / 24
+    # port of projectStep = defaultStep (1830): S.step || usedStep() || S.headH / 24
     return defaultStep(P)
 
 
@@ -403,7 +433,7 @@ def stepOff(P, g):
 
 
 def detachGroup(P, g):
-    """port of detachGroup (3001): the curves of the group welded to curves of other groups get anchors of their own
+    """port of detachGroup (4272): the curves of the group welded to curves of other groups get anchors of their own
     there (welds inside the group stay); ends attached to another group's crown connector are let go too. Returns
     (shared anchors detached, ends let go), or None when the group is not welded to other groups (the toast
     "<name> isn't welded to other groups"). The caller marks the surfaces dirty and clears the anchor selection."""
@@ -466,7 +496,7 @@ def tickAll(P, on):
 def tickTop(P):
     """ours (U7 C, docs/fase-3-ux-revisao.md): Tick Top Groups — exactly the hair groups with no hair group above
     them ticked (convTree depth 0, in list order), every other unticked: one mesh per tree, its sub-groups merged
-    into it (collect 9133 walks the sub-groups that are not ticked)"""
+    into it (collect 13214 walks the sub-groups that are not ticked)"""
     P.settings.convChecked.clear()
     for g, depth, _state, _via in convTree(P):
         if depth == 0:
@@ -500,7 +530,7 @@ def tickOnly(P, g):
 
 
 def convTargets(P):
-    # port of convTargets (9045): the ticked groups and the groups nested in them, in outliner order, each once
+    # port of convTargets (13047): the ticked groups and the groups nested in them, in outliner order, each once
     out = []; seen = set()
     checked = set(P.settings.convChecked)
     for iid in outlinerOrder(P):
@@ -515,8 +545,8 @@ def convTargets(P):
 def convTree(P):
     """ours (part 2 of the second manual test of 21/10/2026): the Conversion list as a tree — [(group, depth, state,
     via)] in outliner order (the service groups left out, their sub-groups listed in their place). state: 'ticked'
-    (in S.convChecked), 'via' (not ticked, inside a ticked group: convTargets (9045) edits it and the conversion puts
-    it in that group's mesh — collect (9133) walks the sub-groups that are not ticked themselves), 'off'. via: the
+    (in S.convChecked), 'via' (not ticked, inside a ticked group: convTargets (13047) edits it and the conversion puts
+    it in that group's mesh — collect (13214) walks the sub-groups that are not ticked themselves), 'off'. via: the
     nearest ticked group above (the mesh it goes into; for a ticked group under a ticked one, the original converts
     it as a mesh of its own), else None. The groups whose state is not 'off' are exactly the hair groups of
     convTargets(P) (a service group nested in a ticked group is a target there, never listed)."""
@@ -539,10 +569,9 @@ def convTree(P):
 
 
 def convShown(P, g):
-    """A group's conv as its panel would show it after groupConv (1665) — the stored values with the project
+    """A group's conv as its panel would show it after groupConv (1838) — the stored values with the project
     defaults where a key is missing and the step derived as groupConv does (density, else the default step) — but
     WITHOUT filling the group (a property getter must not change the model; the setters do, through groupConv)."""
-    from .js import truthy
     conv = dict(g.conv or {})
     if conv.get('step') is None:
         conv['step'] = P.S.headH / conv['density'] if truthy(conv.get('density')) else defaultStep(P)
@@ -553,7 +582,7 @@ def convShown(P, g):
 
 
 def convSource(P):
-    """what the sliders show (syncConvUI, 9097): the first ticked group's conv, else the project defaults (S);
+    """what the sliders show (syncConvUI, 13177): the first ticked group's conv, else the project defaults (S);
     read without filling (convShown)"""
     t = convTargets(P)
     return convShown(P, t[0]) if t else {k: getattr(P.settings, k) for k in CONV_KEYS}
@@ -568,8 +597,16 @@ def convValue(P, k):
     return v
 
 
+def mergeDistNow(P):
+    """port of mergeDistNow (hair-modeler.clean.html:13159): the merge distance Convert uses for the first target —
+    its own, else a quarter of its loop step (with nothing ticked: of defaultStep, not of S.step)"""
+    t = convTargets(P)
+    src = convShown(P, t[0]) if t else {k: getattr(P.settings, k) for k in CONV_KEYS}
+    return src.get('mergeDist') or 0.25 * ((convShown(P, t[0])['step'] if t else None) or defaultStep(P))
+
+
 def setConv(P, k, v):
-    """port of setConv (9105): the ticked groups (and the groups nested in them) take the value, or the project's
+    """port of setConv (13186): the ticked groups (and the groups nested in them) take the value, or the project's
     defaults (S[k]) when nothing is ticked; the step set last is always the project's loop step (S.step). The
     caller marks the surfaces dirty (S.surfDirty) and regenerates the conversion. Returns the targets."""
     if k not in CONV_KEYS:
@@ -587,7 +624,7 @@ def setConv(P, k, v):
 
 
 def inGroup(P, it):
-    """whether a group lies above `it` (convOf, 1672, finds a group's conv; else it reads the project defaults S) —
+    """whether a group lies above `it` (convOf, 1845, finds a group's conv; else it reads the project defaults S) —
     convOf's own walk, without its side effect (it fills the group's conv: groupConv)"""
     p = P.parentOf(it) if it is not None else None
     while p is not None:
@@ -600,7 +637,7 @@ def inGroup(P, it):
 def defaultsUsers(P):
     """ours (1d of the second manual test of 21/10/2026): (locks, crowns, all the locks) — the locks and crowns that
     read the project defaults S, for the Conversion tab with nothing ticked: a lock takes the conv of its first curve
-    (CP = convOf(L.cs[0]), 2633), a crown its own but reads only its step (crownStep, 7481), and convOf finds no group
+    (CP = convOf(L.cs[0]), 2633), a crown its own but reads only its step (crownStep, 11091), and convOf finds no group
     above them. In the example every curve is inside a group with its own conv: (0, 0, n). Whatever
     the count, the project loop step also sets the tolerance of the welded-trunk backfill between locks
     (backfillTrunk runs with CP = S, 2726: 0.1 x step) and new groups start with the defaults (createGroup ->
@@ -641,6 +678,16 @@ def convUnchanged(P, k, v, g=None, tol=0.0, echo=None):
     return k != 'step' or same(projectStep(P))
 
 
+def distKeepsAuto(P, v, tol=0.0, echo=None):
+    """ours (lot 1.1a-2): True when the Merge Distance field, showing the Auto value (mergeDistNow) with every target
+    in Auto, gets that same value back (Enter without a change): it stays Auto; only a number really typed leaves Auto.
+    tol and echo as in convUnchanged."""
+    if v is None or not convUnchanged(P, 'mergeDist', None):
+        return False
+    now = mergeDistNow(P)
+    return abs(now - v) <= tol * max(1.0, abs(now)) or (echo is not None and echo(now, v))
+
+
 def setGroupConv(P, g, k, v):
     """One group's own parameter (the port's Selection tab edits the selected group alone, where the original's
     Conversion panel edits every ticked group: setConv): groupConv(g)[k] = v. Unlike setConv, the step does NOT
@@ -656,7 +703,7 @@ def setGroupConv(P, g, k, v):
 # ======================= what the frame loop derives for the display (11905-11936) =======================
 
 def activeGroups(P, sel_items=(), sel_anchors=(), drawing=None, active_group=None):
-    """port of activeGroups (11905): the groups one is working in — the ancestors of every selected item (and of
+    """port of activeGroups (16431): the groups one is working in — the ancestors of every selected item (and of
     every curve holding a selected anchor, and of the curve being drawn), plus a selected group with everything
     nested in it. `active_group` is the port's selected group: the active collection (the original selects a group
     in the outliner)."""
@@ -692,8 +739,9 @@ def activeGroups(P, sel_items=(), sel_anchors=(), drawing=None, active_group=Non
 
 
 def looseCurveIds(P):
-    """port of looseCurveIds (11925): free curves — joined to no wall and no modifier, not a connector, a junction,
-    a disc ring or a crown curve, with no attached anchor"""
+    """port of looseCurveIds (hair-modeler.clean.html:16451, 1.0.2): free curves — joined to no wall and no modifier,
+    not a connector, a junction, a disc ring or a crown curve, with no attached anchor, and not covered (`covered`:
+    every segment of it lies on a service curve of a wall)"""
     from .crown import crownCurves
     used = set()
     for it in P.items.values():
@@ -705,15 +753,25 @@ def looseCurveIds(P):
             used.add(it.part); used.add(it.low)
             for r in crownCurves(P, it):
                 used.add(r['c'].id)
+    # a curve the walls now run along through service curves (Unite / Recalculate glued locks copy its segments into JC /
+    # EC curves) — every segment of it on a service curve of a wall — is no free curve: it is the walls' own edge
+    onWall = set()
+    for c in P.curves():
+        if c.junc and c.id in used:
+            for k in range(len(c.anchors) - 1):
+                onWall.add(frozenset((c.anchors[k].id, c.anchors[k + 1].id)))     # (sk: the pair of ids, either order)
+
+    def covered(c):
+        return len(c.anchors) > 1 and all(frozenset((c.anchors[k].id, a.id)) in onWall for k, a in enumerate(c.anchors[1:]))
     out = set()
     for c in P.curves():
-        if c.id not in used and not c.ring and not c.conn and not c.junc and not any(a.att is not None for a in c.anchors):
+        if c.id not in used and not c.ring and not c.conn and not c.junc and not any(a.att is not None for a in c.anchors) and not covered(c):
             out.add(c.id)
     return out
 
 
 def guidesShown(P, it, act, loose):
-    """port of guidesShown (11914): whether a curve (or guide) of a group is shown — always at the root; in a group
+    """port of guidesShown (16440): whether a curve (or guide) of a group is shown — always at the root; in a group
     by its mode: 'show' always, 'hide' never, 'auto' while the group is active (`act`: activeGroups), a free curve
     (`loose`: looseCurveIds) with the "Free curves visible" label on in any case; a crown connector while any group is
     active."""
@@ -739,7 +797,7 @@ def selectedGroup(P, sel_items):
 
 
 def targetGroup(P, sel_items):
-    """port of targetGroup (4729): the id of the group new curves go into — the last selected item itself when it
+    """port of targetGroup (6748): the id of the group new curves go into — the last selected item itself when it
     is a group, else its parent group; None at the root level (the isolated group of the original is not ported)."""
     if not sel_items:
         return None
@@ -772,6 +830,14 @@ def hiddenCrownCurves(P):
         into.update((k.part, k.low))
         into.update(r['c'].id for r in crownCurves(P, k))
     return gone - kept
+
+
+def visibleCurves(curves, sel_items=()):
+    """c.obj.visible of syncVisuals (hair-modeler.clean.html:16484): of the curves their group's mode shows
+    (shownCurves), the ones whose line is on screen and a click picks (pickCurve 8436) — a service curve (c.junc: HC,
+    JC, EC) only while it is selected. The anchors do not follow this: rebuildAnchors (1535) does not look at junc"""
+    sel = set(sel_items)
+    return [c for c in curves if not (c.junc and c.id not in sel)]
 
 
 def shownCurves(P, sel_items=(), sel_anchors=(), drawing=None, active_group=None, snap=None):

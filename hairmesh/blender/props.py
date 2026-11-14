@@ -8,7 +8,7 @@ from bpy.types import PropertyGroup
 
 from ..core import groups as G
 from . import slow
-from .coords import f32, field_same
+from .coords import LENGTH_PRECISION, LENGTH_UNITS, f32, field_same, length_text as coords_length_text, root_scale
 
 # every sub-tool of the WorkSpaceTool (the original's S.tool: 'cursor' = select, 'draw', 'scissors', 'guide', 'crown';
 # its 'modifier' is the Modifiers tab of the D here, tool.TABS, the owner's decision), with its key and the step of
@@ -36,10 +36,11 @@ def ready_subtools(ready=READY_STEPS):
 # the EnumProperty items of the sub-tools that work
 SUBTOOLS = tuple(t[:5] for t in ready_subtools())
 SUBTOOL_NUMBERS = frozenset(t[4] for t in SUBTOOLS)
-# the Scissors' two modes (S.cutMode, the tool panel's buttons 8974-8981)
+# the Scissors' three modes (S.cutMode, the tool panel's buttons 11383-11395; Split Ends since 1.0.2)
 CUT_MODES = (
     ('CURVE', 'Curve', 'Cut curves: drag a line across them', 'CURVE_DATA', 0),
     ('SURFACE', 'Wall', 'Cut a wall in two along a curve placed on it anchor by anchor', 'SURFACE_NSURFACE', 1),
+    ('SPLIT', 'Split Ends', 'Click a curve: from there to its tip it splits into two branches (a Y curve)', 'MOD_EDGESPLIT', 2),
 )
 
 
@@ -213,7 +214,7 @@ def _curve_prop(key):
 
 # ---- the selected group (3.6; since 15/10/2026 the last selected item when it is a group, chosen in the HairMesh
 # Outliner as in the original, ops_groups.selected_group — its panel is renderProps 8645-8689), and the Conversion panel (9028-9130): the
-# sliders over the ticked groups (setConv), the project's x-ray. Every setter saves the model (one undo step), keeps
+# sliders over the ticked groups (setConv), the project's X-Ray. Every setter saves the model (one undo step), keeps
 # the collections in step and rebuilds the preview inside the same step.
 GUIDE_MODE_ITEMS = (('auto', 'Auto', 'Show curves and anchors only while working with something inside this group (free curves stay visible with the label)', 'NONE', 0),
                     ('show', 'Show', 'Curves and anchors are always shown', 'NONE', 1),
@@ -227,10 +228,13 @@ TIP_MODE_ITEMS = (('point', 'Point', 'All columns meet in one vertex', 'NONE', 0
 CONV_DESC = {'step': 'Distance between neighboring loops along the lock (0: the default, the head height / 24). Set it from the height of the active object with the button beside. With nothing ticked it is the project loop step: the step of the locks outside every group and of new groups, the one the groups are compared with (≠), and how close welded trunks of two locks must be to share a loop (a tenth of it)',
              'dev': 'How much a loop\'s size may differ from the loop step, by the curvature: a step of 10 and Deviation 50% give loops from 5 to 15 (shorter on bends, longer on straight parts or where loops must line up). Gaps longer than step × (1 + deviation) always get extra loops',
              'straighten': 'Fixes sharp diagonal loops: loop edges are turned square to their walls. A narrow strip between close curves is kept straight across first — the slant left goes into the wide walls. Higher — more places are fixed and more strongly',
-             'loopOrient': '0 — loops are horizontal (aligned across locks); 1 — loops are perpendicular to the lock. Steep parts stay aligned across locks either way',
+             'loopOrient': 'Set the direction of the loops: 0 — horizontal (aligned across locks); 1 — perpendicular to the lock. Steep parts stay aligned across locks either way',
              'tipMode': 'Point: all columns meet in one vertex. Gradual: one column is removed per loop towards the tip (one triangle per loop)',
              'relax': 'Evens out the loop spacing along every curve (guide and shared loops stay in place)',
-             'mergeTrunks': 'Where locks run along welded curves (a common trunk), weld their coincident vertices and remove the double walls: facing walls both go, same-facing walls keep one'}
+             'mergeTrunks': 'Where locks run along welded curves (a common trunk), weld their coincident vertices and remove the double walls: facing walls both go, same-facing walls keep one',
+             'mergeDist': 'Set how far apart vertices of locks welded along a trunk may lie to be welded into one. Auto: a quarter of the loop step (0 or the button beside). Lock tips are never welded. Convert reads it with Merge Shared Trunks on',
+             # (1.0.3: the checkbox #detailProxy, hair-modeler.clean.html:574 there)
+             'proxy': 'Place the loops of a lock with detail on it (a dent, a groove, curves forking inside it: X / Y) as on the simple tube around the detail, and carry them over to the detailed curves: straight rings instead of chevrons. Loops get up to 15% denser there. Places where locks part (welded trunks, forks) are not touched; a simple tube is built as before'}
 
 
 def _group():
@@ -258,16 +262,16 @@ def _conv_touch(P, g, key, scope):
     locks that read the group (and, from the Conversion tab, the ticked groups and those inside them, else the
     project defaults; its step is the project loop step too, which the trunk backfill reads, 2726) — effects.convTouch.
     Nothing to rebuild for a value no lock reads (part 2 of the lot ux8: the dimmed sliders of a group without walls
-    of its own rebuilt its 59 curves), nor for Merge Shared Trunks (Convert alone reads it)."""
+    of its own rebuilt its 59 curves), nor for Merge Shared Trunks and Merge Distance (Convert alone reads them)."""
     from ..core import effects as E
     every = lambda: [c.id for c in P.curves()]                      # noqa: E731
     if scope == 'group':
         t = E.convTouch(P, {g.id}, {key})
-        return (every() if t is None else t), bool(t is None or t or P.conv)   # (3.7: a pending conversion reads every value — Merge Shared Trunks too: regenConversion, 9110)
+        return (every() if t is None else t), bool(t is None or t or P.conv)   # (3.7: a pending conversion reads every value — Merge Shared Trunks too: regenConversion, 13191)
     targets = G.convTargets(P)
-    project = key == 'step' or not targets                          # setConv (9105): S takes it (the step always)
+    project = key == 'step' or not targets                          # setConv (13186): S takes it (the step always)
     t = E.convTouch(P, {x.id for x in targets}, {key}, project=project)
-    return (every() if t is None else t), bool(t is None or t or project and key != 'mergeTrunks' or P.conv)
+    return (every() if t is None else t), bool(t is None or t or project and key not in ('mergeTrunks', 'mergeDist') or P.conv)
 
 
 def _get_group_name(self):
@@ -334,7 +338,7 @@ def _group_flag(what):
         elif what in ('container', 'loose'):
             G.setLabel(P, g, what, v); G.panelsRendered(P, g.id)    # S.surfDirty (8662) regenerates the conversion: the row tables don't read the labels
         elif what == 'sym_on':
-            G.setSym(P, g, on=v); G.panelsRendered(P, g.id)         # symChanged (9850): the live mirror is phase 5; the tables don't read sym
+            G.setSym(P, g, on=v); G.panelsRendered(P, g.id)         # symChanged (14066): the live mirror is phase 5; the tables don't read sym
         else:
             G.tickGroup(P, g, bool(v))                                # the conversion list's checkbox (9036)
             t = G.convTargets(P)
@@ -370,19 +374,100 @@ def _group_enum(what):
 SAME_TOL = 1e-6                                                     # a slider's float32 read back through its text field's six decimals (1b of 21/10/2026)
 
 
+UNIT = '_unit'                                                     # the display twin of a measure, in Blender's unit
+UNIT_ECHO = 5e-6                                                    # a length field's edit text: six significant digits of the unit it shows
+
+
+def _current_root():
+    from . import session
+    try:
+        return session.find_root(bpy.context)
+    except Exception:                                               # (drawing must never raise)
+        return None
+
+
+def unit_echo(shown, v):
+    """True when `v` is what a length field showing `shown` (Blender units) gives back confirmed untouched: the value
+    itself, or its edit text read back — six significant digits in the unit it shows (unit_as_string with
+    UI_PRECISION_FLOAT_MAX), no more than six decimals of a fixed unit (Scene > Units > Length); with the unit system
+    None, the plain field's text (coords.field_same)"""
+    if v == shown or field_same(shown, v):
+        return True
+    tol = UNIT_ECHO * abs(shown)
+    try:
+        us = bpy.context.scene.unit_settings
+        fixed = LENGTH_UNITS.get(us.length_unit) if us.system != 'NONE' else None
+        if fixed is not None and us.scale_length > 0:
+            tol = max(tol, 5e-7 * fixed[0] / us.scale_length)
+    except Exception:
+        pass
+    return abs(v - shown) <= tol * (1.0 + 1e-9)
+
+
+def unit_twin(prop, get=None, set=None, root_of=_current_root):
+    """the display twin of a measure kept in the project's units (`prop`, a FloatProperty with get / set): shown in
+    Blender's unit (unit='LENGTH', 3 significant digits: what the root Empty's scale makes of it, coords.root_scale),
+    written back over that scale through the measure's own set (f32, the same value does nothing, the deferred
+    rebuild). The value it shows given back writes nothing. `get` / `set`: for a measure without them (a setting
+    stored on its data)"""
+    kw = prop.keywords
+    get = get or kw['get']
+    set = set or kw['set']
+
+    def tget(self):
+        return get(self) * root_scale(root_of())
+
+    def tset(self, v):
+        s = root_scale(root_of())
+        if unit_echo(get(self) * s, v):
+            return
+        set(self, v / s)
+    return FloatProperty(name=kw.get('name', ''), description=kw.get('description', ''), min=kw.get('min', 0.0), unit='LENGTH',
+                         precision=LENGTH_PRECISION, get=tget, set=tset)
+
+
+def add_unit_twins(cls, *attrs, accessors=None):
+    """gives the PropertyGroup `cls` the display twin `<attr>_unit` of each measure (unit_twin), before it is
+    registered; accessors: {attr: (get, set)} for a measure stored on its data"""
+    ann = cls.__annotations__
+    for a in attrs:
+        ann[a + UNIT] = unit_twin(ann[a], *(accessors or {}).get(a, ()))
+
+
+def measure(P, attr):
+    """the property a sheet, a tab, a pie or a menu draws for a measure kept in the project's units: its display
+    twin `attr + '_unit'`, in Blender's unit (unit_twin). Only the display: the value kept is the measure's"""
+    return attr + UNIT
+
+
+def length_text(v, root=None):
+    """a length kept in the project's units written as a measure's field writes it (Scene > Units; the root Empty's
+    scale): the loop step of Match Project and of the lists"""
+    if root is None:
+        root = _current_root()
+    try:
+        us = bpy.context.scene.unit_settings
+        return coords_length_text(v * root_scale(root), us.system, us.length_unit, us.scale_length, us.use_separate)
+    except Exception:                                               # (drawing must never raise)
+        return f'{v:.3g}'
+
+
 def _conv_prop(key, kind, scope):
     """get / set of a conversion parameter: scope 'group' = the active group's own conv (setGroupConv), 'ticked' =
-    the Conversion panel over the ticked groups, else the project defaults (setConv, 9105). kind: 'float' (f32),
-    'enum' (TIP_MODE_ITEMS), 'bool'."""
+    the Conversion panel over the ticked groups, else the project defaults (setConv, 13186). kind: 'float' (f32),
+    'enum' (TIP_MODE_ITEMS), 'bool', 'dist' (the merge distance: shows mergeDistNow, 13159 — the auto value when
+    none is set —; 0 sets it back to auto, None)."""
     def get(self):
         root, P, g = _group()
         if P is None or (scope == 'group' and g is None):
             return 0 if kind != 'bool' else False
+        if kind == 'dist':
+            return float(G.mergeDistNow(P))
         v = G.convShown(P, g)[key] if scope == 'group' else G.convValue(P, key)
         if kind == 'enum':
             return next((it[4] for it in TIP_MODE_ITEMS if it[0] == v), 0)
         if kind == 'bool':
-            return bool(v)
+            return G.proxyOn(v) if key == 'proxy' else bool(v)       # (the box shows what the tables do: 0 / null leave the proxy on)
         return float(v or 0)
 
     def set(self, v):
@@ -390,9 +475,11 @@ def _conv_prop(key, kind, scope):
         root, P, g = _group()
         if P is None or (scope == 'group' and g is None):
             return
-        val = f32(v) if kind == 'float' else TIP_MODE_ITEMS[v][0] if kind == 'enum' else bool(v)
+        val = f32(v) if kind == 'float' else (f32(v) if v > 0 else None) if kind == 'dist' else TIP_MODE_ITEMS[v][0] if kind == 'enum' else bool(v)
         if G.convUnchanged(P, key, val, g if scope == 'group' else None, tol=SAME_TOL, echo=field_same):
             return                                                  # 1b of 21/10/2026: the value it shows, confirmed again — nothing to rebuild
+        if kind == 'dist' and G.distKeepsAuto(P, val, SAME_TOL, field_same):
+            return                                                  # (lot 1.1a-2) the Auto value confirmed again: stays Auto
         if scope == 'group':
             G.setGroupConv(P, g, key, val)
         else:
@@ -413,7 +500,7 @@ def _set_xray(self, v):
     root, P, _s = _current()
     if P is None:
         return
-    P.settings.xray = f32(v); P.rev += 1                            # setXray (11318)
+    P.settings.xray = f32(v); P.rev += 1                            # setXray (15772)
     session.save_project(root, P); select.redraw(bpy.context)
 
 
@@ -506,7 +593,8 @@ class HairMeshSceneProps(PropertyGroup):
         ('SMOOTH', 'Smooth', 'The curve runs round through them (Smoothness 1)', 0), ('SHARP', 'Sharp', 'The curve makes a corner at them (Smoothness 0)', 1)), default='SMOOTH')
     # ours (the Freehand of the Draw page): ops_draw, core/freehand.py
     draw_mode: EnumProperty(name='Mode', description='Set how the Draw sub-tool makes a curve', items=(
-        ('ANCHORS', 'Anchors', 'Place the anchors one click at a time', 0), ('FREEHAND', 'Freehand', 'Drag a stroke: it becomes one curve when the button is released', 1)), default='ANCHORS')
+        ('ANCHORS', 'Anchors', 'Place the anchors one click at a time', 0), ('FREEHAND', 'Freehand', 'Drag a stroke: it becomes one curve when the button is released', 1),
+        ('LOCK', 'Lock', 'Draw a flat lock: the curve is its middle line, the circle at the cursor its width', 2)), default='ANCHORS', update=_redraw)   # (1.0.2: S.drawMode 'lock', 11364; the redraw arms the width circle: brush._arm)
     draw_project: EnumProperty(name='Project On', description='Set what a stroke lands on', items=(
         ('SURFACE', 'Surface', 'Land on what is nearest to the camera, the head or a mesh: add a layer over the hair', 0), ('HEAD', 'Head', 'Land on the head alone, through the meshes over it: draw close to the skull', 1)), default='SURFACE')
     draw_distance: FloatProperty(name='Distance from Head', description='Lift the finished curve off the surface it was drawn on, as a share of the model size (0: on the surface). The default is what a click of Anchors lifts', min=0.0, soft_max=10.0, max=100.0, default=1.2, precision=2, subtype='PERCENTAGE')
@@ -545,7 +633,7 @@ class HairMeshSceneProps(PropertyGroup):
     group_sym_axis: EnumProperty(name='Axis', description='The mirror axis (the plane goes through the head center)', items=SYM_AXIS_ITEMS, get=_group_enum('sym_axis')[0], set=_group_enum('sym_axis')[1])
     group_ticked: BoolProperty(name='Convert This Group', description='Ticked for conversion: the Conversion sliders edit it and Convert makes its mesh', get=_group_flag('ticked')[0], set=_group_flag('ticked')[1])
     # the project's view settings kept in the file (settings.xray, 11318): the curves and anchors drawn through the head
-    settings_xray: FloatProperty(name='X-ray', description='How much the curves and anchors show through the head and the walls (0: hidden behind them)', min=0.0, max=1.0, subtype='FACTOR', get=_get_xray, set=_set_xray)
+    settings_xray: FloatProperty(name='X-Ray', description='How much the curves and anchors show through the head and the walls (0: hidden behind them)', min=0.0, max=1.0, subtype='FACTOR', get=_get_xray, set=_set_xray)
     settings_guide_opacity: FloatProperty(name='Guide Opacity', description='How much the guide lines show in the viewport', min=0.05, max=1.0, step=5, precision=2, subtype='FACTOR', get=_get_guide_opacity, set=_set_guide_opacity)
 
 
@@ -576,23 +664,27 @@ class HairMeshConvProps(PropertyGroup):
     is let go, and pushes one step with the model and the preview (a Scene property's step comes right after the
     release, before any rebuild could). Views on the model, nothing is stored here."""
     # the selected group's own parameters (the group sheet, 8665-8689)
-    group_step: FloatProperty(name='Loop Step', description=CONV_DESC['step'], min=0.0, soft_max=10000.0, precision=4, get=_conv_prop('step', 'float', 'group')[0], set=_conv_prop('step', 'float', 'group')[1])
+    group_step: FloatProperty(name='Loop Step', description=CONV_DESC['step'], min=0.0, soft_max=10000.0, precision=2, get=_conv_prop('step', 'float', 'group')[0], set=_conv_prop('step', 'float', 'group')[1])
     group_dev: FloatProperty(name='Deviation', description=CONV_DESC['dev'], min=0.0, max=1.0, subtype='FACTOR', get=_conv_prop('dev', 'float', 'group')[0], set=_conv_prop('dev', 'float', 'group')[1])
     group_straighten: FloatProperty(name='Fix Sharp Angles', description=CONV_DESC['straighten'], min=0.0, max=1.0, subtype='FACTOR', get=_conv_prop('straighten', 'float', 'group')[0], set=_conv_prop('straighten', 'float', 'group')[1])
-    group_loop_orient: FloatProperty(name='Loops Horiz ↔ Perp', description=CONV_DESC['loopOrient'], min=0.0, max=1.0, subtype='FACTOR', get=_conv_prop('loopOrient', 'float', 'group')[0], set=_conv_prop('loopOrient', 'float', 'group')[1])
+    group_loop_orient: FloatProperty(name='Loop Direction', description=CONV_DESC['loopOrient'], min=0.0, max=1.0, subtype='FACTOR', get=_conv_prop('loopOrient', 'float', 'group')[0], set=_conv_prop('loopOrient', 'float', 'group')[1])
     group_tip_mode: EnumProperty(name='Tips', description=CONV_DESC['tipMode'], items=TIP_MODE_ITEMS, get=_conv_prop('tipMode', 'enum', 'group')[0], set=_conv_prop('tipMode', 'enum', 'group')[1])
     group_relax: FloatProperty(name='Relax Loop Spacing', description=CONV_DESC['relax'], min=0.0, max=1.0, subtype='FACTOR', get=_conv_prop('relax', 'float', 'group')[0], set=_conv_prop('relax', 'float', 'group')[1])
     group_merge_trunks: BoolProperty(name='Merge Shared Trunks', description=CONV_DESC['mergeTrunks'], get=_conv_prop('mergeTrunks', 'bool', 'group')[0], set=_conv_prop('mergeTrunks', 'bool', 'group')[1])
+    group_proxy: BoolProperty(name='Detail Proxy', description=CONV_DESC['proxy'], get=_conv_prop('proxy', 'bool', 'group')[0], set=_conv_prop('proxy', 'bool', 'group')[1])   # (ours, as Merge Shared Trunks: the original has the Conversion tab's box alone, CONV_UI 13176 in 1.0.3)
     # the Conversion panel (9028-9130): the sliders edit the ticked groups (and the groups nested in them), else the project defaults
-    conv_step: FloatProperty(name='Loop Step', description=CONV_DESC['step'], min=0.0, soft_max=10000.0, precision=4, get=_conv_prop('step', 'float', 'ticked')[0], set=_conv_prop('step', 'float', 'ticked')[1])
+    conv_step: FloatProperty(name='Loop Step', description=CONV_DESC['step'], min=0.0, soft_max=10000.0, precision=2, get=_conv_prop('step', 'float', 'ticked')[0], set=_conv_prop('step', 'float', 'ticked')[1])
     conv_dev: FloatProperty(name='Deviation', description=CONV_DESC['dev'], min=0.0, max=1.0, subtype='FACTOR', get=_conv_prop('dev', 'float', 'ticked')[0], set=_conv_prop('dev', 'float', 'ticked')[1])
     conv_straighten: FloatProperty(name='Fix Sharp Angles', description=CONV_DESC['straighten'], min=0.0, max=1.0, subtype='FACTOR', get=_conv_prop('straighten', 'float', 'ticked')[0], set=_conv_prop('straighten', 'float', 'ticked')[1])
-    conv_loop_orient: FloatProperty(name='Loops Horiz ↔ Perp', description=CONV_DESC['loopOrient'], min=0.0, max=1.0, subtype='FACTOR', get=_conv_prop('loopOrient', 'float', 'ticked')[0], set=_conv_prop('loopOrient', 'float', 'ticked')[1])
+    conv_loop_orient: FloatProperty(name='Loop Direction', description=CONV_DESC['loopOrient'], min=0.0, max=1.0, subtype='FACTOR', get=_conv_prop('loopOrient', 'float', 'ticked')[0], set=_conv_prop('loopOrient', 'float', 'ticked')[1])
     conv_tip_mode: EnumProperty(name='Tips', description=CONV_DESC['tipMode'], items=TIP_MODE_ITEMS, get=_conv_prop('tipMode', 'enum', 'ticked')[0], set=_conv_prop('tipMode', 'enum', 'ticked')[1])
     conv_relax: FloatProperty(name='Relax Loop Spacing', description=CONV_DESC['relax'], min=0.0, max=1.0, subtype='FACTOR', get=_conv_prop('relax', 'float', 'ticked')[0], set=_conv_prop('relax', 'float', 'ticked')[1])
     conv_merge_trunks: BoolProperty(name='Merge Shared Trunks', description=CONV_DESC['mergeTrunks'], get=_conv_prop('mergeTrunks', 'bool', 'ticked')[0], set=_conv_prop('mergeTrunks', 'bool', 'ticked')[1])
+    conv_proxy: BoolProperty(name='Detail Proxy', description=CONV_DESC['proxy'], get=_conv_prop('proxy', 'bool', 'ticked')[0], set=_conv_prop('proxy', 'bool', 'ticked')[1])   # 1.0.3: the checkbox #detailProxy (574, setConv 14274 there)
+    conv_merge_dist: FloatProperty(name='Merge Distance', description=CONV_DESC['mergeDist'], min=0.0, soft_max=10000.0, precision=2, get=_conv_prop('mergeDist', 'dist', 'ticked')[0], set=_conv_prop('mergeDist', 'dist', 'ticked')[1])   # 1.0.2 (557): a measure, not a slider
 
 
+add_unit_twins(HairMeshConvProps, 'group_step', 'conv_step', 'conv_merge_dist')
 CONV_ATTRS = frozenset(HairMeshConvProps.__annotations__)
 
 
@@ -626,6 +718,9 @@ def data_of(context, attr, hm=None):
     from .brush import BRUSH_ATTRS
     if attr in BRUSH_ATTRS:
         return context.window_manager.hairmesh_brush           # (4.7b: the brush's settings)
+    from .ops_rib import RIB_ATTRS
+    if attr in RIB_ATTRS:
+        return context.window_manager.hairmesh_rib             # (the flat lock's sheets)
     from .ops_topology import TOPO_DEF_ATTRS, TOPO_ITEM_ATTRS
     if attr in TOPO_DEF_ATTRS:
         return context.scene.hairmesh_topo                     # (4.4: the Topology tab's settings for new items)

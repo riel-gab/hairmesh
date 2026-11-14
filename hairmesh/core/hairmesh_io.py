@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Reading a .hairmesh project (JSON) into the data model: what loadProject (hair-modeler.clean.html:9450) and
 restore (1218) do with the file, minus everything that is display state."""
 import json
+import math
+import re
 import os
+from typing import Any
 
 from . import model as M
-from .headobj import box_frame, fit_to_box, head_geometry
-from .js import js_max, js_min, js_or, to_precision_number, truthy
+from .headobj import box_frame, fit_to_box, head_geometry, head_look
+from .js import js_max, js_min, js_or, to_fixed, to_precision_number, truthy
 from .vec3 import Vec3
 
 STRIP_KEYS = ('refs', 'thumb')          # reference-board images and the thumbnail: heavy, never part of the geometry
@@ -39,8 +42,8 @@ def load_project_text(text, name='project', strip=STRIP_KEYS):
 def project_from_dict(P, name='project', strip=STRIP_KEYS, load=True):
     """port of the data part of loadProject (9450) + restore (1218). P is mutated: stripped keys are removed.
     load=False: the project's own text read back inside a session (the session's model after an undo, a redo, a
-    reopened .blend) — what restore (1220) does with a snapshot: the model comes back exactly as it was written, so
-    loadProject's fix-ups of a saved file stay out (the stale global step, 10164: the Conversion tab's project loop
+    reopened .blend) — what restore (1358) does with a snapshot: the model comes back exactly as it was written, so
+    loadProject's fix-ups of a saved file stay out (the stale global step, 12813: the Conversion tab's project loop
     step undone came back as the hair's step — 21/10/2026)."""
     if not isinstance(P, dict) or P.get('app') != 'anime-hair-modeler':
         raise ProjectFormatError('Not a Stylized HairMesh Creator project')
@@ -55,7 +58,8 @@ def project_from_dict(P, name='project', strip=STRIP_KEYS, load=True):
     # ---- head (loadProject 9461-9465) ----
     h = P.get('head')
     if h and h.get('src'):
-        proj.head = M.Head(id=h['id'], name=h.get('name', ''), visible=h.get('visible', True), showWire=bool(h.get('showWire')), src=h['src'])
+        proj.head = M.Head(id=h['id'], name=h.get('name', ''), visible=h.get('visible', True), showWire=bool(h.get('showWire')), src=h['src'],
+                           look=head_look(h.get('look'), h['src']))      # 1.0.2 (loadProject 12798: makeHeadItem → normLook)
         geo = head_geometry(proj.head)
         if geo:
             proj.S = fit_to_box(geo[0])                             # restore → fitToBox when the head changed (1265)
@@ -77,7 +81,7 @@ def project_from_dict(P, name='project', strip=STRIP_KEYS, load=True):
     for o in P['items']:
         proj.items[o['id']] = _item_from_dict(o, proj)
 
-    # ---- no head: the frame comes from the hair (1.0.1: loadProject 10160 calls fitToHair) ----
+    # ---- no head: the frame comes from the hair (loadProject 14394 calls fitToHair) ----
     if proj.head is None:
         frame = fit_to_hair(proj)
         if frame is not None:
@@ -85,6 +89,7 @@ def project_from_dict(P, name='project', strip=STRIP_KEYS, load=True):
 
     proj.roots = list(P['roots'])
     proj.counters = dict(P.get('counters') or {})
+    meshMaskMerge(proj)                                             # 1.0.2 (restore, 1393: after the roots, whose masks it takes out)
     c = P.get('conv')
     if c:                                                           # (restore, 1265: a file saved with a conversion pending opens with it; a session's own text never has it)
         proj.conv = {'entries': list(c['entries']), 'hidden': list(c['hidden']), 'replaced': [], 'shown': []}
@@ -112,6 +117,9 @@ def project_from_dict(P, name='project', strip=STRIP_KEYS, load=True):
         S.guideOpacity = st['guideOpacity']
     if st.get('brushMode'):
         S.brushMode = st['brushMode']
+    applyView(S, st.get('view'))                                    # 1.0.3 (14405): the viewport display of this project
+    # settings of a later version: kept as read, written back after the known ones
+    S.extra = {k: _copy(v) for k, v in st.items() if k not in _SETTINGS_KNOWN}
     S.convChecked = [i for i in (st.get('convChecked') or []) if i in proj.items]
     if load:
         # guides made before the Guides group existed move into it (loadProject 10172-10173; lot 4.2: missing until
@@ -147,13 +155,138 @@ def anchor_from_dict(r):
     return a
 
 
+_SETTINGS_KNOWN = frozenset(M.CONV_KEYS) | {'convChecked', 'guideDefaults', 'xray', 'guideOpacity', 'brushMode', 'density', 'view'}
+
+
+_HEX6 = re.compile(r'#[0-9a-f]{6}\Z', re.I)                     # /^#[0-9a-f]{6}$/i
+
+
+def _num(v):
+    """the unary plus of applyView (`+v[k]`) on what a JSON file can hold"""
+    if v is True or v is False:
+        return 1 if v else 0
+    if isinstance(v, (int, float)):
+        return v
+    if v is None:
+        return 0
+    if isinstance(v, str):
+        try:
+            return float(v) if v.strip() else 0
+        except ValueError:
+            return math.nan
+    return math.nan
+
+
+def applyView(S, v):
+    # port of applyView (hair-modeler.clean.html:15818 of 1.0.3), the data part: each value taken only when it is one
+    if not isinstance(v, dict):
+        return
+    for k in M.VIEW_SHOW:
+        if v.get(k) is True or v.get(k) is False:
+            S.view[k] = v[k]
+    for k in M.VIEW_OP:
+        n = _num(v[k]) if k in v else math.nan
+        if n > 0 and n <= 1:
+            if k == 'guideOpacity':
+                S.guideOpacity = n
+            else:
+                S.view[k] = n
+    if 'xray' in v and v['xray'] is not None:
+        n = _num(v['xray'])
+        if n >= 0 and n <= 1:
+            S.xray = max(0, min(1, n))                              # setXray (15772)
+    if v.get('oneColor') is True or v.get('oneColor') is False:
+        S.view['oneColor'] = v['oneColor']
+    mc = v.get('modelColor')
+    if isinstance(mc, str) and _HEX6.match(mc):
+        S.view['modelColor'] = mc
+
+
+def viewData(S):
+    # port of viewData (hair-modeler.clean.html:15813 of 1.0.3)
+    o = {'xray': S.xray, 'oneColor': bool(S.view['oneColor']), 'modelColor': S.view['modelColor']}
+    for k in M.VIEW_SHOW:
+        o[k] = S.view[k] is not False
+    for k in M.VIEW_OP:
+        o[k] = S.guideOpacity if k == 'guideOpacity' else S.view[k]
+    return o
+
+
+def _copy(v):
+    """a deep copy of plain JSON data (JSON.parse(JSON.stringify(v)) / cloneLook of the original)"""
+    return json.loads(json.dumps(v))
+
+
+def js_json_copy(v):
+    """JSON.parse(JSON.stringify(v)) of plain data that may hold NaN / ±Infinity (a flat lock's weights painted past
+    their saved end, 1.1f): those become null, as JSON.stringify writes them"""
+    if isinstance(v, dict):
+        return {k: js_json_copy(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [js_json_copy(x) for x in v]
+    if isinstance(v, float) and (v != v or v in (math.inf, -math.inf)):
+        return None
+    return v
+
+
+def meshMaskMerge(proj):
+    """port of meshMaskMerge (hair-modeler.clean.html:1426): the separate Mask modifiers of an imported mesh (1.0.1) go
+    into its Thickness modifier as `hold` (the first mask becomes that modifier when there is none)"""
+    old = [x for x in proj.items.values() if x.type == 'xmod' and x.mesh is not None and x.kind == 'mask']
+    for mid in dict.fromkeys(x.mesh for x in old):
+        mk = [x for x in old if x.mesh == mid]; on = [x for x in mk if x.visible is not False and x.mask]
+        n = max([len(x.mask) if x.mask else 0 for x in mk])
+        if not (n > 0):
+            continue
+
+        def keep(v):
+            k = 1
+            for x in on:
+                w = x.mask[v] if v < len(x.mask) else None
+                k = k * (1 - (w if w else 0))
+            return 1 - k
+        hold = [keep(v) for v in range(n)]
+        th = [x for x in proj.items.values() if x.type == 'xmod' and x.mesh == mid and x.kind == 'thick']
+        if not th:                                                  # the first mask becomes the Thickness modifier
+            x = mk.pop(0)
+            x.kind = 'thick'; x.p = {'amt': 0}; x.mask = [0] * n; x.visible = True
+            x.name = re.sub(r'^Mask', 'Thickness', x.name); th = [x]
+        for x in th:
+            x.hold = list(hold)
+        for x in mk:
+            del proj.items[x.id]
+            arr = proj.roots if x.parent is None else getattr(proj.items.get(x.parent), 'children', None)
+            if arr and x.id in arr:
+                arr.remove(x.id)
+        m = proj.items.get(mid)
+        if m is not None and hasattr(m, 'dirty'):
+            m.dirty = True
+
+
 def item_from_dict(o, proj):
     """an item record of the file as restore (1237-1257) makes it; a curve's anchors must be in proj.anchors"""
     return _item_from_dict(o, proj)
 
 
-def _common(o):
+def _common(o) -> dict[str, Any]:
     return dict(id=o['id'], type=o['type'], name=o.get('name', ''), parent=o.get('parent'), visible=o.get('visible', True), q=list(o['q']) if o.get('q') else None, raw=o)
+
+
+def _mask_in(m):
+    """copyTipMask (1679 in 1.0.3) of a file's mask: { curve id: a copy of the weights }; None when absent (JS truth: {} kept)"""
+    return {int(k): list(v) for k, v in m.items()} if truthy(m) else None
+
+
+def _mask_out(m):
+    """copyTipMask of an item's mask for the file: string keys in the order a JS object lists integer keys (ascending)"""
+    return {str(k): list(m[k]) for k in sorted(m, key=int)}
+
+
+def _fixed3(v):
+    """`+v.toFixed(3)` (the shell's deformation in the file, snapshot 1351 in 1.0.3); an integral value as an int, as
+    JSON.stringify writes it"""
+    x = float(to_fixed(v, 3))
+    return int(x) if x == int(x) else x
 
 
 def _item_from_dict(o, proj):
@@ -175,7 +308,9 @@ def _item_from_dict(o, proj):
             ovr[int(k)] = M.HandleOverride(in_=_v3(v['in']) if v.get('in') else None, out=_v3(v['out']) if v.get('out') else None)
         return M.Curve(**c, anchors=anchors, ovr=ovr, closed=bool(o.get('closed')), ring=o.get('ring'), round=o.get('round'), fair=o.get('fair'),
                        asm=o.get('asm'), asrc=[_v3(a) for a in o['asrc']] if o.get('asrc') else None, junc=bool(o.get('junc')), conn=o.get('conn'),
-                       para=bool(o.get('para')))
+                       para=bool(o.get('para')),
+                       rib=_copy(o['rib']) if truthy(o.get('rib')) else None,  # 1.0.2 (restore, 1359: JS truth, {} kept)
+                       path=[list(x) for x in o['path']] if truthy(o.get('path')) else None)   # ([] kept, 1360)
     if t == 'surface':
         return M.Surface(**c, a=o['a'], b=o['b'], p=dict(o.get('p') or {}))
     if t == 'guide':
@@ -189,6 +324,13 @@ def _item_from_dict(o, proj):
     if t == 'tip':
         mask = {int(k): list(v) for k, v in (o.get('mask') or {}).items()} if o.get('mask') else None
         return M.Tip(**c, p={'dens': 1.5, **(o.get('p') or {})}, mask=mask)
+    if t == 'even':                                                 # 1.0.3 (restore, 1403 there)
+        return M.Even(**c, p={**M.EVEN_DEFAULTS, **(o.get('p') or {})}, mask=_mask_in(o.get('mask')))
+    if t == 'shell':                                                # 1.0.3 (restore, 1404 there): off and def as JS truth reads them ([] kept)
+        d = o.get('def')
+        return M.Shell(**c, p={**M.SHELL_DEFAULTS, **(o.get('p') or {})}, baked=truthy(o.get('baked')), mask=_mask_in(o.get('mask')),
+                       off=list(o['off']) if truthy(o.get('off')) else None,
+                       def_=M.ShellDef(ns=d['ns'], na=d['na'], d=list(d['d']), v=d.get('v')) if truthy(d) else None)
     if t == 'tube':
         tube = M.Tube(**c, src=o.get('src'), profile=[list(q) for q in (o.get('profile') or [])], p=dict(o.get('p') or {}))
         if o.get('profs') is not None:                              # 1.0.1 (restore, 1254): the three profiles; profile = profs[0], one list
@@ -197,18 +339,20 @@ def _item_from_dict(o, proj):
                 tube.profile = tube.profs[0]
         return tube
     if t == 'xmod':
-        return M.XMod(**c, tube=o.get('tube'), kind=o.get('kind'), p=dict(o.get('p') or {}), mask=list(o['mask']) if o.get('mask') else None, mesh=o.get('mesh'))
+        return M.XMod(**c, tube=o.get('tube'), kind=o.get('kind'), p=dict(o.get('p') or {}), mask=list(o['mask']) if o.get('mask') else None, mesh=o.get('mesh'),
+                      hold=list(o['hold']) if o.get('hold') else None)   # 1.0.2 (restore, 1373)
     if t == 'imesh':
-        return M.IMesh(**c, src=o.get('src'))
+        return M.IMesh(**c, src=o.get('src'), collide=bool(o.get('collide')), smoothN=bool(o.get('smoothN')), look=_copy(o['look']) if o.get('look') else None)
     if t == 'mesh':
         d = o.get('data')
         data = M.MeshData(pos=[_v3(p) for p in d['pos']], faces=[list(f) for f in d['faces']]) if d else None
-        return M.MeshItem(**c, data=data, pending=bool(o.get('pending')), srcSurfs=list(o.get('srcSurfs') or []), srcCrowns=list(o.get('srcCrowns') or []), symBaked=bool(o.get('symBaked')))
+        return M.MeshItem(**c, data=data, pending=bool(o.get('pending')), srcSurfs=list(o.get('srcSurfs') or []), srcCrowns=list(o.get('srcCrowns') or []), symBaked=bool(o.get('symBaked')),
+                          smoothN=bool(o.get('smoothN')))
     return M.Item(**c)
 
 
 def fit_to_hair(proj):
-    """port of fitToHair (hair-modeler.clean.html:4271, new in 1.0.1): the frame (S.scale, headH, yRef, center) of a
+    """port of fitToHair (hair-modeler.clean.html:6284, new in 1.0.1): the frame (S.scale, headH, yRef, center) of a
     project without a head, from the box of every curve's anchors — Box3.expandByPoint on the positions as they are
     (doubles: no float32 here, unlike a head's box). None when there is no anchor (box.isEmpty(): the original keeps
     the frame it had)."""
@@ -252,9 +396,9 @@ def usedStep(proj):
     return best
 
 
-def defaultStep(proj):
+def defaultStep(proj) -> float:
     # port of defaultStep (1581): S.step || usedStep() || S.headH / 24
-    return js_or(proj.settings.step, js_or(usedStep(proj), proj.S.headH / 24))
+    return js_or(proj.settings.step, js_or(usedStep(proj), proj.S.headH / 24))   # type: ignore[return-value]  (never None: headH / 24 is a number)
 
 
 def project_json_text(P_dict):
@@ -287,6 +431,12 @@ def snapshot(proj, mesh_data=True):
                      labels=dict(it.labels) if it.labels else None, guidesOff=bool(it.guidesOff))
         elif t == 'imesh':
             o['src'] = it.src                                       # the file (shared, never changed)
+            if it.collide:
+                o['collide'] = True                                 # 1.0.2 (snapshot, 1301)
+            if it.smoothN:
+                o['smoothN'] = True
+            if it.look:
+                o['look'] = _copy(it.look)
         elif t == 'curve':
             ids = []
             for a in it.anchors:
@@ -318,6 +468,10 @@ def snapshot(proj, mesh_data=True):
                 o['junc'] = True
             if it.para:
                 o['para'] = True                                    # 1.0.1 (1204)
+            if truthy(it.rib):
+                o['rib'] = js_json_copy(it.rib)                     # 1.0.2 (1316): a flat lock (core/rib.py; NaN weights write null)
+            if truthy(it.path):
+                o['path'] = [list(x) for x in it.path]              # 1.0.2 (1317): an edge curve (kept, not edited here)
         elif t == 'surface':
             o.update(a=it.a, b=it.b, p=dict(it.p))
         elif t == 'guide':
@@ -326,20 +480,41 @@ def snapshot(proj, mesh_data=True):
             d = it.data
             o.update(data={'pos': [p.toArray() for p in d.pos], 'faces': [list(f) for f in d.faces]} if d and mesh_data else None,   # projectData (9378): arrays, not V3
                      pending=it.pending, srcSurfs=list(it.srcSurfs), srcCrowns=list(it.srcCrowns or []), symBaked=bool(it.symBaked))
+            if it.smoothN:
+                o['smoothN'] = True                                 # 1.0.2 (1321)
         elif t == 'tube':
             o.update(src=it.src, profile=[list(q) for q in it.profile], p=dict(it.p))
             if it.profs is not None:
                 o['profs'] = [[list(q) for q in P] for P in it.profs]   # 1.0.1 (1209), after p
         elif t == 'xmod':
-            o.update(tube=it.tube, kind=it.kind, p=dict(it.p), mask=list(it.mask) if it.mask else None)
+            if it.tube is not None:                                 # (an imported mesh's Extra: it.tube undefined, left out by JSON.stringify)
+                o['tube'] = it.tube
+            o.update(kind=it.kind, p=dict(it.p), mask=list(it.mask) if it.mask else None)
             if it.mesh is not None:
                 o['mesh'] = it.mesh
+            if it.hold:
+                o['hold'] = list(it.hold)                           # 1.0.2 (1323)
         elif t == 'crown':
             o.update(part=it.part, low=it.low, p=dict(it.p))
         elif t in ('cap', 'skin', 'tip'):
             o['p'] = dict(it.p)
             if t == 'tip' and it.mask:
                 o['mask'] = {str(k): list(w) for k, w in it.mask.items()}   # copyTipMask (1439); JSON keys are strings
+        elif t == 'even':                                           # 1.0.3 (snapshot, 1349-1350 there)
+            o['p'] = dict(it.p)
+            if truthy(it.mask):
+                o['mask'] = _mask_out(it.mask)
+        elif t == 'shell':                                          # 1.0.3 (snapshot, 1351 there): p, baked, then mask / off / def when set
+            o.update(p=dict(it.p), baked=bool(it.baked))
+            if truthy(it.mask):
+                o['mask'] = _mask_out(it.mask)
+            if truthy(it.off):
+                o['off'] = list(it.off)
+            D = it.def_
+            if D is not None:
+                o['def'] = {'ns': D.ns, 'na': D.na, 'd': [_fixed3(v) for v in D.d]}
+                if truthy(D.v):
+                    o['def']['v'] = D.v
         else:
             for k, v in it.raw.items():                             # a type the port does not model: written back as read
                 o.setdefault(k, v)
@@ -356,10 +531,12 @@ def project_to_dict(proj, mesh_data=True):
     d = {'app': 'anime-hair-modeler', 'version': 1}
     d.update(snapshot(proj, mesh_data))
     h = proj.head
-    d['head'] = {'id': h.id, 'name': h.name, 'visible': h.visible, 'showWire': bool(h.showWire), 'src': h.src or None} if h else None
+    d['head'] = {'id': h.id, 'name': h.name, 'visible': h.visible, 'showWire': bool(h.showWire), 'src': h.src or None, 'look': _copy(h.look) if h.look else None} if h else None
     d['settings'] = {'step': S.step, 'dev': S.dev, 'straighten': S.straighten, 'loopOrient': S.loopOrient, 'tipMode': S.tipMode, 'relax': S.relax,
-                     'mergeTrunks': S.mergeTrunks, 'convChecked': list(S.convChecked), 'guideDefaults': dict(S.guideDefaults), 'xray': S.xray,
-                     'guideOpacity': S.guideOpacity, 'brushMode': S.brushMode}
+                     'mergeTrunks': S.mergeTrunks, 'mergeDist': S.mergeDist, 'proxy': S.proxy, 'convChecked': list(S.convChecked), 'guideDefaults': dict(S.guideDefaults), 'xray': S.xray,
+                     'guideOpacity': S.guideOpacity, 'brushMode': S.brushMode, 'view': viewData(S)}
+    for k, v in S.extra.items():                                    # (a later version's settings, as read)
+        d['settings'].setdefault(k, _copy(v))
     if proj.camera is not None:
         d['camera'] = proj.camera
     if proj.credits:
@@ -381,7 +558,7 @@ def kept_fields(path):
 
 
 def with_kept(d, kept):
-    """the file dict with the kept fields where projectData (10050) puts them: thumb right after version, refs after
+    """the file dict with the kept fields where projectData (14284) puts them: thumb right after version, refs after
     camera (before credits)"""
     if not kept:
         return d

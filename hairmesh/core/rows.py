@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Surface (NURBS loft) -> quad topology: the row tables (hair-modeler.clean.html:1412-2730).
 
 A lock = the curves connected through surfaces. buildRowTables gives every curve of a lock the same number of
@@ -13,15 +13,17 @@ from bisect import bisect_left
 
 from .density import lockTip, tipConvert
 from .fdlibm import asin as _asin, cos as _cos
-from .geom import atF, chunkBoxes, inBox, nearBoxes, nearestF, polyBox, polyIndex, polyLen, resample, zoneWeight
+from .detail import DETAIL_DENS, lockDetail, proxyLoops
+from .geom import _grid_key, atF, chunkBoxes, inBox, nearBoxes, nearestF, nearestWithin, polyBox, polyIndex, polyLen, resample, zoneWeight
 from .guides import lockGuideRows
-from .js import at, clamp, includes, index_of, js_max, js_min, js_or, js_round, js_str, nullish, to_fixed, truthy
+from .js import at, clamp, includes, index_of, js_max, js_min, js_or, js_round, js_str, nullish, to_fixed, to_int32, truthy
 from .junction import lockJunctionRows
 from .raycast import Box3
-from .rowbase import Comp, Lock, Row, RowBuild, RowTable, convOf, levelH, rowPlane, settings_conv   # noqa: F401 (re-exported)
+from .rowbase import Comp, Lock, Ring, Row, RowBuild, RowTable, convOf, levelH, proxyOn, rowPlane, settings_conv   # noqa: F401 (re-exported)
 from .sections import lockSecs, resampleParallel
+from .shell import shellAdopt, shellKeep, shellParaCut, shellSets
 from .trace import br as _br, dec as _dec, dec_near, set_ctx
-from .trunks import curveRowF, trunkFade, trunkLevels, trunkOnly, trunkOwnFs
+from .trunks import curveRowF, forkSnap, trunkFade, trunkLevels, trunkOnly, trunkOwnFs
 from .vec3 import V3
 
 NS = 160                                                            # samples per resampled lock curve (1598)
@@ -29,10 +31,45 @@ ALIGN_TILT = 30                                                     # degrees (1
 CLEAN_K = 400                                                       # (2347)
 
 
+# A junction or Fill-hole curve (c.junc — not an edge curve of an X cut, c.path: those part the lock on purpose) runs
+# along a curve of its lock down to the tip (the stretch below the fork): there they are one edge, and the walls on them
+# one lock — else every junction cut its lock into pieces, each converted with loops of its own (squeezed together at
+# the fork). Pairs of curve ids (among `ids`, one of them c.junc) whose last three anchors, ending on a lock tip (the
+# last anchor of an ordinary curve), are the same. (A shorter run, like the V edge at a fork, is shared by the walls of
+# two locks; a curve running from the tip up — a Fill-hole curve may — would count its loops backwards along the lock.)
+# The junction curve must also start on a root (as Unite's do: they copy the trunk) — the loops of a lock are laid out
+# along curves running root to tip; one starting at the fork doubled every loop below it.
+def tailMates(P, ids, opts=None):
+    # port of tailMates (hair-modeler.clean.html:13234)
+    if opts is not None and opts.get('tails') is False:
+        return []
+    tips = set(); roots = set()                                     # (of the walls' own ordinary curves — not a free one)
+    for cid in ids:
+        h = P.items.get(cid)
+        if h and h.type == 'curve' and not h.junc and not truthy(h.ring) and len(h.anchors):
+            tips.add(h.anchors[len(h.anchors) - 1]); roots.add(h.anchors[0])
+    by = {}
+    for cid in ids:
+        c = P.items.get(cid)
+        if not c or c.type != 'curve' or truthy(c.ring) or truthy(c.path) or len(c.anchors) < 3:
+            continue
+        A = c.anchors; n = len(A)
+        if A[n - 1] not in tips or (c.junc and A[0] not in roots):
+            continue
+        key = '>'.join(js_str(a.id) for a in (A[n - 1], A[n - 2], A[n - 3]))
+        by.setdefault(key, []).append(c)
+    out = []
+    for l in by.values():
+        if len(l) > 1 and any(c.junc for c in l):
+            for i in range(1, len(l)):
+                out.append([l[0].id, l[i].id])
+    return out
+
+
 # Curves connected through surfaces form one lock. All walls of a lock share one row table,
 # so shared edge curves get identical vertices and the walls weld cleanly on conversion.
 def surfaceComponents(P):
-    # port of surfaceComponents (hair-modeler.clean.html:1603)
+    # port of surfaceComponents (hair-modeler.clean.html:1852)
     par = {}
 
     def find(x):
@@ -48,6 +85,10 @@ def surfaceComponents(P):
         ra = find(s.a); rb = find(s.b)
         if ra != rb:
             par[ra] = rb
+    for a, b in tailMates(P, list(par)):                            # (lockGroups)
+        ra = find(a); rb = find(b)
+        if ra != rb:
+            par[ra] = rb
     comps = {}
     for cid in par:
         comps.setdefault(find(cid), []).append(cid)
@@ -57,10 +98,11 @@ def surfaceComponents(P):
 # A branch curve that starts at an anchor welded to the MIDDLE of another lock's curve (Y-junction) is,
 # for loop building, continued back along that host curve so all curves of the branch start together.
 def extendAlongHost(P, c, lockCurves, need, byAnchor=None):
-    # port of extendAlongHost (hair-modeler.clean.html:2191)
+    # port of extendAlongHost (hair-modeler.clean.html:2504)
     # byAnchor (P.anchor_curves()): only the curves using J are tried, in curves() order, so the first host found is
     # the one the original's scan of every curve finds (a curve not using J never passes `0 < k`).
-    if need < 1e-6:
+    # (an edge curve begins at its zone's border on purpose — an X, a cut: continued back it made a sliver of wall there)
+    if need < 1e-6 or truthy(c.path):
         return None
     for end in (0, len(c.anchors) - 1):
         J = c.anchors[end]
@@ -116,11 +158,15 @@ def spineRows(ctx, sp, refPlanes, guideRows=(), welded=False, junctionRows=()):
     TIPZ = ctx.TIPZ
     tipM = (lambda d: 1 + (TIPZ['dens'] - 1) * TIPZ['mw'][clamp(js_round(fAt(d)), 0, N - 1)]) if TIPZ else (lambda d: 1)
 
+    # detail on the lock (lockDetail): up to DETAIL_DENS more loops there, by its strength (1.0.3, 1910)
+    DETZ = ctx.DETZ
+    detM = (lambda d: 1 + DETAIL_DENS * DETZ['s'][clamp(js_round(fAt(d)), 0, N - 1)]) if DETZ else (lambda d: 1)
+
     def mult(d):
         m = 1
         for g in gz:
             m += (g['dens'] - 1) * gw(g, abs(d - g['d']))
-        return js_max(m, 0.1) * tipM(d)
+        return js_max(m, 0.1) * tipM(d) * detM(d)
     # Bends: loops get closer where the lock turns — by up to `deviation` (30° of turn per step = full effect)
     tanAt = lambda i: sp[min(i + 1, N - 1)].clone().sub(sp[max(i - 1, 0)]).normalize()
     bendK = [0] * N
@@ -156,7 +202,7 @@ def spineRows(ctx, sp, refPlanes, guideRows=(), welded=False, junctionRows=()):
                     own = rowPlane(CP, sp, f)
                     if own and _dec('spineRows.tilt', abs(own['n'].dot(pl['n'])), tiltCos) < tiltCos:
                         _br('spineRows.tiltRejected'); break
-                aligned.append(Row(f=f, plane={'p': pl['p'], 'n': pl['n']}, pts=pl['pts'], aligned=True, open=pl.get('open', False), trunk=bool(pl.get('trunk')), lg=pl['lg'] or None, pj=bool(pl['junc'])))
+                aligned.append(Row(f=f, plane={'p': pl['p'], 'n': pl['n']}, pts=pl['pts'], aligned=True, open=pl.get('open', False), trunk=bool(pl.get('trunk')), lg=pl['lg'] or None, pj=bool(pl['junc']), ring=pl.get('ring') or None))
                 break
     aligned.sort(key=lambda r: r.f)
     # the guide wins there — but never over a welded trunk
@@ -272,9 +318,11 @@ def dropSlivers(ctx, rows, Fs, Ps, plen=None):
 
 # Deviation guard: wherever two consecutive loops are further apart than step × (1 + deviation) on some curve,
 # loops are inserted — a lock never turns into a long box without loops.
-def enforceMaxGap(ctx, rows, Fs, Ps, sp, dev, spans, plen=None, spLen=None):
-    # port of enforceMaxGap (hair-modeler.clean.html:2309); plen / spLen: polyLen of the curves and the spine, when known
-    hL = levelH(ctx)
+def enforceMaxGap(ctx, rows, Fs, Ps, sp, dev, spans, plen=None, spLen=None, L=None):
+    # port of enforceMaxGap (hair-modeler.clean.html:2661; 2661 in 1.0.3, which passes the lock L: the proxy shells'
+    # rings); plen / spLen: polyLen of the curves and the spine, when known
+    hL = levelH(ctx); guideGap = ctx.DBG['mergeOpts'].get('guideGap') is not False
+    nearRingOff = ctx.DBG.get('nearRing') is False; gapShell = ctx.DBG.get('gapShell') is not False
     pl = [polyLen(P) for P in Ps] if plen is None else plen
     unit = [pl[ci] / (len(P) - 1) for ci, P in enumerate(Ps)]; spl = js_or(polyLen(sp) if spLen is None else spLen, 1e-9)
     scale = [js_max(pl[ci] / spl, 0.25) for ci in range(len(Ps))]   # a curve on the outside of a bend is longer
@@ -283,7 +331,12 @@ def enforceMaxGap(ctx, rows, Fs, Ps, sp, dev, spans, plen=None, spLen=None):
     for k in range(1, len(rows)):
         a = rows[k - 1]; b = rows[k]; tgt = js_max(js_min(js_or(a.tgt, hL), js_or(b.tgt, hL)), 0.05 * hL)
         # between two loops shared exactly with an earlier lock that lock already made the gap right
-        if (a.exact and b.exact) or onTrunk(a, b):
+        # (1.0.3, 2675-2679: between two rings of a proxy shell the shell set the spacing — two rings NEXT to each other
+        # only; `a.shell >= 0.5` of a loop without one is false)
+        ringsNext = a.shell is not None and a.shell >= 0.5 and b.shell is not None and b.shell >= 0.5 \
+            and (nearRingOff or a.shellRing is None or b.shellRing is None or a.shellSet is not b.shellSet or a.shellRing.get('pi') is None
+                 or abs(b.shellRing['pi'] - a.shellRing['pi']) <= 1)
+        if (a.exact and b.exact) or onTrunk(a, b) or ringsNext:
             oR.append(b)
             for ci, F in enumerate(Fs):
                 oF[ci].append(F[k])
@@ -291,7 +344,17 @@ def enforceMaxGap(ctx, rows, Fs, Ps, sp, dev, spans, plen=None, spLen=None):
         worst = 0
         for ci, F in enumerate(Fs):
             worst = js_max(worst, (F[k] - F[k - 1]) * unit[ci] / (tgt * scale[ci]))
-        if _dec('enforceMaxGap.worst', worst, 1 + dev) > 1 + dev:
+        # next to a guide loop half a step more: a guide drawn at a slant to the lock's loops leaves the gap after it longer on
+        # one side and shorter on the other — a loop put in split the long side in two (0.6 steps) and passed the crowding on
+        # to every lock welded to this one (a band of dense loops under the guide)
+        lim = 1.5 + dev if (a.guide or b.guide) and guideGap else 1 + dev
+        # (1.0.3, 2688-2695: between two rings of one proxy shell, next to each other, on a lock of the tail itself: the
+        # shell's gap — the longest over its locks, gw — by the shell's step there)
+        ra = a.shellRing; rb = b.shellRing
+        if gapShell and ra is not None and rb is not None and a.shellSet is b.shellSet and L is not None and a.shellSet.get('bound') is not None and L in a.shellSet['bound'] \
+                and ra.get('pi') is not None and rb.get('pi') == ra['pi'] + 1 and truthy(ra.get('st')) and truthy(rb.get('st')) and a.shellSet['planes'][ra['pi']]['gw'] > 0:
+            worst = a.shellSet['planes'][ra['pi']]['gw'] / ((ra['st'] + rb['st']) / 2)
+        if _dec('enforceMaxGap.worst', worst, lim) > lim:
             m = js_min(js_max(math.ceil(worst / (1 + dev)), js_round(worst)), 200)   # capped: never runaway
             _br('enforceMaxGap.inserted')
             for q in range(1, m):
@@ -311,10 +374,22 @@ def _unitInv(l2):
     return 1 / (l if l == l and l != 0 else 1)
 
 
+def _detC(det, rows, nsp):
+    """buildRowTables' detC (1.0.3, 3772): is curve ci's point of loop k the proxy's — a detailed curve in the detail
+    zone (straightenLoops skips its walls there)"""
+    dw = det['w']; dd = det['d']
+
+    def detC(k, ci):
+        i = clamp(js_round(rows[k].f), 0, nsp)
+        return dw[i] >= 0.01 and dd[ci][i] >= 0.25
+    return detC
+
+
 # Fix sharp angles: each loop slides along the curves so its edges stand square to their walls (the original's
 # comment block at 2336-2346: stiffness 1 / width², groups of coincident points, Clean Topology walls CLEAN_K stiffer).
-def straightenLoops(ctx, rows, Fs, Ps, pairs, s, plen=None):
-    # port of straightenLoops (hair-modeler.clean.html:2348); plen: polyLen of every P, when already known
+def straightenLoops(ctx, rows, Fs, Ps, pairs, s, plen=None, skip=None):
+    # port of straightenLoops (hair-modeler.clean.html:2720); plen: polyLen of every P, when already known
+    # skip(k, ci) (1.0.3, 2720): a curve whose point of loop k comes from the proxy (proxyLoops) — its walls don't pull the loop there
     if not pairs or (not (s > 0) and not any(p[2] for p in pairs)):
         return
     R = len(rows); C = len(Ps); h = levelH(ctx); thr = 60 * (1 - s); tol = 0.02 * h; hold = 0.1
@@ -331,7 +406,10 @@ def straightenLoops(ctx, rows, Fs, Ps, pairs, s, plen=None):
         inv = _unitInv(tx * tx + ty * ty + tz * tz)
         return ax + tx * t, ay + ty * t, az + tz * t, tx * inv, ty * inv, tz * inv
     pinned = lambda k, ci: k == 0 or k == R - 1 or (rows[k].fixed is not None and ci in rows[k].fixed) or (rows[k].exactC is not None and ci in rows[k].exactC) \
-        or (rows[k].tm is not None and ci in rows[k].tm) or (rows[k].jfix is not None and ci in rows[k].jfix)
+        or (rows[k].tm is not None and ci in rows[k].tm) or (rows[k].jfix is not None and ci in rows[k].jfix) \
+        or rows[k].tgap or (rows[k].forkC is not None and ci in rows[k].forkC)
+    # (a loop cut through both ends of a neighbour's gap — trunkLevels: gapEnd — is one cut for every lock filling the
+    # gap: squared here, in one narrow diagonal wall, it went back to the zigzag)
     F0 = [list(F) for F in Fs]
     for k in range(1, R - 1):
         # curves whose points of this loop coincide move as one (a group); a group with a held point stays
@@ -359,7 +437,8 @@ def straightenLoops(ctx, rows, Fs, Ps, pairs, s, plen=None):
             lo[g] = js_max(lo[g], -(gp - js_min(0.35 * gp, 0.25 * h))); hi[g] = js_min(hi[g], gn - js_min(0.35 * gn, 0.25 * h))
         x = [0] * C                                                 # arc-length shift of each group
         # (the groups are fixed for this loop: find() is resolved once per pair, not 40 times)
-        pg = [(i, j, clean, find(i), find(j), Fs[i][k], Fs[j][k], Ps[i], Ps[j]) for i, j, clean in pairs]
+        # (skip is fixed for a loop too: `gi === gj || (skip && (skip(k, i) || skip(k, j)))` leaves the pair out of every pass)
+        pg = [(i, j, clean, find(i), find(j), Fs[i][k], Fs[j][k], Ps[i], Ps[j]) for i, j, clean in pairs if skip is None or not (skip(k, i) or skip(k, j))]
         for _ in range(40):
             num = [0] * C; den = [0] * C
             for i, j, clean, gi, gj, Fik, Fjk, Pi, Pj in pg:
@@ -495,19 +574,8 @@ def backfillTrunk(ctx, T, locks):
         for c in L.cs:
             lockOf[c.id] = L
 
-    # (segD, arcOf, onPoly and has are the original's Vector3 chains written out on scalars, the same operations in
-    # the same order as nearestF / distanceTo: these run over a million segments on the example)
-    def segD(p, a, b):
-        ax = a.x; ay = a.y; az = a.z; abx = b.x - ax; aby = b.y - ay; abz = b.z - az
-        l2 = abx * abx + aby * aby + abz * abz
-        if l2 > 0:
-            t = ((p.x - ax) * abx + (p.y - ay) * aby + (p.z - az) * abz) / l2
-            t = 0 if t <= 0 else 1 if t >= 1 else t
-        else:
-            t = 0
-        dx = (ax + abx * t) - p.x; dy = (ay + aby * t) - p.y; dz = (az + abz * t) - p.z
-        return math.sqrt(dx * dx + dy * dy + dz * dz)
-
+    # (1.0.3 dropped segD: onPoly asks nearestWithin, arcOf asks nearestF; has is the original's Vector3 chain written
+    # out on scalars)
     # (speed, ours, lot 4.2c: nothing moves during the backfill — the curves' samples stay, a loop point is never
     # changed, only new ones are INSERTED — so arcOf(c, p) and onPoly(p, pr) are fixed for a given (curve or stretch,
     # point) and are computed once: memos keyed by identity, each entry holding the point itself so its id cannot be
@@ -516,6 +584,8 @@ def backfillTrunk(ctx, T, locks):
     # the original asked all three again and again: on a tangled model (docs/fase-4-desempenho.md, "Achado do
     # stress") 12.5 million onPoly, 4.2 million has and a million arcOf calls, ~550 s.)
     arcMemo = {}                                                    # curve id -> { id(p): (p, arc position) }
+    spMemo = {}                                                     # curve id -> (its sample points, their polyIndex)
+    pgrids = {}                                                     # nearestWithin's grids of the shared stretches (POLY_GRID, by this run's polylines)
 
     # arc position of p along curve c (its samples), and the point at an arc position
     def arcOf(c, p):
@@ -525,19 +595,14 @@ def backfillTrunk(ctx, T, locks):
         ent = m.get(id(p))
         if ent is not None and ent[0] is p:
             return ent[1]
-        s = c.samples; A = c.arc; best = 0; bd = math.inf; px = p.x; py = p.y; pz = p.z
-        for i in range(len(s) - 1):
-            a = s[i].p; b = s[i + 1].p; ax = a.x; ay = a.y; az = a.z
-            abx = b.x - ax; aby = b.y - ay; abz = b.z - az; l2 = abx * abx + aby * aby + abz * abz
-            if l2 > 0:
-                t = ((px - ax) * abx + (py - ay) * aby + (pz - az) * abz) / l2
-                t = 0 if t <= 0 else 1 if t >= 1 else t
-            else:
-                t = 0
-            dx = (ax + abx * t) - px; dy = (ay + aby * t) - py; dz = (az + abz * t) - pz
-            d = dx * dx + dy * dy + dz * dz
-            if d < bd:
-                bd = d; best = A[i] + (A[i + 1] - A[i]) * t
+        # (1.0.3, 3862-3866: nearestF over the curve's sample points, then the arc at that fractional index — 1.0.2
+        # scanned the segments itself and took the arc with the segment's own t; `f - i` is not that t to the last
+        # bit once i >= 1. spOf: the sample points and their stretch boxes, once per curve)
+        sp = spMemo.get(c.id)
+        if sp is None:
+            pts = [s.p for s in c.samples]; sp = spMemo[c.id] = (pts, polyIndex(pts))
+        A = c.arc; f = nearestF(sp[0], p, sp[1]); i = min(math.floor(f), len(A) - 2)
+        best = A[i] + (A[i + 1] - A[i]) * (f - i)
         m[id(p)] = (p, best)
         return best
 
@@ -598,24 +663,20 @@ def backfillTrunk(ctx, T, locks):
         return r
 
     def _onPoly(p, pr):
+        if len(pr['poly']) < 2:
+            return False
         bb = pr['bb']; px = p.x; py = p.y; pz = p.z
         if px < bb[0] or py < bb[1] or pz < bb[2] or px > bb[3] or py > bb[4] or pz > bb[5]:   # bb.containsPoint(p)
             return False
-        Pp = pr['poly']
-        a = Pp[0]; ax = a.x; ay = a.y; az = a.z
-        for k in range(len(Pp) - 1):                                # segD(p, Pp[k], Pp[k + 1]) < tolOn, inlined
-            b = Pp[k + 1]; bx = b.x; by = b.y; bz = b.z
-            abx = bx - ax; aby = by - ay; abz = bz - az; l2 = abx * abx + aby * aby + abz * abz
-            if l2 > 0:
-                t = ((px - ax) * abx + (py - ay) * aby + (pz - az) * abz) / l2
-                t = 0 if t <= 0 else 1 if t >= 1 else t
-            else:
-                t = 0
-            dx = (ax + abx * t) - px; dy = (ay + aby * t) - py; dz = (az + abz * t) - pz
-            if math.sqrt(dx * dx + dy * dy + dz * dz) < tolOn:
-                return True
-            ax = bx; ay = by; az = bz
-        return False
+        # (1.0.3, 3879: pr.poly.length >= 2 && pr.bb.containsPoint(p) && !!nearestWithin(pr.poly, p, tolOn))
+        return nearestWithin(pr['poly'], p, tolOn, pgrids) is not None
+    # (1.0.3) a lock under a proxy shell: a vertex of a neighbour may be SNAPPED onto a ring vertex (p.copy(q), 3955) —
+    # a loop point moves, and the memos above, which hold because nothing moves, no longer give what the original's
+    # own caches give for that point. With a loop a shell holds anywhere the passes run as the original's, cache for
+    # cache (_backfillShellPasses); without one nothing moves and the passes below give the same, faster.
+    if any(any(v.comp.sh) for v in T.values() if v.comp is not None and v.comp.sh):
+        _backfillShellPasses(ctx, T, pairs, pairsByB, lockOf, h, tolSame, arcOf, atArc, _onPoly)
+        return
     # has(c, p) is the OR of one test per loop of c, and a loop is only ever added: an answer, once computed over the
     # loops c has at that moment, can only turn True — noteAdded does that for the loop it puts in. So the memo holds
     # the current answer for every (c, p) asked so far and a question costs a lookup; on the tangled model the loops
@@ -708,6 +769,196 @@ def backfillTrunk(ctx, T, locks):
                 comp = T[B.id].comp
                 if comp and comp.cent and at(comp.cent, k - 1) and at(comp.cent, k):
                     comp.cent.insert(k, comp.cent[k - 1].clone().lerp(comp.cent[k], t))
+                if comp and comp.sh is not None:                    # (1.0.3, 3973-3975: no ring here — ringA is false)
+                    comp.sh.insert(k, False)
+                if comp and comp.shSet is not None:
+                    comp.shSet.insert(k, None)
+                if comp and comp.shPl is not None:
+                    comp.shPl.insert(k, None)
+                done.append(p); added += 1; _br('backfillTrunk.added')
+        if not added:
+            return
+
+
+def _cl(v, tol):
+    """backfillTrunk's cl (1.0.3, 3881): Math.floor(v / tolSame); None for NaN"""
+    x = v / tol
+    return None if x != x else math.floor(x)
+
+
+def _hk(x, y, z):
+    """backfillTrunk's hk (3881): the grid key of a cell; a NaN coordinate (None) counts as 0 there (NaN ^ … is 0 ^ …)"""
+    if x is not None and y is not None and z is not None:
+        return _grid_key(x, y, z)
+    return (to_int32(0 if x is None else float(x) * 73856093.0) ^ to_int32(0 if y is None else float(y) * 19349663.0) ^ to_int32(0 if z is None else float(z) * 83492791.0)) & 0xFFFFFFFF
+
+
+def _backfillShellPasses(ctx, T, pairs, pairsByB, lockOf, h, tolSame, arcOf, atArc, onPoly):
+    """The passes of backfillTrunk (1.0.3, 3906-3980) as the original runs them, with its own caches: pr.on (onPoly and
+    off the stretch's ends, per pair and point — kept as asked, also for a point moved later), HG (each curve's loop points
+    in a grid of cells tolSame, made on the first question about the curve, a point filed in the cell it had then; a
+    point moved later stays filed there and is measured where it is now), CAND (the candidates of a curve, made again
+    only when the count of its pairs' loops changed), AC (arcOf: per curve and point, kept as first asked). onPoly here
+    is the plain test (the original's candOf asks it without a cache)."""
+    HG = {}
+
+    def addPt(g, q):
+        k = _hk(_cl(q.x, tolSame), _cl(q.y, tolSame), _cl(q.z, tolSame)); lst = g.get(k)
+        if lst is None:
+            lst = g[k] = []
+        lst.append(q)
+
+    def gridOf(c):
+        g = HG.get(c.id)
+        if g is None:
+            g = HG[c.id] = {}
+            for q in T[c.id].rows:
+                addPt(g, q)
+        return g
+
+    def has(c, p):
+        g = gridOf(c); x0 = _cl(p.x, tolSame); y0 = _cl(p.y, tolSame); z0 = _cl(p.z, tolSame)
+        if x0 is None or y0 is None or z0 is None:
+            return False                                            # (a NaN: the loops over the cells never run)
+        px = p.x; py = p.y; pz = p.z
+        for x in range(x0 - 1, x0 + 2):
+            for y in range(y0 - 1, y0 + 2):
+                for z in range(z0 - 1, z0 + 2):
+                    lst = g.get(_grid_key(x, y, z))
+                    if lst:
+                        for q in lst:
+                            dx = q.x - px; dy = q.y - py; dz = q.z - pz   # (q.distanceTo(p))
+                            if math.sqrt(dx * dx + dy * dy + dz * dz) < tolSame:
+                                return True
+        return False
+    CAND = {}
+
+    def candOf(C):
+        prs = pairsByB.get(id(C), ()); v = 0
+        for pr in prs:
+            v += len(T[pr['A'].id].rows)
+        e = CAND.get(C.id)
+        if e is not None and e[0] == v:
+            return e[1]
+        lst = [(q, arcOf(C, q)) for pr in prs for q in T[pr['A'].id].rows if onPoly(q, pr)]
+        CAND[C.id] = (v, lst)
+        return lst
+
+    def onGet(pr, p):                                               # pr.on && pr.on.get(p): the answer kept, or None
+        m = pr.get('on')
+        if m is None:
+            return None
+        ent = m.get(id(p))
+        return ent[1] if ent is not None and ent[0] is p else None
+
+    def index_is(seq, x):
+        for i, q in enumerate(seq):
+            if q is x:
+                return i
+        return -1
+    for _ in range(6):
+        # unmatched vertices: a point of A's loop on the stretch shared with B that B has no vertex for
+        want = {}                                                   # lock -> [(B, p, A)]
+        for pr in pairs:
+            B = pr['B']; ends = pr['ends']
+            for p in T[pr['A'].id].rows:
+                m = pr.get('on')
+                if m is None:
+                    m = pr['on'] = {}
+                ent = m.get(id(p))
+                if ent is not None and ent[0] is p:
+                    ok = ent[1]
+                else:
+                    ok = onPoly(p, pr) and not any(e.distanceTo(p) < tolSame for e in ends); m[id(p)] = (p, ok)
+                if not ok or has(B, p):
+                    continue
+                want.setdefault(lockOf[B.id], []).append((B, p, pr['A']))
+        if not want:
+            return
+        added = 0
+        for Y, lst in want.items():
+            done = []
+            for B, p, A in lst:
+                if has(B, p) or any(q.distanceTo(p) < tolSame for q in done):
+                    continue
+                # where it goes in B's loops
+                RB = T[B.id].rows; sp = arcOf(B, p); sB = [arcOf(B, q) for q in RB]
+                k = 1
+                while k < len(RB) and sB[k] < sp:
+                    k += 1
+                if k <= 0 or k >= len(RB):
+                    continue
+                t = (sp - sB[k - 1]) / js_or(sB[k] - sB[k - 1], 1)
+                if not (t > 0.1 and t < 0.9):
+                    continue                                        # (a sliver otherwise)
+                # (a lock under a proxy shell keeps its rings' loops: no vertex put in right next to one, and no loop at all
+                # between two rings — its own vertex there goes onto the nearer ring vertex; a ring's vertex of the
+                # neighbour does go in, from a shell this lock takes the rings of too)
+                cA = T[A.id].comp; cB = T[B.id].comp
+                shB = cB.sh if cB is not None else None; RA = T[A.id].rows; iA = index_is(RA, p); shA = cA.sh if cA is not None else None
+                kN = k - 1 if sp - sB[k - 1] < sB[k] - sp else k
+                sAi = at(cA.shSet, iA) if cA is not None and cA.shSet is not None else None
+                ringA = bool(shA is not None and at(shA, iA) and cB is not None and cB.shSet is not None and cA.shSet is not None and sAi is not None
+                             and (at(cB.shSet, k - 1) is sAi or at(cB.shSet, k) is sAi))
+                if not ringA and ((shB is not None and at(shB, k - 1) and at(shB, k)) or (Y.shellSpan is not None and shB is not None and at(shB, kN) and js_min(sp - sB[k - 1], sB[k] - sp) < 0.3 * h)):
+                    q = RB[k - 1] if sp - sB[k - 1] < sB[k] - sp else RB[k]
+                    # (not a vertex the shell holds on A too, nor one welded to a third lock, nor onto A's own next vertex)
+                    free = 0 < iA < len(RA) - 1 and not (shA is not None and at(shA, iA)) and not any(i != iA and r.distanceTo(q) < tolSame for i, r in enumerate(RA)) \
+                        and not any(o['A'] is A and o['B'] is not B and o.get('on') is not None and onGet(o, p) and has(o['B'], p) for o in pairs)
+                    if free:
+                        p.copy(q); done.append(p); added += 1
+                    continue
+                # every curve of Y: the share of the gap — or another lock's unmatched vertex lying in that gap on it
+                # (a ring's vertex: on the other curves the ring's own plane cut in that gap)
+                rPl = at(cA.shPl, iA) if ringA and cA.shPl is not None else None
+
+                def cutPl(Cc, a0, a1):
+                    if not rPl:
+                        return None
+                    S = Cc.samples; Aa = Cc.arc; best = None; bd = math.inf; po = rPl['p']; pn = rPl['n']
+                    for j in range(len(S) - 1):
+                        if Aa[j + 1] < a0 or Aa[j] > a1:
+                            continue
+                        s0 = S[j].p; s1 = S[j + 1].p
+                        d0 = (s0.x - po.x) * pn.x + (s0.y - po.y) * pn.y + (s0.z - po.z) * pn.z; d1 = (s1.x - po.x) * pn.x + (s1.y - po.y) * pn.y + (s1.z - po.z) * pn.z
+                        if d0 == d1 or d0 * d1 > 0:
+                            continue
+                        q = s0.clone().lerp(s1, d0 / (d0 - d1)); aq = arcOf(Cc, q)
+                        if aq <= a0 or aq >= a1:
+                            continue
+                        dd = abs(aq - (a0 + (a1 - a0) * t))
+                        if dd < bd:
+                            bd = dd; best = q
+                    return best
+                pts = []
+                for Cc in Y.cs:
+                    if Cc is B:
+                        pts.append(p.clone()); continue
+                    Rr = T[Cc.id].rows; a0 = arcOf(Cc, Rr[k - 1]); a1 = arcOf(Cc, Rr[k])
+                    guess = cutPl(Cc, a0, a1)
+                    if guess is None:
+                        guess = atArc(Cc, a0 + (a1 - a0) * t)
+                    best = None; bd = 0.5 * js_max(a1 - a0, 1e-6)
+                    for q, aq in candOf(Cc):
+                        if aq <= a0 or aq >= a1 or has(Cc, q):
+                            continue
+                        d = abs(aq - (a0 + (a1 - a0) * t))
+                        if d < bd:
+                            bd = d; best = q.clone()
+                    pts.append(best if best is not None else guess)
+                for ci, Cc in enumerate(Y.cs):
+                    T[Cc.id].rows.insert(k, pts[ci]); g = HG.get(Cc.id)
+                    if g is not None:
+                        addPt(g, pts[ci])
+                comp = T[B.id].comp
+                if comp and comp.cent and at(comp.cent, k - 1) and at(comp.cent, k):
+                    comp.cent.insert(k, comp.cent[k - 1].clone().lerp(comp.cent[k], t))
+                if comp and comp.sh is not None:
+                    comp.sh.insert(k, ringA)
+                if comp and comp.shSet is not None:
+                    comp.shSet.insert(k, sAi if ringA else None)
+                if comp and comp.shPl is not None:
+                    comp.shPl.insert(k, rPl if ringA else None)
                 done.append(p); added += 1; _br('backfillTrunk.added')
         if not added:
             return
@@ -715,6 +966,29 @@ def backfillTrunk(ctx, T, locks):
 
 def _lock_key(cs):
     return ','.join(str(i) for i in sorted(c.id for c in cs))
+
+
+def _whole(ctx, P, cs):
+    """every curve of the lock between two of its walls (buildRowTables, hair-modeler.clean.html:2811)"""
+    if ctx.DBG['mergeOpts'].get('paraOpen') is False:
+        return True
+    ids = {c.id for c in cs}
+    for c in cs:
+        n = 0
+        for s in P.surfaces():
+            if s.a in ids and s.b in ids and (s.a == c.id or s.b == c.id):
+                n += 1
+        if n < 2:
+            _br('_whole.open')                                      # (an open lock: Unite's V, a bevel — 2808)
+            return False
+    return True
+
+
+def _pl4(pl):
+    """a plane in the trace: [...p, ...n] to 4 decimals (snapT, 3762)"""
+    if not pl:
+        return None
+    return [float(to_fixed(v, 4)) for v in (*pl['p'].toArray(), *pl['n'].toArray())]
 
 
 def buildRowTables(P, trace_ids=None, changed=None, ctx=None):
@@ -772,6 +1046,7 @@ def buildRowTables(P, trace_ids=None, changed=None, ctx=None):
                     mark(k)
         for k in [k for k in ctx.LOCK_CACHE if k not in keyset]:    # (ours) locks that no longer exist
             del ctx.LOCK_CACHE[k]
+            ctx.LOCK_FP.pop(k, None)
     # (`dirty` may be an EMPTY set: in JS that is still truthy, so nothing is rebuilt and everything comes from the
     # cache; hence the `is None` tests below, never a truth test on the dict)
     # ours (lot 3.7-estab, rowhist.py): a component of locks to build whose every entry was built once for the very
@@ -795,31 +1070,38 @@ def buildRowTables(P, trace_ids=None, changed=None, ctx=None):
             if dirty is None or not any(k in dirty for k in comp):
                 continue
             if sig is None:
-                sig = tables_signature(P); gpart = rowhist.global_part(P, sig)
+                sig = tables_signature(P); gpart = rowhist.global_part(P, sig, ctx.HIST_SAMPLES)
             fp = rowhist.component_fp(P, [c for k in comp for c in comps[at_key[k]]], sig, gpart, ctx.HIST_SAMPLES)
             got = [rowhist.recall(ctx.HISTORY, fp, k) for k in comp]
             if all(e is not None for e in got):
                 for k, e in zip(comp, got):
                     e['L'].cs = [P.items.get(c.id, c) for c in e['L'].cs]
                     ctx.LOCK_CACHE[k] = e
+                    ctx.LOCK_FP[k] = fp                             # (lot 1.1e: the entry is the one of this fingerprint again)
                     del dirty[k]
                     ctx.LOCKS_RESTORED.update(c.id for c in e['L'].cs)
                     convOf(P, e['L'].cs[0])                         # (what building it would do to its group's conv: groupConv fills it)
     if dirty is None:
         ctx.LOCK_CACHE = {}
+        ctx.LOCK_FP = {}
     ctx.LOCKS_REBUILT = set() if dirty is not None else None
     byAnchor = P.anchor_curves()
     for ci0, cs in enumerate(comps):
         key = keys[ci0]
         if dirty is not None and key not in dirty:
             locks.append(ctx.LOCK_CACHE[key]['L']); continue       # unchanged: its geometry from the cache
+        ctx.LOCK_FP.pop(key, None)                                  # (built now: its fingerprint is known again only if the history keeps it, below)
         if dirty is not None:
             for c in cs:
                 ctx.LOCKS_REBUILT.add(c.id)
         own = [[s.p for s in c.samples] for c in cs]; lens = [polyLen(o) for o in own]; Lmax = js_max(*lens)
         # a converted modifier (c.para on every curve, the same anchor count): anchor k of every curve is one cross-section
-        # (port of the `para` branch, hair-modeler.clean.html:2600-2619)
-        secs = lockSecs(cs) if len(cs) > 1 and all(c.para for c in cs) else None; para = secs is not None
+        # (port of the `para` branch, hair-modeler.clean.html:2805-2826)
+        # — only while its tube is whole (every curve between two of its walls): a wall taken out and the gap filled by other
+        # locks (Unite's V, a bevel) makes it an open lock like any other; its loops are plane cuts then. Its sections are
+        # twisted a little (the tube follows its curve) — the locks filling the gap only had plane cuts to go on: the twist
+        # landed on them as a zigzag across the diagonal curves, while the same hair with one curve over the gap was even
+        secs = lockSecs(cs) if len(cs) > 1 and all(c.para for c in cs) and _whole(ctx, P, cs) else None; para = secs is not None
         # a lock from a file without section numbers (numbered by index now): they are written down at once — an anchor put
         # in later must not turn the others of its curve into ones counted by arc length
         if para and all(a.sec is None for c in cs for a in c.anchors):
@@ -859,6 +1141,11 @@ def buildRowTables(P, trace_ids=None, changed=None, ctx=None):
                           plen=[polyLen(Pc) for Pc in Ps], spLen=polyLen(sp)))
     # longest locks first; a lock welded to an already built one takes over its loops on the common trunk
     locks.sort(key=lambda L: -L.len)
+    # proxy shells: which locks each covers, its carrier (1.0.3, 3697), built with CP = S (the original's CP between two
+    # builds: evenParts and the Even loops' end test read levelH there)
+    ctx.CP = settings_conv(P)
+    SHS = shellSets(ctx, locks)
+    ctx.DBG['shellSets'] = SHS
     done = []; loopPts = {}
     ctx.TRUNK_KEY = {}; ctx.TRUNK_LOCKS = done
     ctx.ANCHOR_CURVES = {}
@@ -880,10 +1167,9 @@ def buildRowTables(P, trace_ids=None, changed=None, ctx=None):
         saved_ctx = set_ctx(L.key, None)
         ctx.CP = convOf(P, L.cs[0])                                 # this lock's group settings
         hL = levelH(ctx)
-        # (speed: a point outside a curve's box padded by the tolerance cannot pass the `< 0.02 * hL` test; polyBox —
-        # nor one outside every padded stretch box of the curve: chunkBoxes)
-        tolOn = 0.02 * hL; bbOn = [polyBox(Pc, tolOn) for Pc in L.Ps]; chOn = [chunkBoxes(ix, tolOn) for ix in L.Pidx]
-        onLock = lambda pl: pl['pts'] is not None and any(any(inBox(q, bbOn[ci]) and nearBoxes(q, chOn[ci]) and atF(Pc, nearestF(Pc, q, L.Pidx[ci])).distanceTo(q) < tolOn for ci, Pc in enumerate(L.Ps)) for q in pl['pts'])
+        # (1.0.3, 3712: nearestWithin — the grid of each curve's segments — where 1.0.2 took atF(P, nearestF(P, q)))
+        tolOn = 0.02 * hL
+        onLock = lambda pl: pl['pts'] is not None and any(any(nearestWithin(Pc, q, tolOn, L.grids, L.plen[ci] if L.plen is not None else None) is not None for ci, Pc in enumerate(L.Ps)) for q in pl['pts'])
         # welded = sharing at least one SEGMENT (two neighbouring anchors) — a common trunk. The longest common trunk first.
         segKey = lambda a, b: (a.id, b.id) if a.id < b.id else (b.id, a.id)
         mySegs = set()
@@ -902,6 +1188,11 @@ def buildRowTables(P, trace_ids=None, changed=None, ctx=None):
         weldedAny = any(D is not L and weldScore(D) > 0 for D in locks)
         gRowsL = lockGuideRows(P, ctx.CP, L); jRowsL = [] if weldedAny else lockJunctionRows(ctx, L)
         ctx.TIPZ = lockTip(P, L)
+        # detailed stretches (1.0.3, 3729: proxyLoops); the parameter is on unless it is false
+        det = lockDetail(L) if proxyOn(ctx.CP.get('proxy')) and ctx.DBG['mergeOpts'].get('proxy') is not False else None
+        ctx.DETZ = det
+        if ctx.DBG['trace'] is not None and any(c.id in ctx.DBG['trace'] for c in L.cs):
+            ctx.DBG['traceOut']['detail'] = det                     # (3731: the last traced lock's)
         ref = None
         if welded:
             _br('buildRowTables.weldedLock')
@@ -916,7 +1207,10 @@ def buildRowTables(P, trace_ids=None, changed=None, ctx=None):
         ctx.TRUNK_PTS = [q for D in welded for q in D.allPts]     # only welded locks' loop points count
         rows = trunkLevels(ctx, L, rows)
         rows = trunkOnly(ctx, L, rows, welded)
-        Fo = trunkOwnFs(ctx, L, rows)                               # (before the real pass: it sets each loop's guide shape)
+        # proxy shells over this lock: their rings (Even loops last — it wins over a shell where both are; a stable sort, 3719)
+        for st in sorted(SHS.get(L, ()), key=lambda s: s['k'].type == 'even'):
+            rows = shellAdopt(ctx, L, rows, st)
+        Fo = trunkOwnFs(ctx, L, rows)                              # (before the real pass: it sets each loop's guide shape)
         # a converted modifier: the loop goes through the same index on every curve (no plane cuts — on a curl a plane
         # across the spine hits the inner and outer edges a turn apart); only a guide hit holds a point elsewhere (2670)
         if L.para:
@@ -925,6 +1219,10 @@ def buildRowTables(P, trace_ids=None, changed=None, ctx=None):
             Fs = [curveRowF(ctx, Pc, rows, L.sp, ci, L.plen[ci], L.spLen) for ci, Pc in enumerate(L.Ps)]
         if Fo:
             trunkFade(ctx, L, rows, Fs, Fo)
+        if not L.para and ctx.DBG['mergeOpts'].get('fork') is not False:
+            forkSnap(ctx, L, rows, Fs)
+        if any(truthy(r.shell) for r in rows):                       # (1.0.3, 3730)
+            shellParaCut(ctx, L, rows, Fs)
         ctx.TRUNK_PTS = None
         tr = None
         if ctx.DBG['trace'] is not None and any(c.id in ctx.DBG['trace'] for c in L.cs):
@@ -934,24 +1232,40 @@ def buildRowTables(P, trace_ids=None, changed=None, ctx=None):
             if tr is not None:
                 tr.append({'st': st,
                            'rows': [{'f': float(to_fixed(r.f, 2)), 'k': 'G' if r.guide else 'J' if r.junc else 'T' if r.added else 'A' if r.aligned else 'I' if r.inserted else 'M' if r.tm is not None else 'o',
-                                     'prio': float(to_fixed(js_or(r.prio, 0), 2))} for r in rows],
-                           'y': [[float(to_fixed(atF(L.Ps[ci], f).y, 1)) for f in F] for ci, F in enumerate(Fs)]})
+                                     'prio': float(to_fixed(js_or(r.prio, 0), 2)),
+                                     'pl': _pl4(r.plane), 'pc': _pl4(r.tplane or r.plane0),
+                                     'bl': float(to_fixed(js_max(*[b['w'] for b in r.blend]), 2)) if r.blend is not None else 0,
+                                     'tg': bool(r.tgap), 'tm': ''.join(js_str(ci) for ci in r.tm) if r.tm is not None else '',
+                                     'tk': ','.join(r.tkeys) if r.tkeys is not None else '',
+                                     'sh': (r.shellSet['k'].id if r.shellSet and r.shellSet.get('k') else 1) if truthy(r.shell) else 0} for r in rows],   # (1.0.3)
+                           'y': [[float(to_fixed(atF(L.Ps[ci], f).y, 1)) for f in F] for ci, F in enumerate(Fs)],
+                           'p': [[[float(to_fixed(v, 4)) for v in atF(L.Ps[ci], f).toArray()] for f in F] for ci, F in enumerate(Fs)]})
         snapT('cut')
         keep = dropSlivers(ctx, rows, Fs, L.Ps, L.plen)
         ctx.DBG['locks'].append({'curves': [c.id for c in L.cs], 'len': float(to_fixed(L.len, 2)), 'h': float(to_fixed(levelH(ctx), 3)), 'rows': len(rows), 'kept': sum(1 for k in keep if k),
-                                 'aligned': sum(1 for r in rows if r.aligned), 'guide': sum(1 for r in rows if r.guide), 'ref': ref.cs[0].id if ref else None})
+                                 'aligned': sum(1 for r in rows if r.aligned), 'guide': sum(1 for r in rows if r.guide), 'ref': ref.cs[0].id if ref else None,
+                                 'det': float(to_fixed(sum(1 for x in det['w'] if x > 0.5) / len(det['w']), 2)) if det else 0})
         rows = [r for k, r in enumerate(rows) if keep[k]]; Fs = [[f for k, f in enumerate(F) if keep[k]] for F in Fs]
         snapT('slivers')
-        rows, Fs = enforceMaxGap(ctx, rows, Fs, L.Ps, L.sp, clamp(nullish(ctx.CP.get('dev'), 0.3), 0, 1), L.trunkSpans, L.plen, L.spLen)
+        rows, Fs = enforceMaxGap(ctx, rows, Fs, L.Ps, L.sp, clamp(nullish(ctx.CP.get('dev'), 0.3), 0, 1), L.trunkSpans, L.plen, L.spLen, L)
         snapT('maxgap')
-        if not L.para:                                              # (its loops are square already: no Straighten, no Clean topology; 2684)
-            pairs = []
-            for s in P.surfaces():
-                i = next((k for k, c in enumerate(L.cs) if c.id == s.a), -1); j = next((k for k, c in enumerate(L.cs) if c.id == s.b), -1)
-                if i >= 0 and j >= 0 and i != j:
-                    pairs.append([i, j, bool(s.p and truthy(s.p.get('clean')))])
-            straightenLoops(ctx, rows, Fs, L.Ps, pairs, js_or(ctx.CP.get('straighten'), 0), L.plen)
+        pairs = []                                                  # (1.0.2: also for the open edges below, L.ringB)
+        for s in P.surfaces():
+            i = next((k for k, c in enumerate(L.cs) if c.id == s.a), -1); j = next((k for k, c in enumerate(L.cs) if c.id == s.b), -1)
+            if i >= 0 and j >= 0 and i != j:
+                pairs.append([i, j, bool(s.p and truthy(s.p.get('clean')))])
+        detC = _detC(det, rows, len(L.sp) - 1) if det else None
+        Fsh = [list(F) for F in Fs] if any(truthy(r.shell) for r in rows) else None   # (1.0.3, 3773)
+        # (proxyLoops leaves the shell alone — up to the loops next to its first and last rings, 3774-3776)
+        ks = [k for k, r in enumerate(rows) if r.shell is not None and r.shell >= 0.5]
+        L.shellSpan = [rows[max(0, ks[0] - 1)].f, rows[min(len(rows) - 1, ks[len(ks) - 1] + 1)].f] if ks else None
+        if not L.para:                                              # (its loops are square already: no Straighten, no Clean topology; 2899)
+            straightenLoops(ctx, rows, Fs, L.Ps, pairs, js_or(ctx.CP.get('straighten'), 0), L.plen, detC)
+        if Fsh is not None:
+            shellKeep(rows, Fs, Fsh)
         snapT('straighten')
+        if det:
+            proxyLoops(L, rows, Fs, det); snapT('proxy')
         guidePriority(rows, Fs)
         snapT('guideprio')
         if not L.para:                                              # (2688)
@@ -995,6 +1309,9 @@ def buildRowTables(P, trace_ids=None, changed=None, ctx=None):
             if r.inserted is not None:
                 return {**(lgOf(r.inserted['a']) or {}), **(lgOf(r.inserted['b']) or {})}
             return r.lg or None
+        # the ring of each loop: taken over from the lock it was copied from (an aligned loop, a trunk level), or a new one of
+        # this lock's own (`owner` — the lock that made it). trunkLevels pairs the loops of two neighbours by it.
+        L.rowSrc = [r.src or r.ring or Ring(L.key) for r in rows]
         L.planes = []
         for k, r in enumerate(rows):
             rk = 0
@@ -1006,35 +1323,48 @@ def buildRowTables(P, trace_ids=None, changed=None, ctx=None):
             lp = loopPts.setdefault(id(r.plane['p']), [])
             for p in pts:
                 lp.append(p[k])
-            L.planes.append({'p': r.plane['p'], 'n': r.plane['n'], 'c': cent[k], 'reach': 2 * rk + levelH(ctx), 'pts': lp, 'local': localRow(r), 'lg': lgOf(r), 'junc': bool(r.junc)})
+            L.planes.append({'p': r.plane['p'], 'n': r.plane['n'], 'c': cent[k], 'reach': 2 * rk + levelH(ctx), 'pts': lp, 'local': localRow(r), 'lg': lgOf(r), 'junc': bool(r.junc), 'ring': L.rowSrc[k]})
         done.append(L)
         L.rowGid = [r.gid if r.guide else None for r in rows]       # its guide loops (trunkLevels pairs them only with each other)
+        # its open edges (curves of only one of its walls) and each loop's points on them — the ends of a gap other locks fill
+        # (trunkLevels: gapEnd)
+        nW = [0] * len(L.cs)
+        for pr in pairs:
+            nW[pr[0]] += 1; nW[pr[1]] += 1
+        B = [ci for ci in range(len(L.cs)) if nW[ci] == 1]
+        L.ringB = [[pts[ci][k] for ci in B] for k in range(len(rows))]
         L.allPts = []; rowOf = []
         for p in pts:
             for k, q in enumerate(p):
                 L.allPts.append(q); rowOf.append(k); ctx.TRUNK_KEY[q] = f'{len(done)}:{k}'
-        comp = Comp(cent=cent, n=len(L.cs)); te = []
+        # (1.0.3, 3828-3831: sh — the loops a proxy shell holds, backfillTrunk puts nothing in between two of them; shSet —
+        # whose ring; shPl — the ring's loop plane)
+        shK = [js_or(r.shell, 0) >= 0.5 for r in rows]
+        comp = Comp(cent=cent, n=len(L.cs), sh=shK, shSet=[r.shellSet if shK[k] else None for k, r in enumerate(rows)],
+                    shPl=[(r.tplane or r.plane or None) if shK[k] else None for k, r in enumerate(rows)]); te = []
         for i, c in enumerate(L.cs):
             v = RowTable(rows=pts[i], comp=comp); T[c.id] = v; te.append([c.id, v])
         ctx.LOCK_CACHE[L.key] = {'L': L, 'T': te, 'rowOf': rowOf, 'dbg': ctx.DBG['locks'][len(ctx.DBG['locks']) - 1]}
         set_ctx(*saved_ctx)
         if progress is not None:
             built_n += 1; progress(built_n)
-    ctx.CP = settings_conv(P); ctx.TIPZ = None; ctx.ROWS_V += 1
-    backfillTrunk(ctx, T, locks)
+    ctx.CP = settings_conv(P); ctx.TIPZ = None; ctx.DETZ = None; ctx.ROWS_V += 1
+    if ctx.DBG['mergeOpts'].get('backfill') is not False:           # (1.0.3, 3838)
+        backfillTrunk(ctx, T, locks)
     if hist_comps is not None and not truthy(P.settings.step) and any((dict(g.conv) if g.conv else None) != conv0.get(g.id) for g in P.of_type('group')):
         hist_comps = None                                           # (no step of its own and a conv filled meanwhile: the default step may have changed mid-build)
     if hist_comps is not None:
         # the entries just built, under the fingerprint of what they read: taken AFTER the build, which may have filled
         # the groups' conv (groupConv) — a conv without the defaults and the same conv filled are other fingerprints
         # when the project has no step of its own (scene.conv_seen), and every state after this one has them filled
-        sig = tables_signature(P); gpart = rowhist.global_part(P, sig)
+        sig = tables_signature(P); gpart = rowhist.global_part(P, sig, ctx.HIST_SAMPLES)
         for comp in hist_comps:
             if dirty is not None and not any(k in dirty for k in comp):
                 continue
             fp = rowhist.component_fp(P, [c for k in comp for c in comps[at_key[k]]], sig, gpart, ctx.HIST_SAMPLES)
             for k in comp:
                 rowhist.remember(ctx.HISTORY, fp, k, ctx.LOCK_CACHE[k])
+                ctx.LOCK_FP[k] = fp
     for k in P.of_type('tip'):                                     # old Tip items → painted Density masks (once, 2728)
         if k.p.get('v') == 2:
             continue

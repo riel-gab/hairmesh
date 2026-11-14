@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Edge selection on converted meshes (the original's tool 'edge', V; lot 4.9): the polygon edges of a mesh item, edge
 loops, shortest paths, chains and Path -> curve. Pure Python, bit for bit with the original (tests/test_edges_parity.py).
 Line numbers refer to reference/hair-modeler.clean.html, 1.0.1. Imported meshes (imesh) and Mesh -> curves are phase 5.
@@ -9,7 +9,7 @@ Works from the mesh's own data, as the original (the index it draws with, buildM
 too and not only the polygons: they decide what counts as one polygon (edgeTopo 3626: a fan diagonal that is a real edge
 of another face splits a polygon, two fans sharing a diagonal join two), and a polygon is what loopNext reads.
 
-The vertex positions come from a Float32Array (geo.position, buildMeshObj 2917; edgeWorld writes a Float32Array again,
+The vertex positions come from a Float32Array (geo.position, buildMeshObj 4181; edgeWorld writes a Float32Array again,
 3652): the distances of edgePath and the anchors of Path -> curve are on values rounded to float32 (edgeWorld below)."""
 from array import array
 from dataclasses import dataclass, field
@@ -30,18 +30,48 @@ class Topo:
     __slots__ = ('n', 'ne', 'ea', 'eb', 'E', 'eFaces', 'vE', 'fEdges', 'triFace', 'nf', 'idx')
 
 
-def triangles(data):
-    # the fan of buildMeshObj (hair-modeler.clean.html:2923)
+def polyFlatIndex(faces, nv):
+    """port of polyFlatIndex (hair-modeler.clean.html:4106) without `extra` (buildMeshObj passes none): every polygon
+    gets a corner of its own (pv, the provoking vertex of the flat normals; a corner owned by another polygon may be
+    freed by moving that one, 8 levels deep) and its fan of triangles starts after that corner. Returns (idx, pv)."""
+    own = [-1] * nv; pv = [-1] * len(faces)
+
+    def grab(f, depth, seen):                                       # a free corner, or one freed by moving its owner
+        for v in faces[f]:
+            if 0 <= v < nv and own[v] < 0:                          # (a corner out of range: Int32Array reads undefined, never free)
+                own[v] = f; pv[f] = v
+                return True
+        if depth <= 0:
+            return False
+        for v in faces[f]:
+            if v in seen or not 0 <= v < nv:                        # (out of range: there faces[undefined] throws; skipped here)
+                continue
+            seen.add(v)
+            if grab(own[v], depth - 1, seen):
+                own[v] = f; pv[f] = v
+                return True
+        return False
+    for f in range(len(faces)):
+        grab(f, 0, None)
+    for f in range(len(faces)):
+        if pv[f] < 0:
+            grab(f, 8, set())
     idx = []
-    for f in data.faces:
-        f0 = f[0]
-        for k in range(1, len(f) - 1):
-            idx += (f0, f[k], f[k + 1])
-    return idx
+    for i, f in enumerate(faces):
+        n = len(f)
+        c = 0 if pv[i] < 0 else f.index(pv[i])
+        for k in range(1, n - 1):
+            idx += (f[(c + k) % n], f[(c + k + 1) % n], f[c])
+    return idx, pv
+
+
+def triangles(data):
+    # 1.0.2: the triangles of buildMeshObj (hair-modeler.clean.html:2923) are polyFlatIndex's (the order edgeTopo reads)
+    return polyFlatIndex(data.faces, len(data.pos))[0]
 
 
 def edgeTopo(data):
-    """port of edgeTopo (hair-modeler.clean.html:3617) for a mesh item's data; kept on the data (EDGE_TOPO, a WeakMap on
+    """port of edgeTopo (hair-modeler.clean.html:5630) for a mesh item's data; kept on the data (EDGE_TOPO, a WeakMap on
     the same key: the faces never change while the data lives)"""
     T = data.topo
     if T is not None:
@@ -106,7 +136,7 @@ def edgeTopo(data):
 
 
 def edgeWorld(data):
-    """port of edgeWorld (3647) for a converted mesh: its matrix is the identity (a drag bakes into the data, 4646), so
+    """port of edgeWorld (5660) for a converted mesh: its matrix is the identity (a drag bakes into the data, 6659), so
     each coordinate is the float32 of the data, x * 1 + y * 0 + z * 0 + 0 (which only turns -0 into 0). A flat list
     [x0, y0, z0, x1, ...] of the float32 values as doubles, kept on the data."""
     W = data.world
@@ -124,12 +154,12 @@ def wv(Wp, i):
 
 
 def otherEnd(T, e, v):
-    # port of otherEnd (3657)
+    # port of otherEnd (5670)
     return T.eb[e] if T.ea[e] == v else T.ea[e]
 
 
 def segDist2(mx, my, ax, ay, bx, by):
-    # port of segDist2 (3658); clamp(t, 0, 1) as the original's (Math.min(Math.max))
+    # port of segDist2 (5671); clamp(t, 0, 1) as the original's (Math.min(Math.max))
     vx = bx - ax; vy = by - ay; l2 = vx * vx + vy * vy
     t = 0
     if l2 > 0:
@@ -139,7 +169,7 @@ def segDist2(mx, my, ax, ay, bx, by):
 
 
 def near(T, Wp, cand, project, mx, my, maxD):
-    """pickEdge's `near` (3664): the edge of `cand` nearest to (mx, my) on screen, closer than maxD, or None. `project`:
+    """pickEdge's `near` (5677): the edge of `cand` nearest to (mx, my) on screen, closer than maxD, or None. `project`:
     a screen point (x, y, z) of a V3, or None behind the camera."""
     best = None; bd = maxD
     for e in cand:
@@ -153,7 +183,7 @@ def near(T, Wp, cand, project, mx, my, maxD):
 
 
 def pickEdge(meshes, hit, project, mx, my, hover, scan=None, radius=8):
-    """port of pickEdge (3662) without the ray: `meshes` = [(id, data)] (edgeMeshes), `hit` = (id, triangle) the ray's
+    """port of pickEdge (5675) without the ray: `meshes` = [(id, data)] (edgeMeshes), `hit` = (id, triangle) the ray's
     first hit or None. The nearest edge of the polygon hit; near the outline (no polygon under the cursor) any edge within
     `radius` (8 px), not while hovering: too slow on big meshes. (id, T, edge), or None. `scan(data, T, Wp, mx, my, maxD)`: the
     edge of all of them, a faster way to the same one (default: near)."""
@@ -178,7 +208,7 @@ def pickEdge(meshes, hit, project, mx, my, hover, scan=None, radius=8):
 
 
 def loopNext(T, e, v):
-    # port of loopNext (3684): the next edge of an edge loop at vertex v: across a vertex with 4 edges (inside) or along
+    # port of loopNext (5697): the next edge of an edge loop at vertex v: across a vertex with 4 edges (inside) or along
     # the border through a vertex with 3 edges; anything else (a pole, a fork, a corner) ends the loop
     es = T.vE[v]; ef = T.eFaces[e]
     inside = len(es) == 4 and all(len(T.eFaces[x]) == 2 for x in es)
@@ -190,7 +220,7 @@ def loopNext(T, e, v):
 
 
 def edgeLoop(T, e0):
-    """port of edgeLoop (3693): the whole edge loop through e0: {edges (in order), verts (in order), closed}"""
+    """port of edgeLoop (5706): the whole edge loop through e0: {edges (in order), verts (in order), closed}"""
     out = [e0]; seen = {e0}; closed = False
     head = []                                                       # (the edges unshifted: out = reversed(head) + the rest)
     for dir_ in (0, 1):
@@ -224,7 +254,7 @@ def edgeLoop(T, e0):
 
 
 def edgePath(T, Wp, from_, to):
-    """port of edgePath (3711), its heap as it is (ties matter): the shortest path along the edges from edge `from_` to
+    """port of edgePath (5724), its heap as it is (ties matter): the shortest path along the edges from edge `from_` to
     edge `to`: its edges, `to` first and included; None across separate parts"""
     inf = float('inf')
     dist = [inf] * T.n; prevE = [-1] * T.n; heap = []
@@ -277,7 +307,7 @@ def edgePath(T, Wp, from_, to):
 
 
 def edgeChains(T, set_):
-    """port of edgeChains (3731): selected edges (any iterable, in order) -> chains of vertices, split where 3+ selected
+    """port of edgeChains (5744): selected edges (any iterable, in order) -> chains of vertices, split where 3+ selected
     edges meet; closed loops stay closed. [{verts, closed}]"""
     edges = dict.fromkeys(set_)
     deg = {}
@@ -309,7 +339,7 @@ def edgeChains(T, set_):
     return out
 
 
-# ---------------- the selection (S.edges, 3611) ----------------
+# ---------------- the selection (S.edges, 5624) ----------------
 
 @dataclass(eq=False)
 class EdgeSel:
@@ -321,7 +351,7 @@ class EdgeSel:
 
 
 def setEdgeSel(E, iid, lst, mode):
-    # port of setEdgeSel (3793); mode: set | add | remove
+    # port of setEdgeSel (5806); mode: set | add | remove
     if E.id != iid:
         E.id = iid; E.edges = {}; E.last = None
     if mode == 'set':
@@ -335,20 +365,20 @@ def setEdgeSel(E, iid, lst, mode):
 
 
 def clearEdges(E):
-    # port of clearEdges (3799)
+    # port of clearEdges (5812)
     E.edges = {}; E.last = None
 
 
 @dataclass(eq=False)
 class ClickMemo:
-    """S.edgeClick (3820): the last click, to tell a double click (transient: never in the undo)"""
+    """S.edgeClick (5833): the last click, to tell a double click (transient: never in the undo)"""
     id: int | None = None
     e: int | None = None
     t: float = 0.0
 
 
 def edgeClick(E, memo, r, ctrl, shift, now, Wp=None):
-    """port of edgeClick (3817) without the pick: `r` = (mesh id, T, edge) or None, `memo` a ClickMemo, or None for no
+    """port of edgeClick (5830) without the pick: `r` = (mesh id, T, edge) or None, `memo` a ClickMemo, or None for no
     click before, `now` in ms, `Wp` edgeWorld (read for a path). Returns {memo, dbl, hud, toast, select}: `select` — the
     mesh selected (S.sel = it, 3832), None when the click hit nothing."""
     out = {'memo': memo, 'dbl': False, 'hud': None, 'toast': None, 'select': None}
@@ -386,7 +416,7 @@ def edgeClick(E, memo, r, ctrl, shift, now, Wp=None):
 
 
 def edgeBoxDeselect(E, T, Wp, project, x0, y0, x1, y1):
-    """port of edgeBoxDeselect (3835): every selected edge whose middle is inside the box (in the active view) is
+    """port of edgeBoxDeselect (5848): every selected edge whose middle is inside the box (in the active view) is
     deselected. Returns how many, 0: nothing changed."""
     out = []
     for e in E.edges:
@@ -401,7 +431,7 @@ def edgeBoxDeselect(E, T, Wp, project, x0, y0, x1, y1):
 # ---------------- Path -> curve ----------------
 
 def edgeCurveGroup(P, sel_items, it, suffix, fresh=False):
-    """port of edgeCurveGroup (3847): the group new curves go into: the selected group (not a service one), else a group
+    """port of edgeCurveGroup (5860): the group new curves go into: the selected group (not a service one), else a group
     of its own for this mesh (it.pathGroup)"""
     from . import edit
     sg = None
@@ -432,7 +462,7 @@ def edgeCurveGroup(P, sel_items, it, suffix, fresh=False):
 
 
 def fitAnchor(P, q):
-    # port of fitAnchor (3788): an anchor for a fitted point (a sharp turn -> smoothness 0)
+    # port of fitAnchor (5801): an anchor for a fitted point (a sharp turn -> smoothness 0)
     from . import edit
     p, sharp = q
     a = edit.newAnchor(P, p)
@@ -442,7 +472,7 @@ def fitAnchor(P, q):
 
 
 def edgesToCurves(P, sel_items, E):
-    """port of edgesToCurves (3858): the selected edges -> curves, one per chain; chains meeting at a vertex share the
+    """port of edgesToCurves (5871): the selected edges -> curves, one per chain; chains meeting at a vertex share the
     anchor there. Returns (the curves made, the group, the toast); (selection: S.sel = the curves, the caller's)."""
     from . import edit
     it = P.items.get(E.id)

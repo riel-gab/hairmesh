@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-"""Step 4.7b (docs/fase-4-plano.md): the Extra page of the D's Modifiers tab (extraPanel 6980: "+ Mask", "+ Thickness",
+"""Step 4.7b (docs/fase-4-plano.md): the Extra page of the D's Modifiers tab (extraPanel 10330: "+ Mask", "+ Thickness",
 "+ Twist", "+ Noise", "+ Curls" on the selected modifiers, a brush per painted kind, the brush's settings) and the sheet
-of a selected Extra (xmodProps 7039: the Mask's "Affects only" list, Ignore, Clear / Fill / Invert; Thickness's and
+of a selected Extra (xmodProps 10389: the Mask's "Affects only" list, Ignore, Clear / Fill / Invert; Thickness's and
 Twist's Clear and the angle; Noise's and Curls' sliders). The brush is blender/brush.py; the core core/tube.py
 (addExtra, xmodProps, maskOp, paintMask, applyExtras).
 
@@ -18,6 +18,7 @@ from bpy.types import PropertyGroup
 from ..core import curves as CM, edit, effects as E, groups as G, tube as TB
 from . import brush as BRU, deferred, fit, live, owner, select, session, wording
 from .coords import f32, field_same
+from .props import add_unit_twins
 
 KINDS = (('MASK', 'mask', 'Mask', 'MOD_MASK', 'A mask painted along the lock: where it is 100% the extra modifiers do nothing'),
          ('THICK', 'thick', 'Thickness', 'MOD_THICKNESS', 'Paint where the lock gets fatter or thinner'),
@@ -62,7 +63,7 @@ def _set(key, conv=lambda v: v):
         x.p = {**x.p, key: v}                                       # (a new dict: the undo snapshots share p, 7057)
         t = P.items.get(x.tube)
         if t is not None:
-            t.dirty = True                                          # (upd, 7043)
+            t.dirty = True                                          # (upd, 10393)
         deferred.changed(bpy.context, root)                         # (the modifier's surface follows by its key: live.tube_previews; no lock reads it)
     return setter
 
@@ -92,11 +93,11 @@ def _deg(key):
 
 
 class HairMeshXmodProps(PropertyGroup):
-    """The sheet of a selected Extra (xmodProps 7039): on the WindowManager, views on the model; the modifier's surface
+    """The sheet of a selected Extra (xmodProps 10389): on the WindowManager, views on the model; the modifier's surface
     and the undo step follow when the slider stops (deferred.py). Lengths and counts are fields; fractions sliders."""
     x_ignore: BoolProperty(name='Ignore', description='On: the mask affects every extra modifier of the lock EXCEPT the ones in the list', get=_get('ignore', False, bool), set=_set('ignore', bool))
     x_deg: IntProperty(name='Angle at 100%', description='How far the profile turns where the weight is 100% (↻ or ↺), degrees', min=0, max=720, get=_get('deg', 180, lambda v: int(round(v))), set=_set('deg', int))
-    x_amp: FloatProperty(name='Amplitude', description='How far the lock moves from its path', min=0.0, soft_max=1000.0, precision=4, get=_get('amp', 0.0, float), set=_set('amp', f32))
+    x_amp: FloatProperty(name='Amplitude', description='How far the lock moves from its path', min=0.0, soft_max=1000.0, precision=2, get=_get('amp', 0.0, float), set=_set('amp', f32))
     x_freq: FloatProperty(name='Frequency', description='Waves along the lock', min=0.5, max=20.0, precision=1, step=10, get=_get('freq', 1.0, float), set=_set('freq', f32))
     x_pure: FloatProperty(name='Pure Sine', description='0 irregular noise; 100% one clean sine wave (with both spreads on: a clean spiral)', min=0.0, max=1.0, subtype='FACTOR', get=_get('pure', 0.0, float), set=_set('pure', f32))
     x_sx: FloatProperty(name='Spread Across', description='Share of the noise across the lock', min=0.0, max=1.0, subtype='FACTOR', get=_get('sx', 1.0, float), set=_set('sx', f32))
@@ -106,10 +107,10 @@ class HairMeshXmodProps(PropertyGroup):
     x_rot1: IntProperty(name='Rotation: Middle', description='Turns the noise directions in the middle (degrees)', min=-180, max=180, get=_get('rot1', 0, lambda v: int(round(v))), set=_set('rot1', int))
     x_rot2: IntProperty(name='Rotation: End', description='Turns the noise directions at the tip (degrees)', min=-180, max=180, get=_get('rot2', 0, lambda v: int(round(v))), set=_set('rot2', int))
     x_seed: IntProperty(name='Seed', description='Another variant of the noise', min=1, max=50, get=_get('seed', 1, lambda v: int(round(v))), set=_set('seed', int))
-    x_r0: FloatProperty(name='Root', description='Coil radius at the root: 0 the lock is only twisted here; more a volume curl, as if it wound around something', min=0.0, soft_max=1000.0, precision=4, get=_get('r0', 0.0, float), set=_set('r0', f32))
-    x_r1: FloatProperty(name='1/3', description='Coil radius at a third of the lock', min=0.0, soft_max=1000.0, precision=4, get=_get('r1', 0.0, float), set=_set('r1', f32))
-    x_r2: FloatProperty(name='2/3', description='Coil radius at two thirds of the lock', min=0.0, soft_max=1000.0, precision=4, get=_get('r2', 0.0, float), set=_set('r2', f32))
-    x_r3: FloatProperty(name='Tip', description='Coil radius at the tip', min=0.0, soft_max=1000.0, precision=4, get=_get('r3', 0.0, float), set=_set('r3', f32))
+    x_r0: FloatProperty(name='Root', description='Coil radius at the root: 0 the lock is only twisted here; more a volume curl, as if it wound around something', min=0.0, soft_max=1000.0, precision=2, get=_get('r0', 0.0, float), set=_set('r0', f32))
+    x_r1: FloatProperty(name='1/3', description='Coil radius at a third of the lock', min=0.0, soft_max=1000.0, precision=2, get=_get('r1', 0.0, float), set=_set('r1', f32))
+    x_r2: FloatProperty(name='2/3', description='Coil radius at two thirds of the lock', min=0.0, soft_max=1000.0, precision=2, get=_get('r2', 0.0, float), set=_set('r2', f32))
+    x_r3: FloatProperty(name='Tip', description='Coil radius at the tip', min=0.0, soft_max=1000.0, precision=2, get=_get('r3', 0.0, float), set=_set('r3', f32))
     x_phase: IntProperty(name='Start Angle', description='Where the spiral starts around the lock (degrees)', min=-180, max=180, get=_get('phase', 0, lambda v: int(round(v))), set=_set('phase', int))
     x_d0: FloatProperty(name='1/4', description='Turns over the first quarter of the lock (the root)', min=0.0, max=4.0, step=5, get=_get('d0', 1.0, float), set=_set('d0', f32))
     x_d1: FloatProperty(name='2/4', description='Turns over the second quarter of the lock', min=0.0, max=4.0, step=5, get=_get('d1', 1.0, float), set=_set('d1', f32))
@@ -123,6 +124,7 @@ class HairMeshXmodProps(PropertyGroup):
     x_thin: FloatProperty(name='Thin Where Crowded', description='Where coils or bends of the lock come closer than its thickness, the lock gets thinner there so the surfaces do not cut into each other (only the thickness changes)', min=0.0, max=1.0, subtype='FACTOR', get=_get('thin', 0.0, float), set=_set('thin', f32))
 
 
+add_unit_twins(HairMeshXmodProps, 'x_amp', 'x_r0', 'x_r1', 'x_r2', 'x_r3')
 XMOD_ATTRS = frozenset(HairMeshXmodProps.__annotations__)
 
 
@@ -362,11 +364,12 @@ def brush_button(context, P):
 def brush_settings_rows(context):
     """the running weight brush's settings (extraPanel 7000-7023): Add / Absolute, its strength (or intensity), radius,
     hardness, and what Ctrl+Alt does"""
-    from .tool import enum, text
+    from .tool import GAP, enum, field, fitted, text
     bp = BRU.props(context); k = bp.brush_weight_kind
     key = {'MASK': 'brush_mask_strength', 'THICK': 'brush_thick_intensity', 'TWIST': 'brush_twist_strength'}[k]
     name = {'MASK': 'Strength', 'THICK': 'Intensity', 'TWIST': 'Strength'}[k]
-    rows = [[enum('brush_weight_mode', 'Mode')], [('prop', key, name)], [('prop', 'brush_radius', 'Radius'), ('prop', 'brush_hardness', 'Hardness')]]
+    rows = [[fitted(context, 'Mode', enum('brush_weight_mode', ''))], [GAP], [field(name, ('prop', key, ''))],
+            [field('Radius', ('prop', 'brush_radius', ''))], [field('Hardness', ('prop', 'brush_hardness', ''))]]
     if k == 'THICK' and bp.brush_thick_intensity == 0:
         rows.append([text('Intensity 0: the brush paints nothing — set it first.', 'ERROR')])   # (the toast of addExtra: "set the intensity, then paint")
     return rows
@@ -448,58 +451,66 @@ def _active_line(_self):
 
 
 def extra_tab_rows(context, room, sheet=None):
-    """the Extra tab (extraPanel 6980): what the buttons add to, + Mask / Thickness / Twist / Noise / Curls — in a closed
+    """the Extra tab (extraPanel 10330): what the buttons add to, + Mask / Thickness / Twist / Noise / Curls — in a closed
     block while a sheet follows (`sheet`: its rows) —, the list of the Extras of the modifier, the one brush, the running
     brush's settings"""
-    from .tool import block, text
+    from .tool import GAP, align_fields, block, buttons, text
     _r, P, sel = select.current(context)
     ts = TB.modTubes(P, sel.items) if P is not None else []
     head = [text(f'Add to {ts[0].name}:' if len(ts) == 1 else f'Add to {len(ts)} modifiers:' if ts else 'Select a modifier (or its curve), then add:', 'INFO')]   # (6982)
     # (item 8 of the lot after 4.8, the owner's request: the five "+ Kind" buttons of three rows as one row of icons, each
-    # named by its tooltip — add_extra's description — and by the list menu)
-    adds = [('op', 'hairmesh.add_extra', '', i, {'kind': k}, {'list_text': f'Add {n}'}) for k, _w, n, i, _t in KINDS]
+    # named by its tooltip — add_extra's description — and by the list menu; lot 1.2b: a family, joined at the width of
+    # their icons)
+    adds = [buttons(context, [('op', 'hairmesh.add_extra', '', i, {'kind': k}, {'list_text': f'Add {n}'}) for k, _w, n, i, _t in KINDS])]
     t = listed_tube(P, sel) if P is not None else None
     top = [block('extra_add', 'Add an Extra', 'MODIFIER', [head, adds], False)] if sheet else [head, adds]
     if len(ts) > 1 and t is not None:
         top.append([text(f'Extras of {t.name}:', 'INFO')])          # (the first of the modifiers the buttons add to)
-    under = [[brush_button(context, P)]]
+    under = [[buttons(context, brush_button(context, P))]]
     if BRU.running('WEIGHT') is not None:
-        under += brush_settings_rows(context)
-    return [*top, *list_rows(context, P, t, [*top, *under], sheet, room), *under]
+        under += [[GAP], *brush_settings_rows(context)]
+    return align_fields([*top, *list_rows(context, P, t, [*top, *under], sheet, room), *under])
 
 
 def xmod_rows(context, P, x, room, brush=True):
-    """the sheet of an Extra (xmodProps 7039) by kind; `brush`: with its brush's button (the Extra tab above it has one)"""
-    from .tool import block, group_label, label_and, text, why_item
-    rows = [[('label', f'{x.name} (on {tube_name(P, x)})', ICON.get(x.kind, 'MODIFIER'))],
-            *label_and(group_label(P, x), ('op', 'hairmesh.delete_selected', 'Delete', 'X', {'keep_shape': False}), room)]   # (7042)
+    """the sheet of an Extra (xmodProps 10389) by kind; `brush`: with its brush's button (the Extra tab above it has one)"""
+    from .props import measure
+    from .tool import GAP, align_fields, block, buttons, field, group_label, text, why_item
+    from .tool import named_on
+    rows = [[('label', named_on(x.name, tube_name(P, x)), ICON.get(x.kind, 'MODIFIER'))],
+            [buttons(context, group_label(P, x), ('op', 'hairmesh.delete_selected', 'Delete', 'X', {'keep_shape': False}))]]   # (7042)
     k = x.kind
+    clear = ('op', 'hairmesh.extra_mask_op', 'Clear', 'X', {'op': 'CLEAR'})
+    paint = [brush_button(context, P), clear] if brush else clear   # (a brush and its Clear: a family, joined)
     if k == 'mask':
         only = TB.onlyList(P, x)
         lst = [[('label', P.items[i].name, ICON.get(P.items[i].kind, 'MODIFIER')), ('op', 'hairmesh.mask_only', '', 'X', {'extra': i, 'remove': True}, {'list_text': f'Remove {P.items[i].name}'})] for i in only]
         if not lst:
             lst = [[text('All extras of this modifier — add one with + to limit it.', 'BLANK1')]]   # (7049)
-        rows.append(block('xmod_only', 'Affects Only', 'FILTER', [*lst, [('menu', 'HAIRMESH_MT_mask_only', 'Add to the List', 'ADD', {'active': bool(_candidates(P, x))}), ('prop', 'x_ignore', 'Ignore')]]))
-        rows.append([('op', 'hairmesh.extra_mask_op', 'Clear', 'X', {'op': 'CLEAR'}), ('op', 'hairmesh.extra_mask_op', 'Fill', 'FACESEL', {'op': 'FILL'}),
-                     ('op', 'hairmesh.extra_mask_op', 'Invert', 'ARROW_LEFTRIGHT', {'op': 'INVERT'})])
-        if brush:
-            rows.append([brush_button(context, P)])
+        rows.append(block('xmod_only', 'Affects Only', 'FILTER', [*lst, [buttons(context, ('menu', 'HAIRMESH_MT_mask_only', 'Add to the List', 'ADD', {'active': bool(_candidates(P, x))}))],
+                                                                 [('prop', 'x_ignore', 'Ignore')]]))
+        rows += [[GAP], [buttons(context, paint, ('op', 'hairmesh.extra_mask_op', 'Fill', 'FACESEL', {'op': 'FILL'}),
+                                 ('op', 'hairmesh.extra_mask_op', 'Invert', 'ARROW_LEFTRIGHT', {'op': 'INVERT'}))]]
     elif k in ('thick', 'twist'):
         if k == 'twist':
-            rows.append([('prop', 'x_deg', 'Angle at 100%')])
-        rows.append([('op', 'hairmesh.extra_mask_op', 'Clear', 'X', {'op': 'CLEAR'}), *([brush_button(context, P)] if brush else []),
-                     why_item('Painted thickness along the lock: orange fatter (up to ×2), blue thinner (down to a point). A mask can limit it.' if k == 'thick'
-                              else 'Painted twist along the lock: green the profile turns clockwise, pink counterclockwise (seen from the root along the lock). A mask can limit it.')])   # (7094, 7102)
+            rows.append([field('Angle at 100%', ('prop', 'x_deg', ''))])
+        rows += [[GAP], [buttons(context, paint, why_item('Painted thickness along the lock: orange fatter (up to ×2), blue thinner (down to a point). A mask can limit it.' if k == 'thick'
+                                                          else 'Painted twist along the lock: green the profile turns clockwise, pink counterclockwise (seen from the root along the lock). A mask can limit it.'))]]   # (7094, 7102)
     elif k == 'noise':
-        rows += [[('prop', 'x_amp', 'Amplitude'), ('prop', 'x_freq', 'Frequency')], [('prop', 'x_pure', 'Pure Sine')],
-                 [('prop', 'x_sx', 'Spread Across'), ('prop', 'x_sy', 'Spread Outwards', {'active': not x.p.get('plane')})], [('prop', 'x_plane', 'Plane'), ('prop', 'x_seed', 'Seed')],
-                 block('xmod_rot', 'Rotation', 'DRIVER_ROTATIONAL_DIFFERENCE', [[('prop', 'x_rot0', 'Start')], [('prop', 'x_rot1', 'Middle')], [('prop', 'x_rot2', 'End')]], False)]
+        rows += [[field('Amplitude', ('prop', measure(P, 'x_amp'), ''))], [field('Frequency', ('prop', 'x_freq', ''))], [field('Pure Sine', ('prop', 'x_pure', ''))], [GAP],
+                 [field('Spread Across', ('prop', 'x_sx', ''))], [field('Spread Outwards', ('prop', 'x_sy', '', {'active': not x.p.get('plane')}))], [('prop', 'x_plane', 'Plane')], [GAP],
+                 [field('Seed', ('prop', 'x_seed', ''))],
+                 block('xmod_rot', 'Rotation', 'DRIVER_ROTATIONAL_DIFFERENCE', [[field('Start', ('prop', 'x_rot0', ''))], [field('Middle', ('prop', 'x_rot1', ''))], [field('End', ('prop', 'x_rot2', ''))]], False)]
     elif k == 'curl':
-        rows += [block('xmod_coil', 'Coil Radius', 'FORCE_VORTEX', [[('prop', 'x_r0', 'Root'), ('prop', 'x_r1', '1/3')], [('prop', 'x_r2', '2/3'), ('prop', 'x_r3', 'Tip')], [('prop', 'x_phase', 'Start Angle')]], True),
-                 block('xmod_turns', 'Density (Turns)', 'MOD_SCREW', [[('prop', 'x_d0', '1/4'), ('prop', 'x_d1', '2/4')], [('prop', 'x_d2', '3/4'), ('prop', 'x_d3', '4/4')]], True),
-                 block('xmod_shape', 'Shape', 'MOD_THICKNESS', [[('prop', 'x_thick', 'Thickness'), ('prop', 'x_spin', 'Rotation in Spiral')], [('prop', 'x_follow', 'Twist the Profile')]], False),
-                 block('xmod_clip', 'Anti-clipping', 'MOD_PHYSICS', [[('prop', 'x_smooth', 'Smooth the Path')], [('prop', 'x_shrink', 'Shrink on Bends')], [('prop', 'x_thin', 'Thin Where Crowded')]], False)]
-    return rows
+        # (lot 1.2b: a field per row; Density (Turns) closed by default, as Shape and Anti-clipping: open, the sheet
+        # passed the 18 rows of the D's Extra page)
+        rows += [block('xmod_coil', 'Coil Radius', 'FORCE_VORTEX', [*([field(n, ('prop', measure(P, f'x_r{i}'), ''))] for i, n in enumerate(('Root', '1/3', '2/3', 'Tip'))),
+                                                                    [GAP], [field('Start Angle', ('prop', 'x_phase', ''))]], True),
+                 block('xmod_turns', 'Density (Turns)', 'MOD_SCREW', [[field(n, ('prop', f'x_d{i}', ''))] for i, n in enumerate(('1/4', '2/4', '3/4', '4/4'))], False),
+                 block('xmod_shape', 'Shape', 'MOD_THICKNESS', [[field('Thickness', ('prop', 'x_thick', ''))], [field('Rotation in Spiral', ('prop', 'x_spin', ''))], [('prop', 'x_follow', 'Twist the Profile')]], False),
+                 block('xmod_clip', 'Anti-clipping', 'MOD_PHYSICS', [[field('Smooth the Path', ('prop', 'x_smooth', ''))], [field('Shrink on Bends', ('prop', 'x_shrink', ''))],
+                                                                     [field('Thin Where Crowded', ('prop', 'x_thin', ''))]], False)]
+    return align_fields(rows)
 
 
 CLASSES = (HairMeshXmodProps, HAIRMESH_OT_add_extra, HAIRMESH_OT_delete_extra, HAIRMESH_OT_extra_mask_op, HAIRMESH_OT_mask_only, HAIRMESH_MT_mask_only, HAIRMESH_UL_extras)

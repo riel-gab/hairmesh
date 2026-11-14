@@ -2,12 +2,12 @@
 # Copyright (C) 2026 Riel
 """Add-on preferences: the credit to the original's author, the shortcuts, editable in place (the user's copies in
 wm.keyconfigs.user, drawn with rna_keymap_ui like HardOps does), two switches to turn them off, and a button back to
-the defaults."""
+the defaults, and Enable Updates (blender/updates.py)."""
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatVectorProperty, StringProperty
 from bpy.types import AddonPreferences
 
-from . import icons, keymaps
+from . import icons, keymaps, updates
 
 PACKAGE = __package__.rsplit('.', 1)[0]                             # 'hairmesh' in the repo, 'bl_ext.<repo>.hairmesh' installed
 _syncing = False
@@ -84,7 +84,7 @@ class HAIRMESH_OT_selection_colors_reset(bpy.types.Operator):
 TABS = (('SELECTION', 'Selection', 'Show the properties and actions of the selection, and the settings of the sub-tool', 'PROPERTIES', 0),
         ('MODIFIERS', 'Modifiers', 'Show the modifiers: Profile, Extra and Topology, with their brushes', 'MODIFIER', 4),
         ('CONVERSION', 'Conversion', 'Show the ticked groups, the loop step, the sliders and Convert', 'MOD_REMESH', 1),
-        ('OPTIONS', 'Viewport', 'Show what the viewport shows and how it reacts: the live preview, Drag on Head, the x-ray, the guides', 'VIEW3D', 3),
+        ('OPTIONS', 'Viewport', 'Show what the viewport shows and how it reacts: the live preview, Drag on Head, the X-Ray, the guides', 'VIEW3D', 3),
         ('PROJECT', 'Project', 'Show the head and the save, import and new actions', 'FILE', 2))   # Project last (1a of the manual test of the lot ux5; the numbers kept: saved preferences stay valid)
 _tabs = {}
 
@@ -131,7 +131,7 @@ _presets_fallback = ['[]']                                         # (the add-on
 
 
 def user_profiles(context=None):
-    """port of userProfiles (6365): the user's own profile presets, [{'name', 'pts'}] (only well-formed ones)"""
+    """port of userProfiles (9587): the user's own profile presets, [{'name', 'pts'}] (only well-formed ones)"""
     import json
     p = get(context)
     try:
@@ -142,7 +142,7 @@ def user_profiles(context=None):
 
 
 def save_user_profiles(lst, context=None):
-    """port of saveUserProfiles (6366): into the preferences (saved with them)"""
+    """port of saveUserProfiles (9588): into the preferences (saved with them)"""
     import json
     s = json.dumps(lst, separators=(',', ':'))
     p = get(context)
@@ -159,32 +159,45 @@ def open_on_select(context=None):
 
 
 SEL_COLOR_PROPS = ('sel_curve_color', 'sel_anchor_color', 'last_anchor_mark')
+MODES_UNITS = 6.0                                                   # Auto / Show of Curves of New Groups, side by side: their texts whole and no more
+
+
+def title_row(box, title, icon):
+    """the first row of a box of the page: its title on the left, and the place of its one action on the right, where a
+    button keeps the width of its text (a plain row stretched it over half the page)"""
+    row = box.row()
+    row.label(text=title, icon=icon)
+    right = row.row()
+    right.alignment = 'RIGHT'
+    return right
 
 
 def draw_preferences(p, layout, context):
-    """the add-on's page; the three selection colors on one line"""
+    """the add-on's page: every button at the width of its text, the two modes of Curves of New Groups beside their
+    name, the three selection colors on one line, each at its own width"""
     draw_credit(layout)
+    updates.draw(layout, context, title_row)
     col = layout.column()
     col.prop(p, 'global_shortcut')
     col.prop(p, 'tool_shortcuts')
-    row = col.row()
-    row.label(text='Curves of New Groups:')
-    row.row(align=True).prop(p, 'new_group_guides', expand=True)
     col.prop(p, 'outliner_open_on_select')
+    row = col.row()
+    row.alignment = 'LEFT'                                          # (the name, then Auto / Show at the width of their texts: expanded, they took the whole page)
+    row.label(text='Curves of New Groups:')
+    modes = row.row(align=True)
+    modes.ui_units_x = MODES_UNITS                                  # (in a row that sizes by content an expanded enum still takes ten units a button)
+    modes.prop(p, 'new_group_guides', expand=True)
     box = layout.box()
+    title_row(box, 'Selection Colors', 'RESTRICT_SELECT_OFF').operator(HAIRMESH_OT_selection_colors_reset.bl_idname, text='Reset to Defaults', icon='LOOP_BACK')
     row = box.row()
-    row.label(text='Selection Colors', icon='RESTRICT_SELECT_OFF')
-    row.operator(HAIRMESH_OT_selection_colors_reset.bl_idname, text='Reset to Defaults', icon='LOOP_BACK')
-    row = box.row()
+    row.alignment = 'LEFT'
     for k in SEL_COLOR_PROPS:
         row.prop(p, k)
     draw_shortcuts(layout, context)
 
 
 def draw_credit(layout):
-    row = layout.box().row()
-    row.label(text=CREDIT, icon='INFO')
-    row.operator('wm.url_open', text='catarackta.netlify.app', icon='URL').url = CREDIT_URL
+    title_row(layout.box(), CREDIT, 'INFO').operator('wm.url_open', text='catarackta.netlify.app', icon='URL').url = CREDIT_URL
 
 
 def draw_shortcuts(layout, context):
@@ -192,9 +205,7 @@ def draw_shortcuts(layout, context):
     rna_keymap_ui.draw_kmi row per item, plus the Restore Defaults button."""
     import rna_keymap_ui
     box = layout.box()
-    row = box.row()
-    row.label(text='Shortcuts', icon='KEYINGSET')
-    row.operator(HAIRMESH_OT_keymap_restore.bl_idname, text='Restore Defaults', icon='LOOP_BACK')
+    title_row(box, 'Shortcuts', 'KEYINGSET').operator(HAIRMESH_OT_keymap_restore.bl_idname, text='Restore Defaults', icon='LOOP_BACK')
     box.label(text='Edit them here or in Preferences > Keymap; changes are saved with the preferences.')
     box.label(text='The tool keys apply only while the HairMesh tool is active.')
     kc = context.window_manager.keyconfigs.user

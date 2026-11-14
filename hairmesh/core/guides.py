@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Guides at run time (hair-modeler.clean.html:1058-1178, 2224-2278): a guide line is stored as hits on curves
 (curve id, arc fraction); a NURBS disc is two closed ring curves, and its hits are found every frame by casting the
 hair curves' sample segments against the annulus (rebuildDisc). lockGuideRows turns the hits on a lock's curves

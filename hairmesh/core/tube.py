@@ -1,39 +1,39 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """The Profile modifier (item type 'tube'), the core of step 4.5: a cross-section profile swept along its source curve
 (three profiles since 1.0.1: start, middle, end), the automatic radius, the display data of the modifier, and Convert
 to curves & walls (curves `para` with their cross-sections `sec`, glued profile points forking in a Y). Pure Python,
 no bpy; selection, toasts, undo steps (commit) and display objects are the caller's.
 
-  BUILTIN_PROFILES (6358)       the presets
+  BUILTIN_PROFILES (9580)       the presets
   ease / tri (6373-6374)        start -> middle -> end, smooth in between
-  tubeRadius (6376)             the radius at t, with the tip collapsing
-  framesAlong (6385)            parallel-transport frames (THREE.Quaternion.setFromUnitVectors: mat4.Quat)
-  sweepFrames (6384)            the frames of NR points evenly along a curve
+  tubeRadius (9598)             the radius at t, with the tip collapsing
+  framesAlong (9607)            parallel-transport frames (THREE.Quaternion.setFromUnitVectors: mat4.Quat)
+  sweepFrames (9606)            the frames of NR points evenly along a curve
   tubeProfs / profAt / ownProfs (6407-6416)   the three profiles, the profile at t, the profiles made editable
-  tubeRings (6417)              rings[i][j]: profile point j on ring i
-  autoTubeRadius (6652)         half the typical wall width (the median), 2 %-20 % of the curve length
+  tubeRings (9639)              rings[i][j]: profile point j on ring i
+  autoTubeRadius (9976)         half the typical wall width (the median), 2 %-20 % of the curve length
   ensureTubeRef (6665)          the automatic radius once for modifiers made before rRef
-  rebuildTube (6673)            the data of the modifier's display (no three.js mesh: rings, quads, edge lines)
+  rebuildTube (9997)            the data of the modifier's display (no three.js mesh: rings, quads, edge lines)
   modTargets / applyModifier (6699-6703)   the curves Apply works on; Apply (new modifiers, or a new profile)
-  convertTube (6758)            Convert to curves & walls, with glued points (Y) and the collapsed tip
+  convertTube (10100)            Convert to curves & walls, with glued points (Y) and the collapsed tip
   tubeConv / tubeRows (ours, lot 4.7b item 4)   the conversion settings the lock will get (the modifier's own loop
                                 step, else the group's) and the loops it will have: what the live preview shows
   samePt / gluedRun (6816-6818) points glued in a profile (a run of neighbours at the very same place)
 
 The Extra modifiers (item type 'xmod', step 4.7: the core; 4.7b: the weight brush's dab):
-  MASK_N / XKIND / PAINTED / SIGNED (6431-6434), TWIST_CW (6581)
+  MASK_N / XKIND / PAINTED / SIGNED (6431-6434), TWIST_CW (9806)
   extrasOf / activeExtras / curlTurns (6435-6437)   the extras of a modifier, the turns of a curl
-  extraRings (6438)             more rings when the lock curls or waves a lot (at most 900)
+  extraRings (9660)             more rings when the lock curls or waves a lot (at most 900)
   maskAt / onlyList / extraWeight (6443-6457)   the painted weights at t, "Affects only", how much of an extra works at t
   four / rootIn (6459-6463)     a value through 4 control values; the root stays where it is
-  applyExtras (6464)            noise, curls (smooth the path, shrink on bends), painted thickness and twist
-  thinCrowded (6533)            "Thin where crowded" (O(n²) in the rings: the radii precomputed, the distance in scalars)
+  applyExtras (9686)            noise, curls (smooth the path, shrink on bends), painted thickness and twist
+  thinCrowded (9755)            "Thin where crowded" (O(n²) in the rings: the radii precomputed, the distance in scalars)
   newExtra / modTubes / addExtra (6549-6573)   the Extra tab's "+ <kind>" (the modifiers' part; imported meshes: no)
-  xmodProps (7039)              what the extra's properties panel writes into the model when it renders
+  xmodProps (10389)              what the extra's properties panel writes into the model when it renders
   maskOp (7089, 7097, 7106)     the panel's Clear (every painted extra) / Fill / Invert (the Mask's)
-  paintMask (6618)              one dab of the weight brush on the modifiers' Mask / Thickness / Twist weights (4.7b)
+  paintMask (9937)              one dab of the weight brush on the modifiers' Mask / Thickness / Twist weights (4.7b)
   rebuildTube's colours (6689-6703)   the painted weights on the display (TubeMesh.colors)
 
 Every formula keeps the original's operation order (docs/js-para-python.md): transcendentals by core/fdlibm, `**`
@@ -44,8 +44,9 @@ import re
 from dataclasses import dataclass, field
 
 from . import fdlibm
-from .edit import addItem, deleteItem, makeCurve, newAnchor
+from .edit import NEW_CURVE, addItem, deleteItem, makeCurve, newAnchor
 from .brush import brushWeight
+from .density import MASK_N                                         # (6431 in 1.0.1, 8581 in 1.0.2; one definition, in density.py)
 from .geom import pointOnCurve, polyLen, resample
 from .groups import convTargets, projectStep
 from .js import INF, NAN, clamp, index_of, js_hypot, js_max, js_min, js_or, js_pow, js_round, nullish, truthy
@@ -71,7 +72,7 @@ def _num(p, k):
     return 0 if v is None else v
 
 
-# port of BUILTIN_PROFILES (hair-modeler.clean.html:6358): profile points in [-1, 1]²: x — across the lock, y — outwards
+# port of BUILTIN_PROFILES (hair-modeler.clean.html:9580): profile points in [-1, 1]²: x — across the lock, y — outwards
 # from the model's vertical axis
 BUILTIN_PROFILES = [
     ['Quad', [[-1, -0.35], [1, -0.35], [1, 0.35], [-1, 0.35]]],
@@ -83,7 +84,7 @@ BUILTIN_PROFILES = [
 
 
 def builtinProfile(name):
-    """the built-in part of profileByName (6367): a copy of the preset's points, or None (the user's profiles live in
+    """the built-in part of profileByName (9589): a copy of the preset's points, or None (the user's profiles live in
     the add-on preferences, step 4.6)"""
     b = next((q for q in BUILTIN_PROFILES if q[0] == name), None)
     return [list(q) for q in b[1]] if b is not None else None
@@ -104,7 +105,7 @@ def tri(a, b, c, t):
 
 
 def tubeRadius(p, t):
-    # port of tubeRadius (hair-modeler.clean.html:6376)
+    # port of tubeRadius (hair-modeler.clean.html:9598)
     r = tri(_num(p, 'r0'), _num(p, 'r1'), _num(p, 'r2'), t)
     L = clamp(nullish(p.get('tipLen'), 0.25), 0.01, 1)
     if truthy(p.get('collapse')) and t > 1 - L:
@@ -128,7 +129,7 @@ def _perp(v, t):
 
 
 def framesAlong(P, pts):
-    """port of framesAlong (hair-modeler.clean.html:6385): frames along the polyline `pts`. The start normal points
+    """port of framesAlong (hair-modeler.clean.html:9607): frames along the polyline `pts`. The start normal points
     outwards from the model's vertical axis (through S.center: P.S.center), up if the curve runs along that direction;
     then it is carried along the curve without twisting (parallel transport: THREE.Quaternion.setFromUnitVectors of
     one tangent to the next). B = N × T."""
@@ -158,7 +159,7 @@ def framesAlong(P, pts):
 
 
 def sweepFrames(P, c, NR):
-    # port of sweepFrames (6384): the frames of NR points evenly along the curve's samples
+    # port of sweepFrames (9606): the frames of NR points evenly along the curve's samples
     return framesAlong(P, resample([s.p for s in c.samples], NR))
 
 
@@ -173,18 +174,18 @@ def _profsOk(it):
 
 
 def tubeProfs(it):
-    # port of tubeProfs (6407)
+    # port of tubeProfs (9629)
     return it.profs if _profsOk(it) else [it.profile, it.profile, it.profile]
 
 
 def profAt(it, t):
-    # port of profAt (hair-modeler.clean.html:6408): the profile at t (0 root … 1 tip)
+    # port of profAt (hair-modeler.clean.html:9630): the profile at t (0 root … 1 tip)
     A, B, C = tubeProfs(it)
     return [[tri(q[0], B[j][0], C[j][0], t), tri(q[1], B[j][1], C[j][1], t)] for j, q in enumerate(A)]
 
 
 def ownProfs(it):
-    # port of ownProfs (6413): the three profiles as their own arrays, ready to edit (it.profile stays the start one)
+    # port of ownProfs (9635): the three profiles as their own arrays, ready to edit (it.profile stays the start one)
     if not _profsOk(it):
         it.profs = [[list(q) for q in it.profile] for _k in range(3)]
     it.profile = it.profs[0]
@@ -195,7 +196,6 @@ def ownProfs(it):
 # Extra modifiers (item type 'xmod', kind mask / thick / twist / noise / curl) hang on a profile modifier (x.tube).
 # Extras painted along the lock with the weight brush: Mask 0…1; Thickness and Twist −1…1 (x.mask, MASK_N weights).
 
-MASK_N = 96                                                         # (6431)
 XKIND = {'mask': ['Mask', '◐'], 'thick': ['Thickness', '⬤'], 'twist': ['Twist', '⟳'], 'noise': ['Noise', '≋'],
          'curl': ['Curls', '➰'], 'xform': ['Transform', '✥']}      # (6432)
 PAINTED = ['mask', 'thick', 'twist']                                # (6434)
@@ -211,17 +211,17 @@ def SIGNED(k):
 
 
 def extrasOf(P, t):
-    # port of extrasOf (6435): the Extra modifiers hanging on the profile modifier t (xmods() order)
+    # port of extrasOf (9657): the Extra modifiers hanging on the profile modifier t (xmods() order)
     return [x for x in P.of_type('xmod') if x.tube == t.id]
 
 
 def activeExtras(P, t):
-    # port of activeExtras (6436)
+    # port of activeExtras (9658)
     return [x for x in extrasOf(P, t) if x.visible is not False]
 
 
 def curlTurns(x):
-    # port of curlTurns (6437): turns over the lock (one value per quarter)
+    # port of curlTurns (9659): turns over the lock (one value per quarter)
     s = 0
     for k in range(4):
         s = s + nullish(x.p.get('d' + str(k)), 1)
@@ -229,7 +229,7 @@ def curlTurns(x):
 
 
 def extraRings(it, ex, NR):
-    # port of extraRings (hair-modeler.clean.html:6438): more rings when the lock curls or waves a lot
+    # port of extraRings (hair-modeler.clean.html:9660): more rings when the lock curls or waves a lot
     n = NR
     for x in ex:
         if x.kind == 'curl':
@@ -248,23 +248,26 @@ def _mv(m, i):
 
 
 def maskAt(m, t):
-    # port of maskAt (6443): the painted weight at t (0 root … 1 tip), linear between the MASK_N weights
+    # port of maskAt (9665): the painted weight at t (0 root … 1 tip), linear between the MASK_N weights
     if m is None:                                                   # (!m: an empty array is truthy in JS)
         return 0
-    x = clamp(t, 0, 1) * (len(m) - 1); i = min(math.floor(x), len(m) - 2)
+    x = clamp(t, 0, 1) * (len(m) - 1)
+    if x != x:                                                      # (a NaN place: Math.floor and Math.min give NaN, m[NaN] is undefined)
+        return NAN
+    i = min(math.floor(x), len(m) - 2)
     a = _mv(m, i)
     return a + (_mv(m, i + 1) - a) * (x - i)
 
 
 def onlyList(P, m):
-    # port of onlyList (6445): the extras a mask is limited to ("Affects only"; older saves keep one id)
+    # port of onlyList (9667): the extras a mask is limited to ("Affects only"; older saves keep one id)
     o = m.p.get('only')
     ids = o if isinstance(o, list) else [o] if o is not None else []
     return [i for i in ids if i in P.items]
 
 
 def extraWeight(P, x, t, ex):
-    """port of extraWeight (hair-modeler.clean.html:6447): how much of extra x works at t — every mask of the same
+    """port of extraWeight (hair-modeler.clean.html:9669): how much of extra x works at t — every mask of the same
     modifier that applies to x lowers it (100% mask → nothing)"""
     w = 1
     for m in ex:
@@ -278,7 +281,7 @@ def extraWeight(P, x, t, ex):
 
 
 def four(x, key, t):
-    """port of four (6459): a smooth value through 4 control values at the root (k = 0), 1/3, 2/3 and the tip (k = 3)
+    """port of four (9681): a smooth value through 4 control values at the root (k = 0), 1/3, 2/3 and the tip (k = 3)
     of the lock; the coil radius 'r' falls back to the single radius of older saves"""
     p = x.p
 
@@ -294,7 +297,7 @@ def four(x, key, t):
 
 
 def rootIn(t):
-    # port of rootIn (6463): the root stays where it is
+    # port of rootIn (9685): the root stays where it is
     return ease(clamp(t / 0.08, 0, 1))
 
 
@@ -304,7 +307,7 @@ def _gt0(v):
 
 
 def applyExtras(P, it, ex, F):
-    """port of applyExtras (hair-modeler.clean.html:6464): the Extra modifiers on the frames F of the source curve —
+    """port of applyExtras (hair-modeler.clean.html:9686): the Extra modifiers on the frames F of the source curve —
     Noise and Curls displace the centre line (Mask limits them), Curls, Thickness and Twist scale / turn the profile.
     Returns (the frames along the displaced line, twist[i] in radians, thick[i] the radius factor)."""
     n = len(F)
@@ -388,7 +391,7 @@ def applyExtras(P, it, ex, F):
 
 
 def thinCrowded(P, it, x, Q, thick, ex):
-    """port of thinCrowded (hair-modeler.clean.html:6533). Anti-clipping 3 ("Thin where crowded"): where other parts of
+    """port of thinCrowded (hair-modeler.clean.html:9755). Anti-clipping 3 ("Thin where crowded"): where other parts of
     the lock come closer than its thickness (neighbouring coils, tight bends), the cross-section gets thinner so the
     surfaces just touch. Only the thickness changes (thick, in place) — the path and the frames stay, so the lock
     doesn't turn (unlike Shrink on bends, which moves the path).
@@ -454,7 +457,7 @@ def _extras_frames(P, it, c, ex, NR):
 
 
 def tubeRings(P, it, c, NR):
-    """port of tubeRings (hair-modeler.clean.html:6417): rings[i][j] — profile point j on ring i (NR rings evenly along
+    """port of tubeRings (hair-modeler.clean.html:9639): rings[i][j] — profile point j on ring i (NR rings evenly along
     the arc length), as Vec3. With Extra modifiers (Noise, Curls; Mask limits them) the centre line is displaced and the
     profile twisted / scaled first; the profile is then carried along the displaced line. More rings are used when the
     lock curls or waves a lot (extraRings). it.cl keeps the (displaced) centre line — the mask brush paints along it."""
@@ -483,7 +486,7 @@ def tubeRings(P, it, c, NR):
 # ======================= adding extras (6549-6573) and their panel (7039) =======================
 
 def newExtra(P, t, kind):
-    """port of newExtra (hair-modeler.clean.html:6549): a new extra of `kind` on the modifier t, with the defaults
+    """port of newExtra (hair-modeler.clean.html:9771): a new extra of `kind` on the modifier t, with the defaults
     around the modifier's radius; named "<Kind> N (<curve>)" and placed after the modifier and its other extras. Marks
     the modifier dirty. Reads autoTubeRadius when the modifier has no rRef (the caller rebuilds dirty curves first)."""
     r = t.p.get('rRef')                                             # (t.p.rRef || autoTubeRadius(c) || S.scale * 0.01)
@@ -515,7 +518,7 @@ def newExtra(P, t, kind):
 
 
 def modTubes(P, sel_ids):
-    # port of modTubes (6562): the modifiers Extra works on — selected modifiers, modifiers of selected curves, of
+    # port of modTubes (9784): the modifiers Extra works on — selected modifiers, modifiers of selected curves, of
     # selected extras (each once, in selection order)
     out = []
     for iid in sel_ids:
@@ -535,7 +538,7 @@ def modTubes(P, sel_ids):
 
 
 def addExtra(P, sel_ids, kind):
-    """port of addExtra (hair-modeler.clean.html:6564), the data part: "+ <kind>" of the Extra tab on the modifiers of
+    """port of addExtra (hair-modeler.clean.html:9786), the data part: "+ <kind>" of the Extra tab on the modifiers of
     the selection (modTubes). Returns (the extras made, the toast). The caller then does what the original does after:
     S.maskBrush on with this kind for a painted one (the brush, 4.7b), S.asel = [], S.sel = them, onSelChange (the
     panel of the last one: xmodProps, groups.panelsRendered) and commit — only when something was made.
@@ -552,7 +555,7 @@ def addExtra(P, sel_ids, kind):
 
 
 def xmodProps(P, x):
-    """What the extra's properties panel (xmodProps, hair-modeler.clean.html:7039) writes into the model when it renders
+    """What the extra's properties panel (xmodProps, hair-modeler.clean.html:10389) writes into the model when it renders
     (renderProps of a selected extra: groups.panelsRendered): Twist's angle 180, Noise's Pure sine 0, Curls' four coil
     radii (older saves: one radius) and the anti-clipping sliders 0, where missing. An imported mesh's extra
     (meshXmodProps) is not in the port. Returns True when it wrote."""
@@ -597,7 +600,7 @@ def maskOp(P, x, op):
 
 
 def paintMask(P, sel_ids, m, op, amt, mb, R, hard, screen, shown=None, only=None):
-    """port of paintMask (hair-modeler.clean.html:6618), the profile modifiers' part (an imported mesh's weights,
+    """port of paintMask (hair-modeler.clean.html:9937), the profile modifiers' part (an imported mesh's weights,
     paintMeshWeights, are not in the port): one dab of the weight brush at m = (x, y) pixels. op: 'paint' | 'invert'
     (thickness / twist with Ctrl) | 'erase' | 'smooth' (core/brush.weightOp); amt: how much the dab adds in Add mode
     (brush.FIRST_DAB on the press, brush.dabAmount on a move); mb the brush (S.maskBrush: kind, strength, intensity,
@@ -654,7 +657,7 @@ def paintMask(P, sel_ids, m, op, amt, mb, R, hard, screen, shown=None, only=None
 # ======================= the automatic radius and the display (6650-6698) =======================
 
 def autoTubeRadius(P, c):
-    """port of autoTubeRadius (hair-modeler.clean.html:6652). Automatic radius: half the typical wall width of the
+    """port of autoTubeRadius (hair-modeler.clean.html:9976). Automatic radius: half the typical wall width of the
     locks already in the scene (the median, so a few odd walls don't matter); without walls — 6% of the curve length.
     Always kept between 2% and 20% of the curve length. Reads the samples as they are (the caller rebuilds dirty
     curves first, as the frame loop would have)."""
@@ -694,7 +697,7 @@ def ensureTubeRef(P, it):
 
 @dataclass(eq=False, kw_only=True)
 class TubeMesh:
-    """The data of the modifier's display (rebuildTube, 6673) without three.js: `rings` (NR × n Vec3, doubles — the
+    """The data of the modifier's display (rebuildTube, 9997) without three.js: `rings` (NR × n Vec3, doubles — the
     original's Float32Array rounds them for the GPU, as a Blender mesh does), `pos` (ring i point j at i * n + j),
     `faces` (the quads a, b, d, e between two rings — the original indexes them as the triangles a b d, a d e), `edges`
     (the lines along the lock, a - e: the light edge lines), `loops` (every ls-th ring, ls = round(NR / 16): the
@@ -711,7 +714,7 @@ class TubeMesh:
 
 
 def rebuildTube(P, it):
-    """port of rebuildTube (hair-modeler.clean.html:6673), the data part: (TubeMesh or None — no display, wrote) where
+    """port of rebuildTube (hair-modeler.clean.html:9997), the data part: (TubeMesh or None — no display, wrote) where
     `wrote` says ensureTubeRef changed it.p. Clears it.dirty. The painted weights' colours (masks black, thickness
     orange / blue, twist green / pink: 6689-6703) in TubeMesh.colors (tubeColors)."""
     it.dirty = False
@@ -844,12 +847,12 @@ def _js_ceil(x):
 
 
 def samePt(a, b):
-    # port of samePt (6816)
+    # port of samePt (10159)
     return abs(a[0] - b[0]) < 1e-9 and abs(a[1] - b[1]) < 1e-9
 
 
 def gluedRun(pts, i):
-    """port of gluedRun (hair-modeler.clean.html:6818): the points glued to point i (a run of neighbours at the very
+    """port of gluedRun (hair-modeler.clean.html:10161): the points glued to point i (a run of neighbours at the very
     same place, around the outline), in outline order"""
     n = len(pts); run = [i]
     k = (i + 1) % n
@@ -943,6 +946,9 @@ def tubeRows(P, it):
     if c is None or conv is None or len(c.samples) < 2:
         return None
     memo = {}
+    for v in (c.ribF, c.ribRings, c.ribX, c.rib_geom, c.rib_key):   # (a flat lock's derived state is not copied: the copy's frame makes its own)
+        if v is not None:
+            memo[id(v)] = None
     c2 = copy.deepcopy(c, memo)
     t2 = copy.deepcopy(it, memo); t2.p = {k: v for k, v in it.p.items() if k != 'step'}
     xs = [copy.deepcopy(x, memo) for x in activeExtras(P, it)]
@@ -1000,7 +1006,7 @@ def rowRings(rings, ts):
 
 
 def convertTube(P, it):
-    """port of convertTube (hair-modeler.clean.html:6758). Convert to the usual workflow: a curve along every profile
+    """port of convertTube (hair-modeler.clean.html:10100). Convert to the usual workflow: a curve along every profile
     corner (anchors where the source curve has them, plus a few more where it has only a few), closed walls between
     neighbouring corners; with the tip collapsed all curves end in one shared anchor. Corners glued in the profile at a
     section share one anchor there (a common trunk — where they come apart along the lock, the edges fork in a smooth
@@ -1093,6 +1099,7 @@ def convertTube(P, it):
         if tip is not None:
             tip.sec = K - 1
         nc.para = True                                              # anchor k of every edge — one cross-section (buildRowTables)
+        nc.round = nullish(c.round, NEW_CURVE['round']); nc.fair = nullish(c.fair, NEW_CURVE['fair'])   # 1.0.2 (convertTube, 8974): Roundness / Smoothing of the source curve
         nc.dirty = True
         made.append(nc)
     m = len(made)

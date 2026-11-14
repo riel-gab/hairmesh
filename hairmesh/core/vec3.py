@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Port of three.js r160 `Vector3` (node_modules/three/src/math/Vector3.js), only the methods the original uses.
 
 Mutable, like the original: methods modify `self` and return it, `clone()` makes a copy. Every formula keeps the

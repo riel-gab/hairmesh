@@ -6,5 +6,6 @@ __pycache__/
 *.blend1
 *.blend2
 tests/output/
+tools/blender_run.local.json
 dist/
 .vscode/

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
 """Lot 4.7b (D4.4, approved): the brush — a session over the 3D View that paints instead of selecting, shared by the
-weight brush of the Extras (4.7b: Mask, Thickness, Twist, paintMask 6618), the Density brush (4.8: paintTipMask 6585)
+weight brush of the Extras (4.7b: Mask, Thickness, Twist, paintMask 9937), the Density brush (4.8: paintTipMask 9817)
 and the anchor brush (4.9). The rules are core/brush.py (brushWeight, the dab amount, the radius keys and drag, the
 press's operation) and the painting functions of the core; here: the circle (gpu), the keys, one undo step per stroke.
 
@@ -28,17 +28,17 @@ import gc
 import math
 import time
 import traceback
+from typing import Any
 
 import bpy
 from bpy.props import EnumProperty, FloatProperty, IntProperty
 from bpy.types import PropertyGroup
 
-from ..core import anchorbrush as AB, brush as BR, curves as CM, edit, effects as E, groups as G, tube as TB
-from . import errorlog, live, modal_keys, owner, pick, prefs, select, session, slow
+from ..core import anchorbrush as AB, brush as BR, curves as CM, edit, effects as E, groups as G, lockdraw as LD, rib as RB, tube as TB
+from . import errorlog, live, modal_keys, owner, pick, pointer, prefs, select, session, slow
 from .coords import f32
 
-MODIFIER_KEYS = {'LEFT_CTRL', 'RIGHT_CTRL', 'LEFT_SHIFT', 'RIGHT_SHIFT', 'LEFT_ALT', 'RIGHT_ALT', 'OSKEY'}
-STATE = {'op': None, 'shade': None}                                 # the running session (the draw handlers read it); 4.8b: the view's Color it replaced (its space's pointer, the old value)
+STATE: dict[str, Any] = {'op': None, 'shade': None}                 # the running session (the draw handlers read it); 4.8b: the view's Color it replaced (its space's pointer, the old value)
 FORESEE = 0.008                                                     # seconds of a mouse move spent on what the next dab will ask: _foresee
 FORESEE_AROUND = 1.15                                               # (a little past the circle: the press lands near where the cursor was)
 TIMES = {'dab': [], 'stroke': []}                                   # the last dabs' / strokes' cost, seconds (tools/sim_c47_shots.py, sim_c49_brush_perf.py read it)
@@ -64,6 +64,20 @@ RADIAL_KEYS = ((('Ctrl',), 'Snap'), (('Shift',), 'Precision'), (('LMB', 'Enter')
 ADJUST_KEYS = {'radius': ((('Move',), 'Set the Radius'), *RADIAL_KEYS),
                'hardness': ((('Move',), 'Set the Hardness'), *RADIAL_KEYS),
                'drag': ((('Move',), 'Set Radius and Hardness'), (('RMB',), 'Release: Keep Them'), (('Esc',), 'Put Them Back'))}
+# 1.1f: the ribbons' brushes (paintRib 6951) and the Draw's Lock width (S.ribR)
+RIB_KIND_OF = {'EXT': 'ext', 'OFF': 'off', 'GLUE': 'glue'}
+RIB_NAMES = {'EXT': 'Extrude', 'OFF': 'Offset', 'GLUE': 'Glue'}
+RIB_HINTS = {'EXT': 'LMB extrudes (orange), Ctrl erases, Shift smooths',
+             'OFF': 'LMB moves the extruded edge nearest the brush in (orange), Ctrl out (blue), Ctrl+Alt erases, Shift smooths',
+             'GLUE': 'LMB closes the top face of the extrusion (green), Ctrl erases, Shift smooths'}
+PAINT_KEYS.update({'RIB_EXT': ((('LMB',), 'Extrude'), (('Ctrl',), 'Erase'), (('Shift',), 'Smooth')),
+                   'RIB_OFF': ((('LMB',), 'Move the Edge In'), (('Ctrl',), 'Out'), (('Ctrl', 'Alt'), 'Erase'), (('Shift',), 'Smooth')),
+                   'RIB_GLUE': ((('LMB',), 'Glue the Top'), (('Ctrl',), 'Erase'), (('Shift',), 'Smooth'))})
+UNDO.update({'RIB': 'HairMesh Flat Lock Brush'})
+LOCK_KEYS = ((('[', ']'), 'Width'), (('F',), 'Width'), (('Ctrl', 'RMB Drag'), 'Width'))
+LOCK_IDLE_KEYS = ((('LMB',), 'Start a Lock'), *LOCK_KEYS, (('Esc',), 'Back to Select'))
+ADJUST_KEYS.update({'lock_radial': ((('Move',), 'Set the Width'), *RADIAL_KEYS),
+                    'lock_drag': ((('Move',), 'Set the Width'), (('RMB',), 'Release: Keep It'), (('Esc',), 'Put It Back'))})
 
 
 class HairMeshBrushProps(PropertyGroup):
@@ -79,6 +93,15 @@ class HairMeshBrushProps(PropertyGroup):
     brush_tip_strength: FloatProperty(name='Strength', description='How much a stroke paints where the density works', min=0.0, max=1.0, default=1.0, subtype='FACTOR')
     brush_anchor_mode: EnumProperty(name='Mode', update=lambda self, context: _mode_changed(context), items=(('SCREEN', 'Screen', 'Move everything inside the circle on screen, whatever its depth', 0),
                                                         ('SURFACE', 'Surface', 'Move only what is near the touched point in 3D (the front-most hair under the cursor)', 1)), default='SCREEN')
+    # 1.1f: the flat locks — the width of the Draw's Lock mode (S.ribR, its half: core/lockdraw.py) and the ribbons'
+    # brushes (S.ribBrush, 5935: the section painted, Strength for Extrude and Glue, Intensity for Offset)
+    lock_width: IntProperty(name='Width', description='Set the width of the lock at the next point, on the screen: the circle at the cursor ([ / ], F or Ctrl + right drag in the viewport)', min=LD.W_MIN, max=LD.W_MAX, default=LD.W_DEFAULT, subtype='PIXEL', update=lambda self, context: _width_changed(context))
+    brush_rib_kind: EnumProperty(name='Paints', items=(('EXT', 'Extrude', 'Push the ribbon out (orange)', 0), ('OFF', 'Offset', 'Move the extruded edges in or out (orange / blue)', 1), ('GLUE', 'Glue', 'Close the top face of the extrusion (green)', 2)), default='EXT')
+    brush_rib_strength: FloatProperty(name='Strength', description='Set how much one stroke paints', min=0.05, max=1.0, default=1.0, subtype='FACTOR')
+    brush_rib_intensity: FloatProperty(name='Intensity', description='Set how much one stroke paints', min=0.05, max=1.0, default=0.5, subtype='FACTOR')
+    # Scissors > Split Ends (1.0.2): S.splitR, session state of the original too (never in its file)
+    split_spread: IntProperty(name='Spread', description='How far each end moves from where the tip was, in screen pixels: the circle at the cursor', min=2, max=300, default=30,
+                              update=lambda self, context: _spread_changed(context))
 
 
 BRUSH_ATTRS = frozenset(HairMeshBrushProps.__annotations__)
@@ -92,6 +115,26 @@ def _mode_changed(context):
     op = STATE.get('op')
     if op is not None and op.kind == 'ANCHOR':
         op.header(context)
+
+
+def _width_changed(context):
+    """the Lock width changed (its field, a key): the circle and the header say it at once"""
+    op = STATE.get('op')
+    if op is not None and op.kind == 'LOCK' and op.area is not None:
+        try:
+            op.header(context)
+            op.area.tag_redraw()
+        except Exception:                                           # (its area may be gone: the session ends at its next event)
+            pass
+
+
+def _spread_changed(context):
+    """the Spread field of the Scissors' page: the Split Ends session's header and circle follow"""
+    try:
+        from . import ops_split
+        ops_split.spread_changed(context)
+    except Exception:                                               # (a field's update never raises)
+        errorlog.record('split ends: spread changed')
 
 
 def running(kind=None, weight=None):
@@ -136,7 +179,7 @@ def follow_active(context):
 
 def why_off(context, kind, weight=None):
     """why the brush can't run now (None: it can) — nothing to paint; the weight brush paints the active Extra (`weight`:
-    of this kind)"""
+    of this kind); the ribbons' brush, `weight` its section ('EXT', 'OFF', 'GLUE'): Offset and Glue need Extrude painted"""
     root, P, sel = select.current(context)
     if P is None:
         return 'No HairMesh project'
@@ -160,9 +203,24 @@ def why_off(context, kind, weight=None):
         if not P.of_type('tip'):
             return 'Add a Density first (Modifiers tab > Topology > Density)'
         return None
-    if kind == 'ANCHOR':
+    if kind in ('ANCHOR', 'LOCK'):
+        return None
+    if kind == 'RIB':                                               # (ribBrushOn 6916: not in the Draw, a flat lock selected)
+        if context.scene.hairmesh.subtool == 'DRAW':
+            return 'Leave the Draw sub-tool first: a ribbon is painted from the other sub-tools'
+        if not RB.ribCurvesSel(P, sel.items, sel.anchors):
+            if any(truthy_rib(c) for c in P.curves()):
+                return 'Select a flat lock (or one of its anchors): the brush paints the selected ones; a volume branch has no brushes'
+            return 'Draw a flat lock first: Draw sub-tool, Mode: Lock'
+        if weight is not None and not any(E.ribBrushActs(c, RIB_KIND_OF[weight]) for c in RB.ribCurvesSel(P, sel.items, sel.anchors)):
+            return f'{RIB_NAMES[weight]} moves the extruded edges: paint Extrude first'   # (6139: the button dimmed, a click says so and starts nothing)
         return None
     return 'Unknown brush'
+
+
+def truthy_rib(c):
+    from ..core.js import truthy
+    return truthy(c.rib)
 
 
 def _still_on(op, context):
@@ -170,8 +228,12 @@ def _still_on(op, context):
     if STATE.get('op') is not op or context.scene.hairmesh.subtool != op.subtool_start:
         return False                                                # (ours: the brushes work from the D's Modifiers tab with any sub-tool; picking another sub-tool ends them)
     p = prefs.get(bpy.context)
-    if op.kind != 'ANCHOR' and p is not None and p.menu_tab != 'MODIFIERS':
+    if op.kind in ('WEIGHT', 'TIP') and p is not None and p.menu_tab != 'MODIFIERS':
         return False                                                # (the tab stays in the preferences with the D closed: only moving to another tab ends the brush; the anchor brush is its sub-tool, whatever the tab)
+    if op.kind == 'RIB' and p is not None and p.menu_tab != 'SELECTION':
+        return False                                                # (1.1f: the ribbons' brushes are on the curve's sheet, the Selection tab)
+    if op.kind == 'LOCK' and context.scene.hairmesh.draw_mode != 'LOCK':
+        return False                                                # (1.1f: the width circle lives with the Lock mode)
     if context.mode != 'OBJECT' or not tool.is_active(context) or not owner.visible(context):
         return False                                                # (Tab, another tool, the add-on filtered out: the clicks are Blender's again)
     if context.area is None or context.area.type != 'VIEW_3D':
@@ -226,13 +288,16 @@ def radial_hardness(h0, dx, snap=False):
 def over_ui(context, event):
     """the cursor is not over the viewport's own region (outside it, or over a region overlapping it: the toolbar, the
     N panel, the headers with Region Overlap) — the event is the interface's"""
-    r = context.region
+    return over_ui_at(context.area, context.region, event.mouse_x, event.mouse_y)
+
+
+def over_ui_at(area, r, mx, my):
+    """over_ui for a given area and its WINDOW region (a modal that looks its area up again at every event)"""
     if r is None:
         return True
-    mx, my = event.mouse_x, event.mouse_y
     if not (r.x <= mx < r.x + r.width and r.y <= my < r.y + r.height):
         return True
-    for o in context.area.regions if context.area is not None else ():
+    for o in area.regions if area is not None else ():
         if o.type in ('TOOLS', 'UI', 'HEADER', 'TOOL_HEADER', 'ASSET_SHELF', 'ASSET_SHELF_HEADER') and o.width > 1 and o.height > 1 \
                 and o.x <= mx < o.x + o.width and o.y <= my < o.y + o.height:
             return True
@@ -249,20 +314,28 @@ def popup_rect(context, region):
         return None
 
 
-NAV = {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'WHEELINMOUSE', 'WHEELOUTMOUSE', 'TRACKPADPAN', 'TRACKPADZOOM', 'MOUSEROTATE', 'MOUSESMARTZOOM', 'NDOF_MOTION'}
-
-
 class HAIRMESH_OT_brush(bpy.types.Operator):
     """Paint with the brush in the viewport (the button again, or Esc, ends it): LMB paints, Shift smooths, Ctrl erases (thickness / twist: Ctrl inverts, Ctrl+Alt erases); [ ] or F the radius, Shift+F the hardness, Ctrl + right drag both"""
     bl_idname = 'hairmesh.brush'
     bl_label = 'Brush'
     bl_options = {'REGISTER'}                                       # (each stroke pushes its own undo step: _end_stroke)
 
-    kind: EnumProperty(name='Brush', items=(('WEIGHT', 'Weight', 'The Extras: Mask, Thickness, Twist', 0), ('TIP', 'Density', 'Where a Density works', 1), ('ANCHOR', 'Anchors', 'The anchors under the circle', 2)), default='WEIGHT', options={'SKIP_SAVE'})
+    kind: EnumProperty(name='Brush', items=(('WEIGHT', 'Weight', 'The Extras: Mask, Thickness, Twist', 0), ('TIP', 'Density', 'Where a Density works', 1), ('ANCHOR', 'Anchors', 'The anchors under the circle', 2),
+                                            ('RIB', 'Flat Lock', 'The weights of the selected flat locks: Extrude, Offset, Glue', 3), ('LOCK', 'Lock Width', "The Draw's Lock mode: the circle of the next point's width", 4)), default='WEIGHT', options={'SKIP_SAVE'})
     weight: EnumProperty(name='Paints', items=[(k, NAMES[k], '', i) for i, (k, _w) in enumerate(WEIGHT_KINDS)], default='MASK', options={'SKIP_SAVE'})
+    rib: EnumProperty(name='Section', items=[(k, RIB_NAMES[k], '', i) for i, k in enumerate(RIB_KIND_OF)], default='EXT', options={'SKIP_SAVE'})
 
     @classmethod
     def description(cls, context, properties):
+        if properties.kind == 'RIB':
+            name = RIB_NAMES[properties.rib]
+            if running('RIB') is not None and props(context).brush_rib_kind == properties.rib:
+                return f'Leave the {name} Brush (Esc does the same)'
+            why = why_off(context, 'RIB', properties.rib)
+
+            return why or f'Paint the {name} weights of the selected flat locks: ' + RIB_HINTS[properties.rib] + '. ' + KEYS_HINT
+        if properties.kind == 'LOCK':
+            return 'Show the width of the next point of a flat lock at the cursor: [ ] or F set it, Ctrl + right drag too'
         if properties.kind == 'ANCHOR':
             return 'Shape the curves with the Brush: ' + HINTS['ANCHOR'] + '. ' + KEYS_HINT
         if properties.kind == 'TIP':
@@ -282,12 +355,12 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
     def invoke(self, context, event):
         bp = props(context)
         cur = STATE.get('op')
-        if self.kind == 'ANCHOR' and cur is not None and cur.kind == 'ANCHOR':
-            return {'FINISHED'}                                     # (its sub-tool turns it on and off, not a toggle)
-        if cur is not None and cur.kind == self.kind and (self.kind != 'WEIGHT' or bp.brush_weight_kind == self.weight):
+        if self.kind in ('ANCHOR', 'LOCK') and cur is not None and cur.kind == self.kind:
+            return {'FINISHED'}                                     # (its sub-tool / mode turns it on and off, not a toggle)
+        if cur is not None and cur.kind == self.kind and (self.kind != 'WEIGHT' or bp.brush_weight_kind == self.weight) and (self.kind != 'RIB' or bp.brush_rib_kind == self.rib):
             stop(context)                                           # (the toggle again: off)
             return {'FINISHED'}
-        why = why_off(context, self.kind, self.weight if self.kind == 'WEIGHT' else None)
+        why = why_off(context, self.kind, self.weight if self.kind == 'WEIGHT' else self.rib if self.kind == 'RIB' else None)   # (before the switch below: a dimmed section never takes over the running brush)
         if why:
             self.report({'INFO'}, why)
             return {'CANCELLED'}
@@ -296,16 +369,21 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
             return {'CANCELLED'}                                    # _still_on would end at its first event; outside Object Mode it says so)
         if self.kind == 'WEIGHT':
             bp.brush_weight_kind = self.weight
-        if self.kind != 'ANCHOR':
+        if self.kind == 'RIB':
+            bp.brush_rib_kind = self.rib                            # (S.ribBrush.kind, 6116)
             p = prefs.get(context)
             if p is not None:
-                p.menu_tab = 'MODIFIERS'                            # (brushFor 6979: S.modTab, pickTool('modifier'); here the D's tab, the sub-tool stays)
+                p.menu_tab = 'SELECTION'                            # (its buttons are on the curve's sheet)
+        elif self.kind not in ('ANCHOR', 'LOCK'):
+            p = prefs.get(context)
+            if p is not None:
+                p.menu_tab = 'MODIFIERS'                            # (brushFor 10329: S.modTab, pickTool('modifier'); here the D's tab, the sub-tool stays)
             context.scene.hairmesh_profile.mod_tab = 'EXTRA' if self.kind == 'WEIGHT' else 'TOPOLOGY'
         if self.kind == 'TIP':
             context.scene.hairmesh_topo.topo_tab = 'DENSITY'         # (tipBrushFor 7316: S.modTab = 'tip')
         if cur is not None and cur.kind == self.kind:
             cur.header(context)                                     # (another kind of the same brush: the running one paints it)
-            select.redraw(context)
+            select.redraw(context)                                  # (the ribbons show the weights of the section painted now, ribCols 6936: the overlay)
             return {'FINISHED'}
         if cur is not None:
             stop(context)
@@ -320,13 +398,13 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
         self.stroke = None                                          # {'op', 'last', 'changed', 't0'} while LMB is down
         self.adjust = None                                          # F / Shift+F / Ctrl+RMB: {'what', ...}
         self.mouse = None                                           # the circle's centre (region pixels), None off the viewport
-        self.pointer_hidden = False                                 # _pointer
         self.area = context.area
         self.popup = context.region_popup                           # the pop-up of the button that started it, read only through popup_rect
         self.shaded = False                                         # (the view's Color set once a session: the owner's own change stays)
         self.warm_key = None; self.occ = None; self.locks = []      # _warm
         STATE['op'] = self
-        if self.kind == 'WEIGHT':
+        pointer.claim('brush')                                      # (over the modals running: Draw > Lock's drawing starts over this one)
+        if paints_meshes(self.kind):                                # (the ribbons' colours: the overlay alone, live.rib_colors)
             _colors_on(self, context)
         ensure_handlers()
         if self.kind == 'ANCHOR':
@@ -346,33 +424,48 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def header(self, context):
+        if self.kind == 'LOCK':
+            from . import ops_draw
+            d = ops_draw._running[0]
+            if d is not None and getattr(d, 'mode', None) == 'LOCK':
+                d._header(context, context.area or self.area)       # (while a lock is drawn its own header says the width: the new one at once, an adjust's text replaced)
+            elif d is None:
+                live.header(context.area or self.area, f'HairMesh Draw Lock ({LD.header(props(context).lock_width)})', LOCK_IDLE_KEYS)
+            return
+        if self.kind == 'RIB':
+            k = props(context).brush_rib_kind
+            live.header(context.area or self.area, f'HairMesh {RIB_NAMES[k]} Brush ({self.values(context)})', PAINT_KEYS['RIB_' + k] + BRUSH_KEYS)
+            return
         k = self.kind if self.kind in ('TIP', 'ANCHOR') else props(context).brush_weight_kind
         name = {'TIP': 'Density ', 'ANCHOR': ''}.get(k, f'{NAMES.get(k)} ')
         live.header(context.area or self.area, f'HairMesh {name}Brush ({self.values(context)})', PAINT_KEYS[k] + BRUSH_KEYS)
 
     def values(self, context):
         bp = props(context)
+        if self.kind == 'LOCK':
+            return LD.header(bp.lock_width)
         mode = f'{"Surface" if bp.brush_anchor_mode == "SURFACE" else "Screen"}, ' if self.kind == 'ANCHOR' else ''
         return f'{mode}Radius: {bp.brush_radius} px, Hardness: {round(bp.brush_hardness * 100)}%'
 
     def adjust_header(self, context):
-        live.header(context.area, f'HairMesh Brush ({self.values(context)})', ADJUST_KEYS[self.adjust['what']])
+        assert self.adjust is not None                              # (called right after an adjustment starts, or inside one)
+        live.header(context.area, f'HairMesh {"Draw Lock" if self.kind == "LOCK" else "Brush"} ({self.values(context)})', ADJUST_KEYS[self.adjust['what']])
 
     def radius_px(self, context):
+        if self.kind == 'LOCK':
+            return LD.half(props(context).lock_width) * self.ui     # (S.ribR: the circle is the lock's width at the cursor)
         return props(context).brush_radius * self.ui
 
-    def _pointer(self, context, hide):
-        """the system's pointer, while the circle stands for it (the owner's request, as in Sculpt): hidden over the viewport,
-        back over the interface, before anything that may open a menu and at every exit. A window has one modal cursor and
-        no stack: whoever restores it (a rebuild's wait cursor) takes this too, so every move asks for it again"""
-        win = getattr(context, 'window', None)
-        if win is None:
-            return
-        if hide:
-            win.cursor_modal_set('NONE')
-        elif self.pointer_hidden:
-            win.cursor_modal_restore()
-        self.pointer_hidden = hide
+    def diameter(self, context):
+        """the circle's diameter in px at 100 % (Blender's brush size): pointer.cursor_for"""
+        return 2 * self.radius_px(context) / self.ui
+
+    def _pointer(self, context, on):
+        """the system's pointer while the circle is at the cursor (lot 1.2a, the owner's request): as over Blender's brushes,
+        the paint cross or the dot (pointer.cursor_for), never hidden; Blender's own over the interface, before anything
+        that may open a menu and at every exit (pointer.release). A window has one modal cursor and no stack: whoever
+        restores it (a rebuild's wait cursor) takes this too, so every move asks for it again"""
+        pointer.ask('brush', context, pointer.cursor_for(self.diameter(context)) if on else None)
 
     def over_popup(self, context, event):
         """a button of the D started this session, so this modal sits above that pop-up, which stays open: what the
@@ -398,13 +491,27 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
         if not _still_on(self, context):
             if self.stroke is not None:
                 self._end_stroke(context, closing=True)
-            return self._end(context)
+                return self._end(context)
+            # (lot 1.2c, item 15: ended by a state changed under it — the Mode, the sub-tool, a tab — the event is the one
+            # after the click that changed it, the release of an expanded enum of a pop-up, which sets its value at the
+            # press: swallowed, that button never got it and stayed in Blender's drag toggle, the pointer passing over the
+            # other values set them. Handed on)
+            return self._end(context) | {'PASS_THROUGH'}
+        if self.stroke is None and self.adjust is None and not pointer.shows('brush'):
+            return {'PASS_THROUGH'}                                 # (a modal with a circle of its own runs above: this one waits)
         self.area = context.area                                    # (Blender moves a modal to the new area when its own is replaced: the header's)
-        if self.kind == 'WEIGHT':
+        if paints_meshes(self.kind):
             show_colors(self, context.area)                         # (the view turned to Solid while it runs)
             if live.paint_follow(self.root_name):
                 context.area.tag_redraw()
+        if self.kind == 'LOCK':
+            ret = self._lock_modal(context, event)
+            inside = not over_ui(context, event) and not self.over_popup(context, event)   # (the D's button that armed it: its pop-up stays open over the view)
+            pointer.follow('brush', context, event, inside, self.diameter(context), self.adjust is not None, 'PASS_THROUGH' in ret)
+            return ret
         t, v = event.type, event.value
+        if t == pointer.DEACTIVATE:
+            self._pointer(context, False)                           # (another window has the focus: back with the next move here)
         if self.adjust is not None:
             return self._adjust(context, event)
         if self.stroke is None and self.over_popup(context, event):
@@ -460,6 +567,8 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
                 bp.brush_radius = int(round(BR.smaller(bp.brush_radius) if t == 'LEFT_BRACKET' else BR.bigger(bp.brush_radius)))
                 self.header(context)
                 context.area.tag_redraw(); select.redraw(context)
+                if self.mouse is not None:
+                    self._pointer(context, True)                    # (the size may cross 12 or 28 px: the dot or the cross for it)
                 return {'RUNNING_MODAL'}
             if t == 'F' and self.mouse is not None:
                 bp = props(context); x, y = self.mouse
@@ -478,7 +587,7 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
             if self.kind == 'ANCHOR':
                 context.scene.hairmesh.subtool = 'SELECT'           # (Esc comes back to Select, as from the other sub-tools)
             return self._end(context)
-        if v == 'PRESS' and t not in NAV and t not in MODIFIER_KEYS:
+        if pointer.may_open_menu(t, v):
             self._pointer(context, False)                           # (a pie or a menu may open: Blender gives the modal no event until it closes)
         return {'PASS_THROUGH'}                                     # (navigation, Shift+RMB's pie, Ctrl+Z, every other key)
 
@@ -497,7 +606,6 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
                 bp.brush_radius = a['r0']; bp.brush_hardness = a['h0']; self.adjust = None; self.header(context)
             return {'RUNNING_MODAL'}
         if t == 'MOUSEMOVE':
-            self._pointer(context, True)
             a['slow'] = a['slow'] or not event.shift                # (the Shift of Shift+F still held is not Precision)
             a['dx'] += (x - a['x']) * (SLOW if event.shift and a['slow'] else 1.0) / self.ui
             a['x'] = x
@@ -514,7 +622,65 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
             context.area.tag_redraw()
         return {'RUNNING_MODAL'}
 
+    # ---- 1.1f: the Draw's Lock width (S.ribR): the circle follows the cursor, the clicks are the Draw's ----
+    def _lock_modal(self, context, event):
+        t, v = event.type, event.value
+        if self.adjust is not None:
+            return self._lock_adjust(context, event)
+        if t in ('MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'):
+            m = None if over_ui(context, event) else (event.mouse_region_x, event.mouse_region_y)
+            if m != self.mouse:
+                self.mouse = m; context.area.tag_redraw()
+            return {'PASS_THROUGH'}                                 # (the clicks place the points; the pointer: _modal, pointer.follow)
+        if over_ui(context, event):
+            return {'PASS_THROUGH'}
+        bp = props(context)
+        what = LD.lock_key(t, v, event.shift, event.ctrl, event.alt, event.oskey)
+        if what in ('smaller', 'bigger'):
+            bp.lock_width = LD.smaller(bp.lock_width) if what == 'smaller' else LD.bigger(bp.lock_width)
+            context.area.tag_redraw(); select.redraw(context)
+            return {'RUNNING_MODAL'}
+        x, y = event.mouse_region_x, event.mouse_region_y
+        if what == 'radial':
+            self.mouse = self.mouse or (x, y)
+            self.adjust = {'what': 'lock_radial', 'centre': self.mouse, 'x': x, 'dx': 0.0, 'w0': bp.lock_width}
+            self.adjust_header(context); context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        if what == 'drag':                                          # (7561: Ctrl+RMB with the Lock mode on — its width)
+            self.adjust = {'what': 'lock_drag', 'x0': x, 'w0': bp.lock_width}
+            self.mouse = (x, y)
+            self.adjust_header(context)
+            return {'RUNNING_MODAL'}
+        return {'PASS_THROUGH'}                                     # (LMB: the Draw's keymap places the point; Esc: back to Select; navigation, the pies)
+
+    def _lock_adjust(self, context, event):
+        bp = props(context); a = self.adjust; t, v = event.type, event.value
+        assert a is not None                                        # (_lock_modal calls it while an adjustment runs)
+        x = event.mouse_region_x
+        if a['what'] == 'lock_drag':
+            if t == 'MOUSEMOVE':
+                bp.lock_width = LD.dragged(a['w0'], (x - a['x0']) / self.ui)   # (7731: right = wider; the width in its own pixels)
+                self.adjust_header(context); context.area.tag_redraw()
+            elif t == 'RIGHTMOUSE' and v == 'RELEASE':
+                self.adjust = None; self.header(context); select.redraw(context)
+            elif t == 'ESC' and v == 'PRESS':
+                bp.lock_width = a['w0']; self.adjust = None; self.header(context)
+            return {'RUNNING_MODAL'}
+        if t == 'MOUSEMOVE':
+            a['dx'] += (x - a['x']) * (SLOW if event.shift else 1.0) / self.ui
+            a['x'] = x
+            bp.lock_width = LD.radial(a['w0'], a['dx'], event.ctrl)
+            self.adjust_header(context); context.area.tag_redraw()
+        elif (t == 'LEFTMOUSE' and v == 'PRESS') or (t in {'RET', 'NUMPAD_ENTER'} and v == 'PRESS'):
+            self.adjust = None; self.header(context); select.redraw(context)
+        elif (t == 'RIGHTMOUSE' and v == 'PRESS') or (t == 'ESC' and v == 'PRESS'):
+            bp.lock_width = a['w0']; self.adjust = None; self.header(context)
+            context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+
     def can_press(self, event):
+        if self.kind == 'RIB':
+            return BR.weightPress('thick' if props().brush_rib_kind == 'OFF' else 'mask', event.ctrl, event.alt)   # (7551: Alt is navigation, Ctrl+Alt erases an Offset)
         if self.kind == 'ANCHOR':
             return AB.anchorOp(event.shift, event.ctrl, event.alt) is not None   # (Ctrl+Alt shrinks; Alt alone is Blender's)
         if self.kind == 'TIP':
@@ -522,6 +688,8 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
         return BR.weightPress(WEIGHT_OF[props().brush_weight_kind], event.ctrl, event.alt)
 
     def press_op(self, event):
+        if self.kind == 'RIB':
+            return rib_op(props().brush_rib_kind, event.shift, event.ctrl, event.alt)
         if self.kind == 'ANCHOR':
             return AB.anchorOp(event.shift, event.ctrl, event.alt)
         if self.kind == 'TIP':
@@ -601,7 +769,7 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
         changed = PAINTERS[self.kind](self, context, root, P, sel, project, (x, y), self.stroke['op'], amt, bp)
         if changed:
             self.stroke['changed'] = True
-            if self.kind == 'WEIGHT':
+            if self.kind in ('WEIGHT', 'RIB'):
                 live.schedule(root.name)                            # (the live object follows when the cursor pauses; the release updates it — the Density's loops: once per stroke, 6002)
         TIMES['dab'].append(time.perf_counter() - t0)
         del TIMES['dab'][:-400]
@@ -627,7 +795,7 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
                     self.header(context)                            # (a long rebuild just said so in the headers, and took this one)
         else:
             live.cancel(root.name)
-        if self.pointer_hidden:
+        if pointer.holds('brush'):
             self._pointer(context, True)                            # (a rebuild's wait cursor took it)
         select.redraw(context)
 
@@ -638,8 +806,7 @@ class HAIRMESH_OT_brush(bpy.types.Operator):
             _colors_off(self)
         alone = STATE.get('op') is None                             # (a session started meanwhile owns the area, the pointer and the pending rebuild)
         if alone:
-            self._pointer(context, False)
-        if alone:
+            pointer.release('brush')
             live.cancel(self.root_name)
             try:
                 _release_area(self.area)
@@ -667,8 +834,7 @@ def stop(context=None):
             _release_area(op.area)
         except Exception:
             pass
-        if context is not None:
-            op._pointer(context, False)
+        pointer.release('brush')
     if context is not None:
         select.redraw(context)
 
@@ -710,7 +876,17 @@ def hide_colors():
         sp.shading.color_type = s[1]
 
 
+def paints_meshes(kind):
+    """the brush of this kind puts its colours on the live meshes and the view's Color on Attribute: the weight brush.
+    The ribbons' brush does not (lot 1.2a: the ribbon is the overlay's, coloured by live.rib_colors). The one rule of
+    the session's start, its events and its end"""
+    return kind == 'WEIGHT'
+
+
 def _colors_on(op, context):
+    """the weight brush on: its colours on the live meshes and the view's Color on Attribute (paints_meshes)"""
+    if not paints_meshes(op.kind):
+        return
     try:
         root = session.find_root(context)
         live.paint_begin(root, session.get_project(root))
@@ -724,7 +900,7 @@ def _colors_off(op):
     """the session is over: the view's Color back, the mesh without colors"""
     try:
         hide_colors()
-        if op.kind == 'WEIGHT':
+        if paints_meshes(op.kind):
             live.paint_end(op.root_name)
     except Exception as e:                                          # (its end never raises: _end runs from the modal's own except)
         errorlog.record('brush: colors off')
@@ -769,7 +945,7 @@ def mask_points(c):
 
 
 def _paint_tip(op, context, root, P, sel, project, m, how, amt, bp):
-    """4.8: a dab of the Density brush (paintTipMask 6585) over the locks of the row tables, a point painted only where it
+    """4.8: a dab of the Density brush (paintTipMask 9817) over the locks of the row tables, a point painted only where it
     is seen (pick.Occluder: built by the session's _warm, aimed at the view by the stroke's first dab)"""
     from ..core import density as DN
     cache = op.stroke['cache']
@@ -823,8 +999,9 @@ ANCHOR_HELP = '\n'.join(('LMB drag: the anchors under the circle follow, softer 
 
 def anchor_brush_rows(context):
     """the Brush's panel (9004-9011): Screen / Surface, Radius, Hardness"""
-    from .tool import enum
-    return [[enum('brush_anchor_mode', 'Mode')], [('prop', 'brush_radius', 'Radius'), ('prop', 'brush_hardness', 'Hardness')]]
+    from .tool import GAP, align_fields, enum, field, fitted
+    return align_fields([[fitted(context, 'Mode', enum('brush_anchor_mode', ''))], [GAP],
+                         [field('Radius', ('prop', 'brush_radius', ''))], [field('Hardness', ('prop', 'brush_hardness', ''))]])
 
 
 def _arm(ctx):
@@ -832,13 +1009,24 @@ def _arm(ctx):
     Mode came back, the sub-tool was set by the header's own buttons): one starts after this draw. A draw cannot start a
     modal, a timer can, with this area in its context"""
     hm = ctx.scene.hairmesh
-    if hm.subtool != 'BRUSH' or STATE.get('armed') is not None or STATE.get('arm_failed') or ctx.window is None or ctx.mode != 'OBJECT':
+    kind = armed_kind(hm)
+    if kind is None or STATE.get('armed') is not None or STATE.get('arm_failed') or ctx.window is None or ctx.mode != 'OBJECT':
         return
     from . import tool
     if not tool.is_active(ctx) or not owner.visible(ctx) or session.find_root(ctx) is None:
         return
-    STATE['armed'] = (ctx.window.as_pointer(), ctx.area.as_pointer())
+    STATE['armed'] = (ctx.window.as_pointer(), ctx.area.as_pointer(), kind)
     bpy.app.timers.register(_start_armed, first_interval=0.0)
+
+
+def armed_kind(hm):
+    """the session a sub-tool keeps on by itself: the anchor brush with Brush, the Lock width with the Draw's Lock mode
+    (1.1f: the circle shows as soon as the mode is chosen, 11366), else None"""
+    if hm.subtool == 'BRUSH':
+        return 'ANCHOR'
+    if hm.subtool == 'DRAW' and hm.draw_mode == 'LOCK':
+        return 'LOCK'
+    return None
 
 
 def _start_armed():
@@ -853,7 +1041,7 @@ def _start_armed():
                 if a.as_pointer() == armed[1] and a.type == 'VIEW_3D':
                     r = next(x for x in a.regions if x.type == 'WINDOW')
                     with bpy.context.temp_override(window=w, area=a, region=r):
-                        bpy.ops.hairmesh.brush('INVOKE_DEFAULT', kind='ANCHOR')
+                        bpy.ops.hairmesh.brush('INVOKE_DEFAULT', kind=armed[2])
     except Exception:                                               # (a timer must never raise, and no redraw tries again)
         errorlog.record('timer: brush armed')
         traceback.print_exc()
@@ -865,13 +1053,18 @@ def follow_subtool(context):
     """the sub-tool was just chosen: the anchor brush on with it, here and not at the next draw (a button of the D: the
     session has to know that pop-up), off with any other. Its keys and buttons call this"""
     op = STATE.get('op')
-    if context.scene.hairmesh.subtool != 'BRUSH':
-        if op is not None and op.kind == 'ANCHOR':
-            stop(context)
+    kind = armed_kind(context.scene.hairmesh)
+    if op is not None and op.kind in ('ANCHOR', 'LOCK') and op.kind != kind:
+        stop(context)
+        op = None
+    if op is not None and op.kind == 'RIB' and context.scene.hairmesh.subtool == 'DRAW':
+        stop(context)                                               # (ribBrushOn 6916: never in the Draw)
+        op = None
+    if kind is None:
         return
     from . import tool
-    if (op is None or op.kind != 'ANCHOR') and tool.is_active(context) and context.area is not None and context.area.type == 'VIEW_3D' and session.find_root(context) is not None:
-        bpy.ops.hairmesh.brush('INVOKE_DEFAULT', kind='ANCHOR')
+    if (op is None or op.kind != kind) and tool.is_active(context) and context.area is not None and context.area.type == 'VIEW_3D' and session.find_root(context) is not None:
+        bpy.ops.hairmesh.brush('INVOKE_DEFAULT', kind=kind)
 
 
 def _warm_anchor(op, context):
@@ -891,20 +1084,9 @@ def _brush_view(context, root, P, project, sel):
     """the BrushView of a 3D View (6081-6090, 5656): the model's space, the region's pixels. The view stays through a
     stroke: what reads it is made once; `hit` sees the walls as the press found them (the root is held: Surface + Shift
     asks at every move; the original's frame loop had rebuilt them, ours does at the release)"""
-    from mathutils import Vector
-    from .coords import from_blender
-    from .pick import model_cam, model_ray
+    from .pick import model_ray
     region = context.region; rv3d = context.region_data
-    cam_dir, _piv = model_cam(root, rv3d)
-    inv = root.matrix_world.inverted()
-    c = inv @ rv3d.view_matrix.inverted().translation
-    cam_pos = AB.V3(*from_blender(c.x, c.y, c.z))
-    m11 = rv3d.window_matrix[1][1]
-    ortho = None; tan_half = None
-    if rv3d.is_perspective:
-        tan_half = 1 / m11
-    else:
-        ortho = 2 / m11 / (sum(root.matrix_world.to_scale()) / 3)
+    cam_dir, cam_pos, tan_half, ortho = view_frame(root, rv3d)
     discs = [g for g in P.guides() if g.kind == 'disc' and edit.isVisible(P, g) and g.id in _shown_guides(P, sel)]
     shown_curves = None
     st_ = session.state(root, P)
@@ -929,6 +1111,24 @@ def _brush_view(context, root, P, project, sel):
 
     view = AB.BrushView(project, lambda m: model_ray(root, region, rv3d, m), cam_dir, cam_pos, region.height, tan_half, ortho, hit, near)
     return view
+
+
+def view_frame(root, rv3d):
+    """(cam_dir, cam_pos, tan_half, ortho) of a 3D View in the model's space, what worldPerPixelAt (8923) reads: the
+    camera's direction and place, tan of half the vertical field of view (perspective) or the view's height in model
+    units (orthographic)"""
+    from .coords import from_blender
+    from .pick import model_cam
+    cam_dir, _piv = model_cam(root, rv3d)
+    c = root.matrix_world.inverted() @ rv3d.view_matrix.inverted().translation
+    cam_pos = AB.V3(*from_blender(c.x, c.y, c.z))
+    m11 = rv3d.window_matrix[1][1]
+    ortho = None; tan_half = None
+    if rv3d.is_perspective:
+        tan_half = 1 / m11
+    else:
+        ortho = 2 / m11 / (sum(root.matrix_world.to_scale()) / 3)
+    return cam_dir, cam_pos, tan_half, ortho
 
 
 def _shown_guides(P, sel):
@@ -969,8 +1169,38 @@ def _end_anchor(op, context, root, P, stroke):
     CM.rebuild_dirty(P)
 
 
-PAINTERS = {'WEIGHT': _paint_weight, 'TIP': _paint_tip, 'ANCHOR': _paint_anchor}
-END = {'WEIGHT': _end_weight, 'TIP': _end_tip, 'ANCHOR': _end_anchor}
+# ---- 1.1f: the ribbons' brushes (paintRib 6951) ----
+
+def rib_op(kind, shift, ctrl, alt):
+    """the press's operation (5765, 7552): Offset as Thickness (Ctrl inverts, Ctrl+Alt erases), Extrude and Glue as the
+    mask (Ctrl erases); Shift smooths"""
+    return BR.weightOp('thick' if kind == 'OFF' else 'mask', shift, ctrl, alt)
+
+
+def rib_brush(bp):
+    """S.ribBrush as core/rib.paintRib reads it"""
+    return {'kind': RIB_KIND_OF[bp.brush_rib_kind], 'strength': f32(bp.brush_rib_strength), 'intensity': f32(bp.brush_rib_intensity)}
+
+
+def _paint_rib(op, context, root, P, sel, project, m, how, amt, bp):
+    """a dab on the selected flat locks' weights, in memory: their colours on the ribbons at once (where the live mesh
+    has its rings), the shape when the cursor pauses (live.schedule), the text and the undo step at the release"""
+    cache = op.stroke['cache']
+    if 'live' not in cache:
+        cache['live'] = {gid: ob.name for gid, ob in live.live_objects(root).items()}
+    changed = RB.paintRib(P, sel.items, sel.anchors, m, how, amt, rib_brush(bp), op.radius_px(context), f32(bp.brush_hardness), project)
+    if changed:
+        cols = live.rib_colors(root, P)
+        live.paint_tubes(cache['live'], P, {c.id: cols[c.id] for c in RB.ribCurvesSel(P, sel.items, sel.anchors) if c.id in cols})
+    return changed
+
+
+def _end_rib(op, context, root, P, stroke):
+    pass                                                            # (the locks are ribDirty: live.update rebuilds their ribbons)
+
+
+PAINTERS = {'WEIGHT': _paint_weight, 'TIP': _paint_tip, 'ANCHOR': _paint_anchor, 'RIB': _paint_rib}
+END = {'WEIGHT': _end_weight, 'TIP': _end_tip, 'ANCHOR': _end_anchor, 'RIB': _end_rib}
 
 
 # ---------------- drawing ----------------
@@ -1002,12 +1232,12 @@ def draw_circle():
     ctx = bpy.context
     if op is None and ctx.area is not None:
         _arm(ctx)
-    if op is None or ctx.area is None or ctx.area != op.area:
-        return
+    if op is None or ctx.area is None or ctx.area != op.area or not pointer.shows('brush'):
+        return                                                      # (shows: one circle on the screen, the modal's on top)
     import gpu
     from .draw import polyline2d
     bp = props(ctx)
-    if op.adjust is not None and op.adjust['what'] != 'drag':
+    if op.adjust is not None and op.adjust['what'] not in ('drag', 'lock_drag'):
         x, y = op.adjust['centre']
     elif op.mouse is not None:
         x, y = op.mouse
@@ -1018,10 +1248,14 @@ def draw_circle():
     gpu.state.blend_set('ALPHA')
     painting = op.stroke is not None
     polyline2d(ctx.region, circle_points(x, y, r), (1.0, 1.0, 1.0, 0.95 if painting else 0.75), w)
-    polyline2d(ctx.region, circle_points(x, y, max(2.0, r * bp.brush_hardness)), (1.0, 1.0, 1.0, 0.35), w)   # (the inner circle: full strength, 6155)
+    if op.kind != 'LOCK':                                           # (the Lock's circle is its width alone: no hardness, 7998)
+        polyline2d(ctx.region, circle_points(x, y, max(2.0, r * bp.brush_hardness)), (1.0, 1.0, 1.0, 0.35), w)   # (the inner circle: full strength, 6155)
     what = op.adjust['what'] if op.adjust is not None else None
     if what == 'radius':
         polyline2d(ctx.region, circle_points(x, y, op.adjust['r0'] * op.ui), (1.0, 1.0, 1.0, 0.5), max(1.0, w / 2))   # (Blender's thin ring: where the value started)
+    elif what == 'lock_radial':
+        assert op.adjust is not None                                # (what came from it)
+        polyline2d(ctx.region, circle_points(x, y, LD.half(op.adjust['w0']) * op.ui), (1.0, 1.0, 1.0, 0.5), max(1.0, w / 2))
     elif what == 'hardness':
         import blf
         text = f'{round(bp.brush_hardness * 100)}%'
@@ -1035,7 +1269,7 @@ def _srgb(c):
     return [(12.92 * v if v <= 0.0031308 else 1.055 * math.pow(v, 1 / 2.4) - 0.055) for v in c]
 
 
-TIPV = ((0x7a / 255, 0x30 / 255, 0x06 / 255), (0xff / 255, 0xe0 / 255, 0x4a / 255))   # TIPV (6244): dark orange (weak) … yellow (full), as sRGB
+TIPV = ((0x7a / 255, 0x30 / 255, 0x06 / 255), (0xff / 255, 0xe0 / 255, 0x4a / 255))   # TIPV (9464): dark orange (weak) … yellow (full), as sRGB
 _tip_cache = {}                                                     # 'key' -> (key, batch)
 
 
@@ -1086,7 +1320,7 @@ def tip_segments(P, ks):
 
 
 def draw_tips():
-    """the Density preview (updateTipViz 6246): the painted masks along the curves, depth-tested, over the curves"""
+    """the Density preview (updateTipViz 9468): the painted masks along the curves, depth-tested, over the curves"""
     ctx = bpy.context
     if not owner.visible(ctx) or ctx.region_data is None:
         return
@@ -1140,6 +1374,7 @@ CLASSES = (HairMeshBrushProps, HAIRMESH_OT_brush)
 @bpy.app.handlers.persistent
 def _on_load(_dummy):
     STATE['op'] = None; STATE['shade'] = None; STATE['armed'] = None; STATE['arm_failed'] = False
+    pointer.reset()                                                 # (every modal with a circle ended with the file: their cancel released it already)
 
 
 @bpy.app.handlers.persistent
@@ -1179,6 +1414,7 @@ def register():
 
 def unregister():
     STATE['op'] = None
+    pointer.reset()
     hide_colors()
     remove_handlers()
     for name, fn in HANDLERS:

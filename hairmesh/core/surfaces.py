@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Walls: one flat (optionally bulged) surface between two curves of a lock, from the lock's row table
 (hair-modeler.clean.html:2718-2830, 2861-2865, 8890)."""
 import math
@@ -135,8 +135,9 @@ def surfaceData(P, sf, T):
 
 class WeldInfo:
     """`info` of mergeWeld: vsrc = source parts per welded vertex, fsrc = source part per face, vmap = index maps."""
-    def __init__(self):
+    def __init__(self, alone=None):
         self.vmap = {}; self.vsrc = {}; self.fsrc = []
+        self.alone = alone                                          # 1.0.2: alone(p) — such a vertex is shared only within its own part
 
 
 def _cell(x, eps):
@@ -146,11 +147,19 @@ def _cell(x, eps):
 
 
 def mergeWeld(datas, eps, info=None):
-    # port of mergeWeld (hair-modeler.clean.html:2804): weld vertices closer than eps across parts, drop degenerate faces
+    # port of mergeWeld (hair-modeler.clean.html:4072): weld vertices closer than eps across parts, drop degenerate faces
     pos = []; faces = []; grid = {}
+    alone = info.alone if info is not None else None
 
-    def find(v):
-        cx = _cell(v.x, eps); cy = _cell(v.y, eps); cz = _cell(v.z, eps)
+    # info.alone(p): such a vertex is shared only within its own part (lock tips — never welded to another lock)
+    def find(v, di):
+        cx = _cell(v.x, eps); cy = _cell(v.y, eps); cz = _cell(v.z, eps); own = alone is not None and alone(v)
+
+        def ok(i):
+            if not own:
+                return True
+            vs = info.vsrc.get(i) if info is not None else None   # (own: alone, so info, is set)
+            return not vs or (len(vs) == 1 and di in vs)
         if isinstance(cx, int) and isinstance(cy, int) and isinstance(cz, int):
             for dx in (-1, 0, 1):
                 for dy in (-1, 0, 1):
@@ -158,13 +167,13 @@ def mergeWeld(datas, eps, info=None):
                         l = grid.get((cx + dx, cy + dy, cz + dz))
                         if l:
                             for i in l:
-                                if pos[i].distanceToSquared(v) <= eps * eps:
+                                if pos[i].distanceToSquared(v) <= eps * eps and ok(i):
                                     return i
         else:
             l = grid.get((cx, cy, cz))
             if l:
                 for i in l:
-                    if pos[i].distanceToSquared(v) <= eps * eps:
+                    if pos[i].distanceToSquared(v) <= eps * eps and ok(i):
                         return i
         i = len(pos); pos.append(v.clone()); k = (cx, cy, cz)
         grid.setdefault(k, []).append(i)
@@ -177,7 +186,7 @@ def mergeWeld(datas, eps, info=None):
 
         def mv(i, mp=mp, d=d, di=di):
             if i not in mp:
-                j = find(d.pos[i]); mp[i] = j
+                j = find(d.pos[i], di); mp[i] = j
                 if info is not None:
                     info.vsrc.setdefault(j, {})[di] = True
             return mp[i]

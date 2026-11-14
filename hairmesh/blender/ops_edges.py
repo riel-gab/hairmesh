@@ -48,7 +48,7 @@ hover = None                                                        # the edge u
 # ---------------- the selection in the scene ----------------
 
 def current(hm, P):
-    """S.edges for model P: empty unless the mesh it names still has that very data (edgeSelMesh 3792, and a mesh
+    """S.edges for model P: empty unless the mesh it names still has that very data (edgeSelMesh 5805, and a mesh
     rebuilt by a reconversion gets another token)"""
     try:
         d = json.loads(hm.edge_sel or '{}')
@@ -75,7 +75,7 @@ def has_edges(context):
 # ---------------- the picking ----------------
 
 def shown(root, P):
-    """edgeMeshes (3615) for the converted meshes: with data, visible, and their object shown in the viewport"""
+    """edgeMeshes (5628) for the converted meshes: with data, visible, and their object shown in the viewport"""
     from . import meshes
     obs = meshes.mesh_objects(root, clean=False)
     out = []
@@ -128,7 +128,7 @@ def scanner(project_matrix, w, h, tokens):
 
 
 def pick_at(context, v, x, y, hovering):
-    """pickEdge (3662) in the 3D View `v`: (mesh id, T, edge) or None"""
+    """pickEdge (5675) in the 3D View `v`: (mesh id, T, edge) or None"""
     P = v.P
     ms = shown(v.root, P)
     if not ms:
@@ -153,7 +153,7 @@ def pick_at(context, v, x, y, hovering):
 # ---------------- the click ----------------
 
 def press(op, context, v, x, y, ctrl, shift, double=False):
-    """edgeClick (3817): the selection stored, the mesh selected (3832); FINISHED, one undo step, when something changed.
+    """edgeClick (5830): the selection stored, the mesh selected (3832); FINISHED, one undo step, when something changed.
     double: Blender paired the two clicks by the events' own clock, so the undo step and the redraw of the first one
     cannot make them two clicks by ours (S.edgeClick's 400 ms stay for what Blender did not pair)"""
     global memo
@@ -337,7 +337,7 @@ class HAIRMESH_OT_edges_to_curve(bpy.types.Operator):
 # ---------------- the page and the pie ----------------
 
 def edges_rows(context, room=None):
-    """the Edges page (edgePanel 3888, without the Mesh -> curves part): how many edges on which mesh, Path -> Curve,
+    """the Edges page (edgePanel 5901, without the Mesh -> curves part): how many edges on which mesh, Path -> Curve,
     Deselect (dimmed, the tooltip says why); with nothing to pick, why (G2)"""
     hm = context.scene.hairmesh
     root, P, _sel = select.current(context)
@@ -350,12 +350,13 @@ def edges_rows(context, room=None):
     rows = [[('label', f'{n} edge{"" if n == 1 else "s"} on {P.items[E.id].name}' if n else 'No edges selected', 'EDGESEL')]]
     if not shown(root, P):
         rows.append([('text', HIDDEN, 'INFO')])
-    rows.append([('op', 'hairmesh.edges_to_curve', 'Path → Curve', 'CURVE_DATA', {}), ('op', 'hairmesh.edges_deselect', 'Deselect', 'X', {})])
+    from .tool import buttons
+    rows.append([buttons(context, ('op', 'hairmesh.edges_to_curve', 'Path → Curve', 'CURVE_DATA', {}), ('op', 'hairmesh.edges_deselect', 'Deselect', 'X', {}))])   # (two actions: apart)
     return rows
 
 
 def edges_pie_items(context, menu):
-    """the Shift + RMB pie with edges selected (openEdgePie 3875), or None: the usual pie"""
+    """the Shift + RMB pie with edges selected (openEdgePie 5888), or None: the usual pie"""
     if not has_edges(context):
         return None
     e = ('empty',)
@@ -389,7 +390,7 @@ def _batch(pts):
 
 
 def overlay(hm, P, root):
-    """updateEdgeOverlay (3801), edgeHover (3811): [(batch, color, width)] in the root's local space, the batches kept
+    """updateEdgeOverlay (5814), edgeHover (5824): [(batch, color, width)] in the root's local space, the batches kept
     while nothing changes, so a redraw costs no Python per edge; the selected edges thicker than the one under the cursor
     (G11: never by the colour alone)"""
     global _sel_batch, _hov_batch
@@ -402,7 +403,7 @@ def overlay(hm, P, root):
         _sel_batch = (key, _batch(pts) if pts else None)
     if _sel_batch[1] is not None:
         E = current(hm, P)
-        if E.edges and any(m.id == E.id for m in shown(root, P)):   # (updateEdgeOverlay 3802: a hidden mesh shows no lines)
+        if E.edges and any(m.id == E.id for m in shown(root, P)):   # (updateEdgeOverlay 5814: a hidden mesh shows no lines)
             out.append((_sel_batch[1], SEL_COLOR, SEL_PX))
     if hover is not None:
         it = P.items.get(hover[0])

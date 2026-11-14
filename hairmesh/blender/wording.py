@@ -25,6 +25,16 @@ CORE_TEXTS = {
     'Fill the hole between these curves': 'Fill the Hole Between These Curves',
     'Create average curve': 'Create Average Curve',
     'Merge anchors at identical places': 'Merge Anchors at Identical Places',
+    'Create NURBS surfaces round the X — the curves stay whole (missing ones only)': 'Create Walls Around the X',
+    'One wall through the X (pinched there)': 'One Wall Through the X',
+    'Walls between {n} curves (through the X)': 'Walls Between {n} Curves (Through the X)',
+    # xjunc (the toasts of separateAtX and xPathWalls)
+    'This anchor is no X junction': 'This anchor is not an X junction',
+    '{n} walls round the X — the curves stay whole (the walls run on edge curves that follow them)':
+    '{n} walls around the X — the curves stay whole (the walls run on edge curves that follow them)',
+    # fillat (the pie items of Detect Fill Outline Here)
+    'Detect the fill outline here': 'Detect Fill Outline Here',
+    'Fill the highlighted outline': 'Fill the Highlighted Outline',
 }
 
 

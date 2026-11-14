@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Helpers that reproduce JavaScript semantics the original relies on (see docs/js-para-python.md).
 
 Every function here exists because the plain Python equivalent silently gives a different result.
@@ -65,7 +65,7 @@ def js_pow(x, y):
 
 
 def clamp(v, a, b):
-    # port of clamp (hair-modeler.clean.html:543): Math.max(a, Math.min(b, v))
+    # port of clamp (hair-modeler.clean.html:639): Math.max(a, Math.min(b, v))
     # = js_max(a, js_min(b, v)) written out: min() keeps the first of two equal values, so b wins a tie with v and
     # a wins a tie with the minimum (the same objects come back: an int bound stays an int); NaN anywhere gives NaN.
     if v != v or a != a or b != b:
@@ -183,15 +183,17 @@ def js_hypot(*xs):
     sqrt(sum) * max. Not the C library's hypot, which rounds differently."""
     if not xs:
         return 0.0
-    mx = 0.0
+    mx = 0.0; nan = False
     for x in xs:
         ax = abs(x)
         if ax != ax:
-            return NAN
-        if ax == INF:
-            return INF
-        if ax > mx:
+            nan = True                                              # (V8: an infinity among the values wins over a NaN, wherever each is)
+        elif ax > mx:
             mx = ax
+    if mx == INF:
+        return INF
+    if nan:
+        return NAN
     if mx == 0:
         return 0.0
     total = 0.0; compensation = 0.0

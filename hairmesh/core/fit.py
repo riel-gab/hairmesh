@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
-"""fitPolyline (hair-modeler.clean.html:3750): a polyline of points -> as few anchors as keep the curve on it. Pure
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+"""fitPolyline (hair-modeler.clean.html:5763): a polyline of points -> as few anchors as keep the curve on it. Pure
 Python, no project: Path -> curve (the Edges) and the Freehand of the Draw page both go through it. Line numbers refer to
 reference/hair-modeler.clean.html, 1.0.1."""
 import math
@@ -26,14 +26,14 @@ class _NoProject:
 
 
 def segDist3(p, a, b):
-    # port of segDist3 (hair-modeler.clean.html:3659)
+    # port of segDist3 (hair-modeler.clean.html:5672)
     ab = b.clone().sub(a); l2 = ab.lengthSq()
     t = clamp(p.clone().sub(a).dot(ab) / l2, 0, 1) if l2 > 0 else 0
     return p.distanceTo(a.clone().addScaledVector(ab, t))
 
 
 def fitPolyline(pts, closed, fit_tol=FIT_TOL):
-    """port of fitPolyline (hair-modeler.clean.html:3750): [(the point, sharp)], clones of points of `pts`; a sharp one
+    """port of fitPolyline (hair-modeler.clean.html:5763): [(the point, sharp)], clones of points of `pts`; a sharp one
     (the polyline turns by more than 50 degrees there) comes back with sharp True: smoothness 0, a corner instead of an
     overshooting arc. fit_tol (ours, the Freehand's Simplify): the tolerance's share of the length; the default is the
     original's."""

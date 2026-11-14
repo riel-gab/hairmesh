@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Density modifier (item type 'tip', hair-modeler.clean.html:1438-1491 in 1.0; 1505-1586 in 1.0.1): where its mask is painted along the
 curves of a lock, the loop spacing is divided by 1 + (dens - 1) x weight. The weights are kept in Float32Arrays by
 the original, so every stored value is rounded to float32 here too."""
@@ -11,7 +11,7 @@ from .headobj import float32
 from .js import clamp, js_max, js_or, nullish
 from .trace import br as _br
 
-MASK_N = 96                                                         # mask weights per curve (hair-modeler.clean.html:5937)
+MASK_N = 96                                                         # mask weights per curve (hair-modeler.clean.html:12489, `const MASK_N = 96`: the one constant of the Density masks and of the Extras' painted weights; core/tube.py imports it)
 TIP_DEFAULTS = {'dens': 1.5, 'v': 2}
 
 
@@ -24,6 +24,33 @@ def tipOf(P, L):
             k = next((x for x in (P.items.get(i) for i in g.children) if x and x.type == 'tip'), None)
         g = P.parentOf(g)
     return k
+
+
+def evenOf(P, L):
+    # port of evenOf (hair-modeler.clean.html:1690, 1.0.3): the nearest Even loops item up the hierarchy (as tipOf)
+    k = None
+    g = P.parentOf(L.cs[0])
+    while g and not k:
+        if g.type == 'group':
+            k = next((x for x in (P.items.get(i) for i in g.children) if x and x.type == 'even'), None)
+        g = P.parentOf(g)
+    return k
+
+
+def shellsOf(P, L):
+    # port of shellsOf (hair-modeler.clean.html:2974, 1.0.3): every Proxy shell AND Even loops item over lock L — those
+    # of its group and of the groups above it, nearest group first, each group's in its children's order (no `visible`
+    # nor `off` here: shellSetsBuild filters, 3058-3060)
+    out = []
+    g = P.parentOf(L.cs[0])
+    while g:
+        if g.type == 'group':
+            for i in g.children:
+                x = P.items.get(i)
+                if x and x.type in ('shell', 'even'):
+                    out.append(x)
+        g = P.parentOf(g)
+    return out
 
 
 # does the zone sit at the spine's end (the curves' last anchors are nearer to it)
@@ -100,7 +127,7 @@ def lockTip(P, L):
 # an old Tip item → a Density item: its zone (minus its old mask) painted into the curves' masks — at every mask point
 # the weight of the nearest spine point of each lock (the largest where a curve is in several locks)
 def tipConvert(P, ctx, k):
-    """port of tipConvert (hair-modeler.clean.html:1568), called by buildRowTables for every Tip item without p.v (2728).
+    """port of tipConvert (hair-modeler.clean.html:1741), called by buildRowTables for every Tip item without p.v (2728).
 
     The locks are the ones the build just left in ctx.LOCK_CACHE (the original's LOCK_CACHE.values()). Changes the item
     in place — the mask, p = { dens, v: 2 } (its radius goes), the name "Tip density…" → "Density…" — and returns the
@@ -145,7 +172,7 @@ def tipConvert(P, ctx, k):
 
 
 def paintTipMask(P, locks, sel_ids, m, op, amt, strength, R, hard, screen, seen, pts_of=None):
-    """port of paintTipMask (hair-modeler.clean.html:6585): one dab of the Density brush at m = (x, y) pixels on the
+    """port of paintTipMask (hair-modeler.clean.html:9817): one dab of the Density brush at m = (x, y) pixels on the
     masks of the Density items (k.mask[curve id], MASK_N weights 0...1) along the curves of the locks under them —
     the selected Density items, else all of them. op: 'paint' | 'erase' (Ctrl) | 'smooth' (Shift); amt: how much the
     dab adds (core/brush: FIRST_DAB on the press, dabAmount on a move); strength: S.tipBrush.strength; R, hard:

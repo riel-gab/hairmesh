@@ -177,6 +177,50 @@ def wrap(text, room, sc=None):
     return lines or ['']
 
 
+# A split puts the style's column space between its columns whether it is aligned or not (uiLayoutSplit: 8 px at scale
+# 1, 0.4 units), taken out of the width it shares: nested, every column after the first starts later and the last one
+# loses what all the others took (measured in the lot 1.2b: "Merge" got 49 of the 71 px it asked for and was cut,
+# with free room at the end of the row). An aligned group then draws its buttons joined over that space; buttons that
+# are not in one group keep it as the gap between them.
+SPLIT_SPACE = 0.4
+SPLIT_SLACK = 0.05                                                  # a column's width is cut to whole pixels: a pixel more is asked for each
+
+
+def split_exact(layout, runs, total):
+    """Sub-layouts side by side, each as wide as asked. `runs`: [[(key, units or None), ...], ...] — the columns of a
+    row in runs; the columns of one run are a family, joined (one aligned group); two runs are apart, with the split's
+    own space between them (each run an aligned group of its own, under layouts that are not aligned). None: the
+    free column (one at most), which gets what the others and the spaces leave of `total` units. Returns {key: layout}."""
+    runs = [r for r in runs if r]
+    n = sum(len(r) for r in runs)
+    fixed = sum(u + SPLIT_SLACK for r in runs for _k, u in r if u)
+    free = max(0.5, total - fixed - (n - 1) * SPLIT_SPACE)
+    alloc = [[(k, u + SPLIT_SLACK if u else free) for k, u in r] for r in runs]
+    out = {}
+
+    def chain(lay, parts, aligned, leaf):
+        room = sum(u for _p, u in parts) + (len(parts) - 1) * SPLIT_SPACE
+        for i, (p, u) in enumerate(parts):
+            if i == len(parts) - 1:
+                leaf(lay.row(align=aligned), p)
+                return
+            w = room - SPLIT_SPACE                                  # (what the split shares: its width less its space)
+            sp = lay.split(factor=max(0.001, min(0.999, u / w)), align=aligned)
+            leaf(sp.row(align=aligned), p)
+            lay = sp.row(align=aligned)
+            room = w - u
+
+    def run_into(lay, run):
+        chain(lay, run, True, lambda sub, key: out.__setitem__(key, sub))
+
+    if len(alloc) == 1:
+        run_into(layout, alloc[0])
+    elif alloc:
+        parts = [(run, sum(u for _k, u in run) + (len(run) - 1) * SPLIT_SPACE) for run in alloc]
+        chain(layout, parts, False, lambda sub, run: run_into(sub.row(align=True), run))
+    return out
+
+
 def split_cols(layout, widths, align=True):
     """sub-layouts of the given widths (units) side by side, made with nested splits: in every row drawn this way
     the columns start at the same place whatever their contents (a plain row shares its width in proportion to its

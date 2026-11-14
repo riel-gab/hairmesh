@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """The brushes' shared core (lot 4.7b; the Density brush, 4.8, and the anchor brush, 4.9, reuse it): the fall-off of a
 dab, how much a dab adds, the radius and hardness keys and drag, and which operation a press makes. Pure Python, no
 bpy; the circle, the keys and the undo step per stroke are blender/brush.py. Line numbers refer to
 reference/hair-modeler.clean.html, 1.0.1.
 
   BRUSH_R / BRUSH_HARD (701)    the original's S.brushR (px) and S.brushHard
-  brushWeight (6145)            full strength within hardness x radius, then smoothstep down to 0 at the radius
+  brushWeight (9057)            full strength within hardness x radius, then smoothstep down to 0 at the radius
   dabAmount (5944)              a move's dab adds more the longer the move (the press: 0.2, paintMask's default)
   smaller / bigger (8018-8019)  [ / ]: x0.85 / x1.15, kept within 8-800 px
   adjust (5932-5933)            Ctrl + RMB drag: right = bigger, up = harder (the original's y grows downwards)
@@ -17,12 +17,12 @@ from .js import clamp, js_max, js_min
 
 BRUSH_R = 70                                                        # S.brushR (701), px
 BRUSH_HARD = 0.3                                                    # S.brushHard (701)
-R_MIN = 8; R_MAX = 800                                              # the keys and the drag (5932, 6060, 8018-8019); the panels' sliders stop at 400 (7021, 9009)
+R_MIN = 8; R_MAX = 800                                              # the keys and the drag (8723, 6060, 8018-8019); the panels' sliders stop at 400 (7021, 9009)
 FIRST_DAB = 0.2                                                     # paintMask(m, op, amt = 0.2): the press (5766)
 
 
 def brushWeight(d, R, hard):
-    """port of brushWeight (hair-modeler.clean.html:6145): the weight of a dab at d px from its centre, R the radius,
+    """port of brushWeight (hair-modeler.clean.html:9057): the weight of a dab at d px from its centre, R the radius,
     hard the share of the radius at full strength"""
     r0 = hard * R
     if d <= r0:

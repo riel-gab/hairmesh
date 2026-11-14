@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
 """The rows of the HairMesh Outliner (U1 of docs/fase-3-ux-revisao.md, 15/10/2026): a pure description of what the
-original's renderOutliner shows (8211-8261) — the head, the service groups first (orderRoots 8207: Imported, Meshes,
+original's renderOutliner shows (8211-8261) — the head, the service groups first (orderRoots 12086: Imported, Meshes,
 Guides), the groups in a tree with their switches (row 8469-8531: the arrow, the mode A / ∿ / ⌀, the colour, the
 label tags, the guides' power, the eye), inside a group the curves in the left column and the walls in the right
 (8237-8249, "row i = curve i | wall i"), every other item (the types of phases 4 and 5: guides and discs with their
-power ⏻ (8510-8523), modifiers and their extras by kind (XKIND 6432), crowns, caps, fill holes, density, meshes
+power ⏻ (8510-8523), modifiers and their extras by kind (XKIND 9654), crowns, caps, fill holes, density, meshes
 pending or done) as a plain row — with the highlights of the selection: the selected rows, the groups holding
 something selected (hl, 8222-8225) and the rows related to the selection (OL_REL, 8226-8232: the walls of a selected
 curve, the two curves of a selected wall), with the precedence of the original's row classes (8470: selected, then
@@ -13,7 +13,7 @@ holding, then related).
 
 Additions of the port (docs/features-adicionadas.md): the project row on top (16/10/2026, 1c of the manual test:
 like Blender's "Scene Collection", everything hangs under it, head included; Move here / Paste on it = the root
-level — the original drops on the empty space of the tree, 8555); a curve its group's mode hides right now is
+level — the original drops on the empty space of the tree, 12463); a curve its group's mode hides right now is
 marked (U2), so nothing ever looks lost; the filter (names and type words); "open on select" (the groups above the
 selection open while it is selected: the original opens on F and on a drop only).
 
@@ -27,20 +27,21 @@ from .edit import isVisible
 from .effects import modeActs
 from .guides import guideOn
 
-# the original's ICONS (711) as Blender icons: ☺ head, ▣ group, ∿ curve, ▦ surface, ◆ mesh, ┼ guide (◎ disc), ⬡ tube
-# (modifier), ✦ xmod (extra), ◠ crown, ◒ cap, ⬢ imported mesh, ◭ skin (fill holes), ⋎ tip (density)
+# the original's ICONS (814) as Blender icons: ☺ head, ▣ group, ∿ curve, ▦ surface, ◆ mesh, ┼ guide (◎ disc), ⬡ tube
+# (modifier), ✦ xmod (extra), ◠ crown, ◒ cap, ⬢ imported mesh, ◭ skin (fill holes), ⋎ tip (density); 1.0.3 (814 there): ◎ shell
+# (proxy shell), ≡ even (even loops)
 ICONS = {'head': 'MESH_MONKEY', 'group': 'OUTLINER_COLLECTION', 'curve': 'CURVE_DATA', 'surface': 'MOD_LATTICE', 'mesh': 'MESH_DATA',
          'guide': 'CURVE_PATH', 'disc': 'MESH_CIRCLE', 'tube': 'MOD_SCREW', 'xmod': 'MODIFIER', 'crown': 'FORCE_VORTEX', 'cap': 'MESH_CAPSULE',
-         'imesh': 'IMPORT', 'skin': 'MOD_SKIN', 'tip': 'MOD_DECIM', 'project': 'FILE'}
-# the extras by kind (XKIND 6432: ◐ mask, ⬤ thickness, ⟳ twist, ≋ noise, ➰ curls, ✥ transform)
+         'imesh': 'IMPORT', 'skin': 'MOD_SKIN', 'tip': 'MOD_DECIM', 'shell': 'MESH_CYLINDER', 'even': 'ALIGN_JUSTIFY', 'project': 'FILE'}
+# the extras by kind (XKIND 9654: ◐ mask, ⬤ thickness, ⟳ twist, ≋ noise, ➰ curls, ✥ transform)
 XMOD_ICONS = {'mask': 'MOD_MASK', 'thick': 'MOD_SOLIDIFY', 'twist': 'MOD_SIMPLEDEFORM', 'noise': 'MOD_NOISE', 'curl': 'MOD_CURVE', 'xform': 'ORIENTATION_GLOBAL'}
 HOLDS_ICON = 'COLLECTION_COLOR_05'                                  # a group holding the selection: the blue collection (childsel, CSS 235: blue)
 RELATED_ICON = 'COLORSET_02_VEC'                                    # a related row: the orange marker before the name (rel, CSS 177: pale orange)
-MODE_LABELS = {'auto': 'A', 'show': '∿', 'hide': '⌀'}                # GUIDE_MODES (11938)
+MODE_LABELS = {'auto': 'A', 'show': '∿', 'hide': '⌀'}                # GUIDE_MODES (16469)
 MODE_ORDER = ('auto', 'show', 'hide')                               # the click on the mode button cycles them (8488)
 # what the filter matches besides the name: a word for the type (the Smart Rename's type names, SR_TYPES 8292)
 TYPE_WORDS = {'group': 'group', 'curve': 'curve', 'surface': 'wall surface', 'tube': 'modifier tube', 'xmod': 'extra', 'guide': 'guide',
-              'mesh': 'mesh', 'imesh': 'imported mesh', 'crown': 'crown', 'cap': 'cap', 'skin': 'fill holes', 'tip': 'density', 'head': 'head'}
+              'mesh': 'mesh', 'imesh': 'imported mesh', 'crown': 'crown', 'cap': 'cap', 'skin': 'fill holes', 'tip': 'density', 'shell': 'proxy shells', 'even': 'even loops', 'head': 'head'}
 
 
 @dataclass(eq=False)
@@ -61,8 +62,8 @@ class Row:
     expanded: bool = True                                           # groups: open
     group: dict | None = None                                       # groups: mode, color, labels, ticked, step, project_step, off, guides_power, service
     power: bool | None = None                                       # guides: the ⏻ switch (not it.off); None = no switch on this row
-    power_effective: bool = True                                    # guides: False when the switch is on but a group above switches its guides off (guideOn 722)
-    pending: bool = False                                           # meshes: ◇ while the conversion is pending (8475)
+    power_effective: bool = True                                    # guides: False when the switch is on but a group above switches its guides off (guideOn 825)
+    pending: bool = False                                           # meshes: ◇ while the conversion is pending (12360)
     left: 'Row | None' = None                                       # pairs: the curve (left column)
     right: 'Row | None' = None                                      # pairs: the wall (right column)
 
@@ -110,7 +111,7 @@ def highlights(P, sel_items=(), sel_anchors=()):
 
 
 def ordered_roots(P):
-    """orderRoots (8207) without sorting the model: Imported, then Meshes, then Guides, then the rest in its order"""
+    """orderRoots (12086) without sorting the model: Imported, then Meshes, then Guides, then the rest in its order"""
     def rank(iid):
         it = P.items.get(iid)
         if it is None or it.type != 'group':
@@ -120,7 +121,7 @@ def ordered_roots(P):
 
 
 def group_has_guides(P, g):
-    """groupHasGuides (723): a guide inside the group, at any depth"""
+    """groupHasGuides (826): a guide inside the group, at any depth"""
     for iid in g.children:
         it = P.items.get(iid)
         if it is None:
@@ -132,7 +133,7 @@ def group_has_guides(P, g):
 
 def group_info(P, g, loose):
     """the switches of a group row (8481-8526): the curves mode, the colour, the label tags shown (Container; Free
-    curves only while the group has free curves, labelOn 8268), the conversion tick (ours: the original shows it in
+    curves only while the group has free curves, labelOn 12148), the conversion tick (ours: the original shows it in
     the Convert list only), its loop step against the project's (U4), the guides' power when it holds guides, and
     the group whose colour covers its own (color_from, ours: 21/10/2026)"""
     hair = not (g.guidesGroup or g.meshesGroup)
@@ -143,11 +144,11 @@ def group_info(P, g, loose):
             'step': G.convShown(P, g)['step'] if hair else None, 'project_step': G.projectStep(P), 'off': G.stepOff(P, g) if hair else False,
             'guides_power': (not g.guidesOff) if group_has_guides(P, g) else None,
             'service': bool(g.guidesGroup or g.meshesGroup or g.importGroup),
-            'mode_acts': modeActs(P, g)}                            # ours (part 1 of the lot ux7): the mode reaches the curves lying in the group itself only (guidesShown 11914)
+            'mode_acts': modeActs(P, g)}                            # ours (part 1 of the lot ux7): the mode reaches the curves lying in the group itself only (guidesShown 16440)
 
 
 def item_icon(it):
-    """the icon of an item row (ICONS 711; a disc guide ◎, an extra by its kind, a pending mesh ◇ = the mesh icon dimmed)"""
+    """the icon of an item row (ICONS 814; a disc guide ◎, an extra by its kind, a pending mesh ◇ = the mesh icon dimmed)"""
     if it.type == 'guide' and getattr(it, 'kind', None) == 'disc':
         return ICONS['disc']
     if it.type == 'xmod':

@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-"""What the tool draws over the 3D View while it is active: the curves (polylines of the core's samples, 24 per
+"""What the tool draws over the 3D View while it is active (the flat locks' ribbons also while it is not, wherever
+the live walls show: _draw_all_ribs): the curves (polylines of the core's samples, 24 per
 segment) and the anchors (a circle; a diamond for the first anchor of an open curve) in the original's colors,
 in two passes like its renderer (renderViewport, 12022): depth-tested first, then again without depth test at
-the project's x-ray opacity (S.xray) — or, with Blender's own X-ray of that 3D View on (Alt+Z; 3.8c), in one pass
+the project's X-Ray opacity (S.xray) — or, with Blender's own X-Ray of that 3D View on (Alt+Z; 3.8c), in one pass
 without depth test. The selection: selected curves thicker and drawn over the others, selected anchors red and the
 size of the others, the last one ringed (3.8c, 3.8e; in the colors of the preferences: sel_colors; the original's
 are orange and red, rebuildAnchors 1403-1406, syncVisuals 11958); the curve an anchor slides along cyan. The curves are
@@ -23,6 +24,7 @@ from mathutils import Vector
 
 from ..core import edit, groups as G
 from ..core.curves import rebuild_dirty
+from ..core.js import truthy
 from . import errorlog, live, owner, pick, select, session, slow, tool
 from .coords import to_blender
 
@@ -34,7 +36,7 @@ from .coords import to_blender
 # and the size of the others — the red is enough —, apart from the gizmo's pink X (0xff3352) and the Scissors' salmon
 # (0xff5a5a); the curve stays lime.
 SEL_DEFAULT = {'curve': (0xb4 / 255.0, 1.0, 0x1e / 255.0), 'anchor': (1.0, 0.0, 0.0), 'mark': (1.0, 1.0, 1.0)}   # 0xb4ff1e, 0xff0000, the white ring
-# the original's colours: anchors CA (1370), curve lines (syncVisuals, 11958), x-ray (S.xray); 'sel' / 'last': ours (3.8c)
+# the original's colours: anchors CA (1370), curve lines (syncVisuals, 11958), X-Ray (S.xray); 'sel' / 'last': ours (3.8c)
 CA = {'normal': (1.0, 0.82, 0.29), 'shared': (0.23, 0.84, 1.0), 'sel': SEL_DEFAULT['anchor'], 'last': SEL_DEFAULT['anchor'],
       'weld': (1.0, 0.2, 1.0), 'ring': (0.45, 0.95, 0.6), 'att': (0.75, 0.5, 1.0)}
 CURVE = (0xdd / 255.0, 0xdd / 255.0, 0xdd / 255.0)                  # 0xdddddd
@@ -67,7 +69,7 @@ WALL_OFFSET = 2.0                                                   # units of p
 # curves get more (CURVE_OFFSET > WALL_OFFSET), so in the depth-tested pass they are always over the edges they lie on.
 # Only the drawing: no mesh, no wall and no bit of the model changes.
 CURVE_OFFSET = WALL_OFFSET + 1.0
-# the guides (syncVisuals 11946-11979; attachGuideObj 1061, rebuildGuide 1134, rebuildDisc 1147)
+# the guides (syncVisuals 11946-11979; attachGuideObj 1196, rebuildGuide 1269, rebuildDisc 1282)
 GUIDE = (0x3f / 255.0, 0xe0 / 255.0, 0x7a / 255.0)                  # 0x3fe07a: a guide line, a disc's cut lines
 GUIDE_SEL = (1.0, 0xe2 / 255.0, 0x5a / 255.0)                       # 0xffe25a: selected (the rings of a selected disc too)
 RING = (0x8f / 255.0, 0xe8 / 255.0, 0xb0 / 255.0)                   # 0x8fe8b0: the two rings of a disc
@@ -187,8 +189,8 @@ def tube_pulls(P, tubes, matrix):
 def guide_geometry(P, matrix, guides, sel_items=()):
     """The guides the viewport shows, in Blender world space (pure). `guides` = groups.shownGuides (visible and shown
     by the group's mode; the ⏻ hides nothing). A line guide: the polyline through its hits (pointOnCurve of each,
-    rebuildGuide 1134). A disc: its two rings (the ring curves follow their disc, 11946), the annulus between them
-    resampled at DISC_NR + 1 points (rebuildDisc 1147), and the cut line across every wall whose two curves both
+    rebuildGuide 1269). A disc: its two rings (the ring curves follow their disc, 11946), the annulus between them
+    resampled at DISC_NR + 1 points (rebuildDisc 1282), and the cut line across every wall whose two curves both
     pierce it (the hitPts of the last rebuildDisc; none before it). Colors and widths of syncVisuals (11946, 11970):
     selected yellow. Returns {'strokes': {(width px, (r, g, b, a)): [points, 2 per segment]},
     'fills': [((r, g, b, a), [points, 3 per triangle])]}."""
@@ -257,7 +259,7 @@ def geometry(P, matrix, sel=None, snap=None, weld=None, walls=None, shown=None, 
     `sel` (a core Selection) colors the selected anchors (orange, 11 px), the last one (red, 13 px) and the
     selected curves (orange); `snap` is the id of the curve an anchor slides along (cyan), as syncVisuals does; `weld`
     is the id of the anchor the dragged one would weld into (magenta, 16 px: S.weldCand, 1409). `shown` (3.6): the
-    ids of the curves their group's mode shows (groups.shownCurves, guidesShown 11914); None draws every visible
+    ids of the curves their group's mode shows (groups.shownCurves, guidesShown 16440); None draws every visible
     curve. A curve left out takes its anchors with it (rebuildAnchors, 1381). `guides` (21/10/2026): the guides to
     draw (groups.shownGuides), as guide_geometry; none when None. `colors` (3.8c): the selection colors (sel_colors;
     the defaults when None); sel_lines: the selected curves again (drawn over the others, thicker); anchors' kind:
@@ -269,6 +271,8 @@ def geometry(P, matrix, sel=None, snap=None, weld=None, walls=None, shown=None, 
     curves = P.curves()
     count = {}
     for c in curves:
+        if truthy(c.path):
+            continue                                                # (1510, 1.0.2: an edge curve lies on its curves — no weld)
         for a in c.anchors:
             count[a.id] = count.get(a.id, 0) + 1
     starts = {c.anchors[0].id for c in curves if not c.ring and not c.closed and len(c.anchors) > 1}
@@ -282,7 +286,7 @@ def geometry(P, matrix, sel=None, snap=None, weld=None, walls=None, shown=None, 
 
     def anchor_of(a):
         """(position, color, size, shape, kind) of an anchor"""
-        col = CA['att'] if a.att else CA['shared'] if count[a.id] > 1 else CA['normal']; s = ANCHOR_PX; kind = 0
+        col = CA['att'] if a.att else CA['shared'] if count.get(a.id, 0) > 1 else CA['normal']; s = ANCHOR_PX; kind = 0
         if a.id in asel:
             col = colors['anchor']; s = SEL_PX; kind = 1
         if a.id == last:
@@ -299,7 +303,8 @@ def geometry(P, matrix, sel=None, snap=None, weld=None, walls=None, shown=None, 
             continue
         picked = c.id in sel_items and snap != c.id
         col = CURVE_SNAP if snap == c.id else colors['curve'] if picked else curve_color(P, c)
-        pts = [tuple(matrix @ Vector(to_blender(s.p))) for s in c.samples]
+        line = not (c.junc and c.id not in sel_items)               # (a service curve's line only while selected, 16484; its anchors stay, lot 1.2a)
+        pts = [tuple(matrix @ Vector(to_blender(s.p))) for s in c.samples] if line else []
         for i in range(len(pts) - 1):
             lines.append(pts[i]); lines.append(pts[i + 1])
             line_colors.append(col); line_colors.append(col)
@@ -312,7 +317,7 @@ def geometry(P, matrix, sel=None, snap=None, weld=None, walls=None, shown=None, 
             seen.add(a.id)
             q, tint, s, shape, kind = anchor_of(a)
             a_pos.append(q); a_col.append(tint); a_size.append(s); a_shape.append(shape); a_kind.append(kind)
-        if over and c.id in over:
+        if over and c.id in over and pts:
             A = [anchor_of(a) for a in c.anchors]
             mid = tuple(sum(q[k] for q in pts) / len(pts) for k in range(3))
             pulled.append({'lines': [q for i in range(len(pts) - 1) for q in (pts[i], pts[i + 1])], 'color': col, 'picked': picked, 'dist': over[c.id], 'mid': mid,
@@ -334,15 +339,15 @@ _shaders = {}
 ghost = None                                                        # the Draw tool's ghost line (4645): (last anchor, cursor point) in world space, or None
 drawing = None                                                      # S.drawing: the id of the curve being drawn (its group counts as active, 11911), or None
 GHOST = (1.0, 0xaa / 255.0, 0x33 / 255.0, 0.7)                      # LineBasicMaterial 0xffaa33, opacity 0.7, no depth test
-pencil = None                                                       # 4.2: the Pencil's loop being drawn, world points (pencilObj, 6300: 0xffb347, 2.5 px), or None
-zone_flash = None                                                   # 4.2 (D4.7): (guide id, until) — the zone shown 1.5 s after one of its sliders (showZone 6210)
+pencil = None                                                       # 4.2: the Pencil's loop being drawn, world points (pencilObj, 9522: 0xffb347, 2.5 px), or None
+zone_flash = None                                                   # 4.2 (D4.7): (guide id, until) — the zone shown 1.5 s after one of its sliders (showZone 9430)
 snap_curve = None                                                   # S.snapCurve: the id of the curve an anchor slides along (Shift drag), or None
 connectors_on = False                                               # 4.4: every crown's connectors shown while a curve end is dragged (ops_gizmo.attach_preview)
 attach_dot = None                                                   # 4.4: where the dragged end would attach (a world point), or None
 weld_cand = None                                                    # S.weldCand: the id of the anchor a dragged anchor would weld into (findWeldCandidate during the drag), or None
 WELD_PX = 16.0                                                      # the candidate's dot (1409)
-overlay = None                                                      # the Select tool's 2D overlay in region pixels: ('box', x0, y0, x1, y1) | ('circle', x, y, r) | ('paint', x, y, r) | ('line', x0, y0, x1, y1) (the Scissors' stroke) | None
-wall_cut = None                                                     # the wall cut being placed (3.8a, drawSurfCut 5344): ([line points], [(point, kind)]) in world space, or None
+overlay = None                                                      # the Select tool's 2D overlay in region pixels: ('box', x0, y0, x1, y1) | ('circle', x, y, r) | ('paint', x, y, r) | ('line', x0, y0, x1, y1) (the Scissors' stroke) | ('gline', ...) (the Guides' line) | ('aline', ...) (the RMB line, 1.1f) | None
+wall_cut = None                                                     # the wall cut being placed (3.8a, drawSurfCut 8091): ([line points], [(point, kind)]) in world space, or None
 CUT_LINE = (1.0, 0x5a / 255.0, 0x5a / 255.0, 1.0)                   # scutLine: 0xff5a5a, 3 px, drawn over the wall (depthTest false)
 CUT_DOTS = {'end': ((1.0, 0.25, 0.25), 13, 1), 'ctl': ((1.0, 0.45, 0.45), 11, 0), 'auto': ((1.0, 0.75, 0.75), 6, 0), 'hover': ((1.0, 0.6, 0.6), 9, 0),   # drawSurfCut's look: colour, size, diamond
             'lead': ((1.0, 0x5a / 255.0, 0x5a / 255.0), 11, 0)}                                                                                          # ours (3.8f): where the first click would start the cut, the cut's colour
@@ -514,7 +519,7 @@ def _anchor_batches(b, A):
 # curve), like Blender's selection outline — the add-on's selection, never Blender's: the object is neither selected
 # nor active there. Drawn as lines along the mesh's silhouette for the current view (an edge between a face turned to
 # the eye and one turned away), its open borders and its non-manifold edges (a Y junction), MESH_LINE_PX wide, pulled
-# towards the camera like a selected wall's edges, in the depth-tested pass (Blender's X-ray: the one pass).
+# towards the camera like a selected wall's edges, in the depth-tested pass (Blender's X-Ray: the one pass).
 MESH_LINE_PX = 3.0
 _outline_topo = {}                                                  # data token -> mesh_outline_topology
 _outline_lines = {}                                                 # (mesh item id, the 3D View's region_data) -> (view key, batch)
@@ -623,7 +628,7 @@ def _outline_batches(ctx, root, P, sel):
 
 
 def clear_outlines():
-    _outline_topo.clear(); _outline_lines.clear(); _topo_cache.clear()
+    _outline_topo.clear(); _outline_lines.clear(); _topo_cache.clear(); _rib_cache.clear()
 
 
 _outline_error = []
@@ -752,9 +757,330 @@ def _draw_topo(batches, region, rv3d, lw, alpha):
         gpu.matrix.pop_projection()
 
 
-# ---- 4.2: the guides' influence zone (updateZoneViz 6216, D4.7) and the Pencil's loop ----
+# ---- 1.1f: the flat locks' ribbons (rebuildRib 6977-7011, ribVolumeObj 7014-7030, syncVisuals 16490-16495) ----
+# Lot 1.2a, item 6: the ribbon is drawn here alone (never in the live object). Its fill: the original's MeshStandardMaterial
+# (RIB_COL, or the brush's colours per ring: ribCols 6936; opacity 0.6 (7000), +0.15 selected and emissive 0x3a1640, 16490-16495;
+# DoubleSide; no depth write) as a colour per vertex lit by a fixed light whose sign does not count — the back as the
+# front, by construction, and nothing of it changes with the view (the batch is made once per ribbon). Over it, as the
+# original's LineMaterial: the outline (0xa8e8e8, 2.5 px; a volume 2 px; opacity 0.95): both edges, the root and the
+# tip, no line across (7002-7005). Selected (the curve or one of its anchors, 16491): wider lines too (G11: never only
+# another colour). Shown as the live walls: every project of the scene, the eye (isVisible) and the Live Preview
+# (S.showMods), with the tool off too; an overlay — the 3D View's overlays off, it is not drawn.
+RIB_LINE = (0xa8 / 255.0, 0xe8 / 255.0, 0xe8 / 255.0, 0.95)        # ribbon outline 0xa8e8e8, opacity 0.95 (7007)
+RIB_LINE_PX = {'ribbon': (2.5, 4.0), 'extruded': (2.0, 3.5), 'volume': (2.0, 3.5)}   # (plain, selected): linewidth 2.5 / 2 (7007, 7027)
+RIB_ALPHA = 0.6                                                     # MeshStandardMaterial opacity 0.6 (7000); on screen the original sets S.modOpacity (0.45) + 0.15 and the X-Ray factor at every frame (16492): the owner's decision pending
+RIB_ALPHA_SEL = 0.15                                                # selected: + 0.15 (16492)
+RIB_EMISSIVE = 0x3a1640                                             # selected: emissive 0x3a1640 (16494)
+RIB_LIGHT = Vector((0.35, -0.75, 0.55)).normalized()                # (ours) the fixed light, world space: from the front, above, a little to the right
+RIB_LIGHT_FLOOR = 0.6                                               # (ours) lit edge-on: 60 % of the colour (linear), never black — the original's "light shading"
+_rib_cache = {}                                                     # (root name, curve id) -> (key, geometry, fill batch, lines batch): ids repeat across projects
+
+
+def rib_shown(P, sel_items, sel_anchors, live_on, drawing_id=None):
+    """pure: [(curve, geometry, selected, being drawn)] of the ribbons the overlay draws — a curve with a shape
+    (rib_geom), visible (its eye, its groups'), the Live Preview on; selected as the original lights it (14679).
+    sel_items, sel_anchors: ids (S.sel, S.asel)"""
+    if not live_on:
+        return []
+    sa = set(sel_anchors); si = set(sel_items)
+    out = []
+    for c in P.curves():
+        g = c.rib_geom
+        if g is None or not g['index'] or not edit.isVisible(P, c):
+            continue
+        out.append((c, g, c.id in si or any(a.id in sa for a in c.anchors), c.id == drawing_id))
+    return out
+
+
+def _srgb(x):
+    """a linear channel 0…1 into sRGB (what three.js writes out, and what the built-in shaders take)"""
+    return x * 12.92 if x <= 0.0031308 else 1.055 * x ** (1.0 / 2.4) - 0.055
+
+
+def srgb_of(h):
+    """a hex colour as sRGB 0…1"""
+    return (((h >> 16) & 255) / 255.0, ((h >> 8) & 255) / 255.0, (h & 255) / 255.0)
+
+
+def _model_world(pos, matrix):
+    """pure: flat model-space positions (the original's Y up) as world-space (n, 3) float64"""
+    import numpy as np
+    p = np.asarray(pos, dtype=np.float64).reshape(-1, 3)
+    b = np.empty_like(p)
+    b[:, 0] = p[:, 0]; b[:, 1] = -p[:, 2]; b[:, 2] = p[:, 1]        # (x, -z, y): coords.to_blender
+    m = np.asarray(matrix, dtype=np.float64)
+    return b @ m[:3, :3].T + m[:3, 3]
+
+
+def rib_fill(g, matrix, cols=None, picked=False):
+    """pure: a ribbon's fill as the overlay draws it — (positions (n, 3) world space, colours (n, 4) sRGB with alpha,
+    triangles (m, 3)): the triangles of rib_geom; per vertex the lock's purple (or `cols`, live.rib_colors: one linear
+    [r, g, b] per ring of M vertices) times RIB_LIGHT_FLOOR + (1 − RIB_LIGHT_FLOOR)·|n·L| (n the vertex normal, the sum
+    of its triangles' — the same either way the ribbon is turned), plus the emissive and the alpha of a selected lock"""
+    import numpy as np
+    from ..core.rib import RIB_COL
+    from .live import hex_linear
+    pts = _model_world(g['pos'], matrix)
+    tri = np.asarray(g['index'], dtype=np.int64).reshape(-1, 3)
+    n = len(pts)
+    fn = np.cross(pts[tri[:, 1]] - pts[tri[:, 0]], pts[tri[:, 2]] - pts[tri[:, 0]])
+    bad = ~np.isfinite(fn).all(axis=1)
+    if bad.any():                                                   # (a NaN point: its triangles light nothing and are not drawn — out of the
+        tri = tri[~bad]; fn = fn[~bad]                              # batch, as clean_mesh took their quads out of the live object)
+    vn = np.zeros((n, 3))
+    for k in range(3):
+        np.add.at(vn, tri[:, k], fn)
+    ln = np.linalg.norm(vn, axis=1)
+    lit = np.abs(vn @ np.asarray(RIB_LIGHT, dtype=np.float64)) / np.where(ln > 0, ln, 1.0)
+    shade = RIB_LIGHT_FLOOR + (1.0 - RIB_LIGHT_FLOOR) * np.where(ln > 0, lit, 1.0)
+    if cols:
+        ring = np.minimum(np.arange(n) // g['M'], len(cols) - 1)
+        base = np.asarray(cols, dtype=np.float64)[ring]
+    else:
+        base = np.broadcast_to(np.asarray(hex_linear(RIB_COL), dtype=np.float64), (n, 3))
+    lin = base * shade[:, None]
+    if picked:
+        lin = lin + np.asarray(hex_linear(RIB_EMISSIVE), dtype=np.float64)
+    lin = np.clip(lin, 0.0, 1.0)
+    rgb = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * np.power(lin, 1.0 / 2.4) - 0.055)
+    out = np.empty((n, 4), dtype=np.float32)
+    out[:, :3] = rgb
+    out[:, 3] = min(1.0, RIB_ALPHA + (RIB_ALPHA_SEL if picked else 0.0))
+    return pts.astype(np.float32), out, tri.astype(np.int32)
+
+
+def rib_world(g, matrix):
+    """pure: a ribbon's outline (flat Float32 list, the model space) as world-space line segment ends"""
+    ln = g['lines']
+    return [tuple(matrix @ Vector((ln[i], -ln[i + 2], ln[i + 1]))) for i in range(0, len(ln), 3)]
+
+
+def rib_roots(context, active):
+    """[(root, project)] whose ribbons the overlay draws in this scene: every project shown with flat locks, the Live
+    Preview on (as the live walls). `active`: the root the tool works on (its model read as the tool reads it), or
+    None; the others only as the session holds them (a draw never parses a text: the load handler, the undo and every
+    operator keep their models there)"""
+    from ..core.rib import hasRibs
+    if not context.scene.hairmesh.live_preview:
+        return []
+    out = []
+    vl = getattr(context, 'view_layer', None)
+    if active is not None:
+        P = session.get_project(active)
+        if hasRibs(P) and _collection_shown(vl, active):
+            out.append((active, P))
+    objs = vl.objects if vl is not None else context.scene.objects
+    cache = session._cache
+    seen = {active.name} if active is not None else set()
+    for name, e in list(cache.items()):
+        if name in seen:
+            continue
+        root = objs.get(name)
+        if root is None or not session.is_root(root) or root.get('hairmesh_text') != e[0]:
+            root = _renamed_root(objs, e[0])                       # (a root renamed since the session read it, by its text)
+            if root is None or root.name in seen or root.name in cache:
+                continue                                            # (gone; or read again under its new name: that entry is the current one)
+        seen.add(root.name)
+        if hasRibs(e[2]) and _collection_shown(vl, root):
+            out.append((root, e[2]))
+    return out
+
+
+_renamed = {}                                                       # text name -> (number of objects, root name or None): rib_roots' misses
+
+
+def _renamed_root(objs, text):
+    """the root whose project text is `text`, when no root of the session's name holds it (renamed, deleted, another
+    scene's). The objects are scanned once per text and number of objects, not at every draw (a stale entry stays in
+    the session until a file loads)"""
+    n = len(objs)
+    hit = _renamed.get(text)
+    if hit is not None and hit[0] == n:
+        if hit[1] is None:
+            return None
+        o = objs.get(hit[1])
+        if o is not None and o.get('hairmesh_text') == text and session.is_root(o):
+            return o
+    o = next((o for o in objs if o.get('hairmesh_text') == text and session.is_root(o)), None)
+    _renamed[text] = (n, o.name if o is not None else None)
+    if len(_renamed) > 64:
+        _renamed.clear()
+    return o
+
+
+def _root_collection(root):
+    """the project's collection: stamped with the root's name (scene_build); a root renamed since keeps the old stamp,
+    so then the stamped collection the root is linked in"""
+    col = next((c for c in bpy.data.collections if c.get('hairmesh_root') == root.name), None)
+    if col is None:
+        col = next((c for c in root.users_collection if c.get('hairmesh_root')), None)
+    return col
+
+
+def _collection_shown(vl, root):
+    """False when the root's collection (scene_build: the live walls are linked under it) is disabled in viewports, or
+    hidden or excluded in the view layer `vl` (its parents too): the ribbons go with the walls"""
+    return _col_shown(vl, _root_collection(root))
+
+
+def _col_shown(vl, col):
+    """the collection `col` shown in the view layer `vl`: not disabled in viewports, nor hidden or excluded there (its
+    parents too). None or no view layer: shown"""
+    if col is None or vl is None:
+        return True
+    if col.hide_viewport:
+        return False
+    stack = [(vl.layer_collection, False)]
+    while stack:
+        lc, out = stack.pop()
+        out = out or lc.exclude or lc.hide_viewport or lc.collection.hide_viewport
+        if lc.collection == col:
+            return not out
+        stack.extend((k, out) for k in lc.children)
+    return True
+
+
+def rib_shown_in(vl, root, P, sel_items, sel_anchors, drawing_id=None):
+    """rib_shown of a project, less the ribbons whose group's collection (collection_of_group: where its live walls
+    are linked) is hidden or excluded in the view layer `vl`: the ribbons go with their group's walls (the root's
+    collection: rib_roots)"""
+    shown = rib_shown(P, sel_items, sel_anchors, True, drawing_id)
+    if vl is None or not shown:
+        return shown
+    from .convert_op import collection_of_group
+    root_col = _root_collection(root)
+    if root_col is None:
+        return shown
+    memo = {}
+    out = []
+    for s in shown:
+        gid = s[0].parent
+        if gid not in memo:
+            col = collection_of_group(root_col, gid) if gid is not None else root_col
+            memo[gid] = col is root_col or _col_shown(vl, col)
+        if memo[gid]:
+            out.append(s)
+    return out
+
+
+def _rib_batches(root, P, sel, drawing_id=None, vl=None):
+    """[(kind, selected, fill batch, lines batch)] of the ribbons shown; a batch made again only when the curve's
+    geometry (a new one at every rebuild), the root's matrix, its selection or the brush's colours changed. `sel`: the
+    tool's selection on this root, or None"""
+    import gpu
+    from gpu_extras.batch import batch_for_shader
+    from . import brush
+    mt = tuple(tuple(row) for row in root.matrix_world)
+    shown = rib_shown_in(vl, root, P, sel.items if sel is not None else (), sel.anchors if sel is not None else (), drawing_id)
+    op = brush.running('RIB')
+    cols = live.rib_colors(root, P) if op is not None and getattr(op, 'root_name', None) == root.name else {}
+    out = []
+    for c, g, picked, _now in shown:
+        cc = cols.get(c.id)
+        key = (mt, picked, cc)
+        e = _rib_cache.get((root.name, c.id))
+        if e is None or e[0] != key or e[1] is not g:
+            pos, col, tri = rib_fill(g, root.matrix_world, cc, picked)
+            lines = rib_world(g, root.matrix_world)
+            e = (key, g, batch_for_shader(gpu.shader.from_builtin('SMOOTH_COLOR'), 'TRIS', {'pos': pos, 'color': col}, indices=tri),
+                 batch_for_shader(gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR'), 'LINES', {'pos': lines}) if lines else None)
+            _rib_cache[(root.name, c.id)] = e
+        out.append((g['kind'], picked, e[2], e[3]))
+    ids = {(root.name, c.id) for c, *_r in shown}
+    for k in [k for k in _rib_cache if k[0] == root.name and k not in ids]:
+        del _rib_cache[k]
+    prune_rib_cache(_rib_cache, root.name)
+    return out
+
+
+def prune_rib_cache(cache, current, exists=None):
+    """the entries of roots no longer there (renamed, deleted) out of the cache, their batches freed: `current` the
+    root being drawn, `exists(name)` whether another root of that name is still there (by its name: a lookup per
+    root of the cache, never a scan of the objects)"""
+    alive = _root_named if exists is None else exists
+    gone = {}
+    for k in list(cache):
+        n = k[0]
+        if n != current and gone.setdefault(n, not alive(n)):
+            del cache[k]
+
+
+def _root_named(name):
+    """whether a root of the add-on has this name now"""
+    o = bpy.data.objects.get(name)
+    return o is not None and session.is_root(o)
+
+
+def _draw_ribs(batches, region, rv3d, lw, alpha, fill=True):
+    """the ribbons' fills (`fill`: the depth-tested pass alone — the alpha is in the colours) and outlines, pulled off
+    the walls as the Caps' previews"""
+    import gpu
+    gpu.matrix.push_projection()
+    gpu.state.depth_mask_set(False)
+    try:
+        if rv3d is not None:
+            gpu.matrix.load_projection_matrix(offset_projection(gpu.matrix.get_projection_matrix(), rv3d, WALL_OFFSET))
+        if fill:
+            sh = gpu.shader.from_builtin('SMOOTH_COLOR')
+            sh.bind()
+            for _kind, _picked, tris, _lines in batches:
+                tris.draw(sh)
+        sh = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+        sh.bind()
+        sh.uniform_float('viewportSize', (region.width, region.height))
+        sh.uniform_bool('lineSmooth', True)
+        for kind, picked, _tris, lines in batches:
+            if lines is None:
+                continue
+            sh.uniform_float('lineWidth', RIB_LINE_PX.get(kind, RIB_LINE_PX['ribbon'])[1 if picked else 0] * lw)
+            sh.uniform_float('color', (*RIB_LINE[:3], RIB_LINE[3] * alpha))
+            lines.draw(sh)
+    finally:
+        gpu.state.depth_mask_set(True)
+        gpu.matrix.pop_projection()
+
+
+def _draw_all_ribs(ctx, active, sel):
+    """every ribbon the scene shows (rib_roots), before the curves and anchors: the fill in the depth-tested pass, the
+    outline in every pass of the project's X-Ray, as the tool's overlay. `active`, `sel`: the tool's root and its
+    selection (None: the tool off — nothing selected, nothing being drawn)"""
+    import gpu
+    roots = rib_roots(ctx, active)
+    if not roots:
+        if _rib_cache:
+            prune_rib_cache(_rib_cache, None)                       # (the roots gone; another scene's keep theirs)
+        return
+    region = ctx.region
+    vl = getattr(ctx, 'view_layer', None)
+    todo = []                                                       # (every batch first: nothing half drawn if one fails)
+    for root, P in roots:
+        on = active is not None and root.name == active.name
+        batches = _rib_batches(root, P, sel if on else None, drawing if on else None, vl)
+        if batches:
+            todo.append((P, batches))
+    if not todo:
+        return
+    lw = pick.line_scale(ctx)
+    gpu.state.blend_set('ALPHA')
+    try:
+        for P, batches in todo:
+            passes = [('LESS_EQUAL', 1.0)]
+            if pick.blender_xray(ctx):
+                passes = [('NONE', 1.0)]
+            elif P.settings.xray > 0.001:
+                passes.append(('NONE', P.settings.xray))
+            for i, (depth, alpha) in enumerate(passes):
+                gpu.state.depth_test_set(depth)
+                _draw_ribs(batches, region, ctx.region_data, lw, alpha, fill=i == 0)
+    finally:
+        gpu.state.depth_test_set('NONE')
+        gpu.state.blend_set('NONE')
+
+
+# ---- 4.2: the guides' influence zone (updateZoneViz 9436, D4.7) and the Pencil's loop ----
 GUIDE_STROKE = (0x5f / 255.0, 0xe3 / 255.0, 0x9a / 255.0, 0.95)      # #guideStroke's green (466): the Line mode's dashed stroke
 GUIDE_DASH = (6.0, 4.0)                                             # stroke-dasharray="6 4"
+ANCHOR_LINE = (0xff / 255.0, 0xcf / 255.0, 0x4d / 255.0, 0.95)      # the RMB line's yellow (7779: #guideStroke, #ffcf4d), dashed as the guide's
 PENCIL_COLOR = (1.0, 0xb3 / 255.0, 0x47 / 255.0, 1.0)              # pencilObj 0xffb347
 PENCIL_PX = 2.5
 ZONE_PX = 4.0                                                       # zoneObj: newLineObj(0xffffff, 4, 12, true), vertex colours
@@ -762,7 +1088,7 @@ _zone_cache = {}
 
 
 def flash_zone(gid):
-    """showZone (6210): the guide's zone for 1.5 s (after one of its sliders), then a redraw takes it away"""
+    """showZone (9430): the guide's zone for 1.5 s (after one of its sliders), then a redraw takes it away"""
     global zone_flash
     import time
     from ..core.guidetool import ZONE_SECONDS
@@ -892,9 +1218,18 @@ def _draw():
     ctx = bpy.context
     if not owner.visible(ctx):                                      # the workspace filters the add-on out: nothing drawn (the tool may stay active, inert)
         return
-    if not tool.is_active(ctx) or not overlays_on(ctx):
+    tool.watch(ctx)                                                 # (Issue #7: the tool came on by the toolbar, a workspace, a file or a Ctrl+Z)
+    if not overlays_on(ctx):
         return
-    root = session.find_root(ctx)
+    active = tool.is_active(ctx)
+    root = session.find_root(ctx) if active else None
+    sel_now = select.load(ctx.scene.hairmesh) if root is not None else None
+    try:                                                            # (1.2a, item 6: the ribbons, as the live walls: with the tool off too, every project)
+        _draw_all_ribs(ctx, root, sel_now)
+    except Exception as e:                                          # (the ribbons must never take the curves and anchors down)
+        errorlog.record('draw: flat lock ribbon')
+        if not _outline_error:
+            _outline_error.append(repr(e)); print('HairMesh flat lock ribbon:', repr(e))
     if root is None:
         return
     try:
@@ -903,7 +1238,6 @@ def _draw():
         errorlog.record('draw: the project of the overlay')
         return
     import gpu
-    sel_now = select.load(ctx.scene.hairmesh)
     g, b = _batches(root, P, root.matrix_world, sel_now, snap_curve, weld_cand, None, drawing)
     edge_lines = None
     if ctx.scene.hairmesh.subtool == 'EDGES':                       # 4.9: the selected edges and the one under the cursor
@@ -929,13 +1263,13 @@ def _draw():
     gpu.state.blend_set('ALPHA')
     passes = [('LESS_EQUAL', 1.0)]
     if pick.blender_xray(ctx):
-        passes = [('NONE', 1.0)]                                    # Blender's X-ray (Alt+Z): the curves and anchors behind the head show (3.8c)
+        passes = [('NONE', 1.0)]                                    # Blender's X-Ray (Alt+Z): the curves and anchors behind the head show (3.8c)
     elif xray > 0.001:
         passes.append(('NONE', xray))
     for depth, alpha in passes:
         gpu.state.depth_test_set(depth)
         if 'guide_fills' in b:
-            _draw_guides(b, region, lw, alpha, fills=depth != 'NONE' or len(passes) == 1)   # (Blender's X-ray: the one pass draws the discs' annuli too)
+            _draw_guides(b, region, lw, alpha, fills=depth != 'NONE' or len(passes) == 1)   # (Blender's X-Ray: the one pass draws the discs' annuli too)
         if 'wall_tris' in b:                                        # the selected walls (3.5): tinted fill, then the quad edges, pulled off the live mesh
             _draw_walls(b, region, ctx.region_data, lw, alpha)
         if topo:
@@ -946,7 +1280,7 @@ def _draw():
                 topo = []
                 if not _outline_error:
                     _outline_error.append(repr(e)); print('HairMesh Cap / Fill preview:', repr(e))
-        if alpha >= 1.0:                                            # the selected converted meshes' outline (4.2 ∥ 4.5, item 1): not in the x-ray pass
+        if alpha >= 1.0:                                           # the selected converted meshes' outline (4.2 ∥ 4.5, item 1): not in the X-Ray pass
             _draw_mesh_outlines(ctx, root, P, sel_now, region, lw, alpha)
         # the curves, then the selected ones, then the anchors; 3.8e: in the depth-tested pass, under the projection
         # pulled CURVE_OFFSET towards the camera — the curves in front of the wall edges they lie on, and the anchors'
@@ -1087,7 +1421,7 @@ def _draw_anchors(b, region, lw, alpha):
 
 def _draw_curves(b, g, region, lw, alpha):
     """the curves, then the selected ones again, thicker, over the others (3.8c: equal depth passes LESS_EQUAL); in the
-    x-ray pass (alpha < 1) a faded copy of each batch (POLYLINE_SMOOTH_COLOR has no opacity uniform)"""
+    X-Ray pass (alpha < 1) a faded copy of each batch (POLYLINE_SMOOTH_COLOR has no opacity uniform)"""
     for which, px in (('lines', LINE_PX), ('sel_lines', SEL_LINE_PX)):
         if which not in b:
             continue
@@ -1136,9 +1470,9 @@ def _draw_wall_cut(region, lw):
 
 
 def _draw_guides(b, region, lw, alpha, fills=True):
-    """the guides, writing no depth (every line material of the original has depthWrite false, newLineObj 1019; the
+    """the guides, writing no depth (every line material of the original has depthWrite false, newLineObj 1137; the
     disc's MeshBasicMaterial too): the discs' annuli (transparent, double-sided) in the depth-tested pass only — the
-    original's x-ray pass draws layer 1, where only the lines are (1022) —, then the lines (the guide lines, the cut
+    original's X-Ray pass draws layer 1, where only the lines are (1022) —, then the lines (the guide lines, the cut
     lines, the rings) at their widths. The depth mask is given back whatever happens."""
     import gpu
     gpu.state.depth_mask_set(False)
@@ -1165,7 +1499,7 @@ def _draw_guides(b, region, lw, alpha, fills=True):
 def _draw_walls(b, region, rv3d, lw, alpha):
     """The selected walls: the tinted fill, then the quad edges WALL_LINE_PX wide and smoothed, both under the
     projection pulled WALL_OFFSET units of polygon offset towards the camera (offset_projection), so in the
-    depth-tested pass they read over the live mesh and over its wire; in the x-ray pass (no depth test) the pull
+    depth-tested pass they read over the live mesh and over its wire; in the X-Ray pass (no depth test) the pull
     changes nothing. The projection stack is restored whatever happens."""
     import gpu
     gpu.matrix.push_projection()
@@ -1188,7 +1522,7 @@ def _draw_walls(b, region, rv3d, lw, alpha):
 
 
 def _draw_lines_faded(b, g, sh, alpha, which='lines'):
-    """the x-ray pass of the curves: a batch with the faded colors, cached beside the main one"""
+    """the X-Ray pass of the curves: a batch with the faded colors, cached beside the main one"""
     from gpu_extras.batch import batch_for_shader
     key = ('faded', which, alpha)
     if key not in b:
@@ -1205,7 +1539,7 @@ def overlay_points(shape):
     if shape[0] == 'box':
         _k, x0, y0, x1, y1 = shape
         return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-    if shape[0] in ('line', 'gline'):
+    if shape[0] in ('line', 'gline', 'aline'):
         _k, x0, y0, x1, y1 = shape
         return [(x0, y0), (x1, y1)]
     if shape[0] in ('circle', 'paint'):
@@ -1247,7 +1581,7 @@ def _draw_banner(ctx):
     # under the header and the tool header when they overlap the viewport (Region Overlap: the WINDOW region runs
     # under them), else just under the top edge
     top = region.y + region.height
-    over = [r for r in getattr(ctx.area, 'regions', ()) if r.type in ('HEADER', 'TOOL_HEADER') and r.height > 1 and r.y < top and r.y + r.height > top - 200]
+    over = [r for r in getattr(ctx.area, 'regions', ()) if r.type in ('HEADER', 'TOOL_HEADER') and r.height > 1 and r.y < top and r.y + r.height > top - 214]
     cover = max([top - r.y for r in over], default=0)
     y = region.height - cover - 18 * ui - h
     sh = gpu.shader.from_builtin('UNIFORM_COLOR')
@@ -1292,12 +1626,13 @@ def _draw_2d():
             polyline2d(region, [(x + off * lw, y - off * lw) for x, y, _z in pts], col, w * lw, 'LINES')
         gpu.state.blend_set('NONE')
         return
-    elif overlay[0] == 'gline':
-        # 4.2: the Guides' Line stroke, the original's dashed green line (#guideStroke, 466: 2 px, dashes 6 4)
+    elif overlay[0] in ('gline', 'aline'):
+        # 4.2: the Guides' Line stroke, the original's dashed green line (#guideStroke, 466: 2 px, dashes 6 4); 1.1f: the
+        # RMB line over empty space, the same stroke in yellow (7779)
         ui = pick.ui_scale(ctx)
         dashes = dash_segments(overlay[1], overlay[2], overlay[3], overlay[4], GUIDE_DASH[0] * ui, GUIDE_DASH[1] * ui)
         if dashes:
-            for col, off, w in ((OVERLAY_SHADOW, 1.0, 3.0), (GUIDE_STROKE, 0.0, 2.0)):
+            for col, off, w in ((OVERLAY_SHADOW, 1.0, 3.0), (GUIDE_STROKE if overlay[0] == 'gline' else ANCHOR_LINE, 0.0, 2.0)):
                 polyline2d(region, [(x + off * lw, y - off * lw) for x, y in dashes], col, w * lw, 'LINES')
         gpu.state.blend_set('NONE')
         return

@@ -73,7 +73,8 @@ class TestDeferredSliders(unittest.TestCase):
 
     def test_sliders_live_on_the_window_manager(self):
         P = self.P()
-        self.assertEqual(self.props.CONV_ATTRS, {f'{s}_{k}' for s in ('group', 'conv') for k in ('step', 'dev', 'straighten', 'loop_orient', 'tip_mode', 'relax', 'merge_trunks')})
+        self.assertEqual(self.props.CONV_ATTRS, {f'{s}_{k}' for s in ('group', 'conv') for k in ('step', 'dev', 'straighten', 'loop_orient', 'tip_mode', 'relax', 'merge_trunks', 'proxy')} | {'conv_merge_dist'}
+                         | {'group_step_unit', 'conv_step_unit', 'conv_merge_dist_unit'})   # (1.0.2: a measure, the Conversion tab only; lot 1.2c, item 9.4.6: the display twins, in Blender's unit)
         for attr in self.props.CONV_ATTRS:
             self.assertFalse(hasattr(bpy.context.scene.hairmesh, attr), f'{attr}: not a Scene property (its undo step would come before the rebuild)')
             self.assertIs(type(self.props.data_of(bpy.context, attr)), type(self.cv))

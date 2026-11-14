@@ -16,7 +16,8 @@ ROOT = os.path.join(REPO, 'hairmesh')
 SPDX_LINE = '# SPDX-License-Identifier: GPL-3.0-or-later'
 COPYRIGHT_LINE = '# Copyright (C) 2026 Riel'
 COPYRIGHT_PREFIX = '# Copyright (C) 2026 '                  # (a line with an older owner is replaced, not kept)
-PORT_LINE = "# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission."
+PORT_LINE = "# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission."
+PORT_PREFIX = '# Ported from Stylized HairMesh Creator '        # (a line naming an older version is replaced, not kept)
 FDLIBM_LINES = [
     '# Portions: fdlibm 5.3, Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved. Developed at SunSoft, a',
     '# Sun Microsystems, Inc. business. Permission to use, copy, modify, and distribute this software is freely granted,',
@@ -59,7 +60,7 @@ def apply(path):
         text = f.read()
     want = wanted(path, text)
     body = text.split('\n')
-    while body and body[0].startswith('# ') and (body[0] in (SPDX_LINE, PORT_LINE) or body[0].startswith(COPYRIGHT_PREFIX)
+    while body and body[0].startswith('# ') and (body[0] in (SPDX_LINE, PORT_LINE) or body[0].startswith((COPYRIGHT_PREFIX, PORT_PREFIX))
                                                  or body[0] in FDLIBM_LINES):
         body.pop(0)
     new = '\n'.join(want + body)

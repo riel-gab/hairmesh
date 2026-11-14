@@ -47,13 +47,13 @@ def has_any(hm):
 
 
 def gizmo_targets(P, sel):
-    """edit.gizmoTargets (4563) of the selection: the anchors, else everything inside the items; None: nothing moves"""
+    """edit.gizmoTargets (6576) of the selection: the anchors, else everything inside the items; None: nothing moves"""
     from ..core import edit
     return edit.gizmoTargets(P, sel.items, anchors_of(P, sel))
 
 
 def curves_of(P, sel):
-    """The selected curves (selectedCurves, 7843), in selection order."""
+    """The selected curves (selectedCurves, 8837), in selection order."""
     out = []
     for i in sel.items:
         it = P.items.get(i)
@@ -73,7 +73,7 @@ def walls_of(P, sel):
 
 
 def last_item(P, sel):
-    """The last selected item, the one the original's properties panel shows (renderProps, 8627), or None."""
+    """The last selected item, the one the original's properties panel shows (renderProps, 12548), or None."""
     if not sel.items:
         return None
     return P.items.get(sel.items[len(sel.items) - 1])
@@ -91,7 +91,7 @@ def selected_group(P, sel):
 
 
 def target_group(P, sel):
-    """targetGroup (4729): the id of the group of the last selected item (itself for a group); None at the root."""
+    """targetGroup (6748): the id of the group of the last selected item (itself for a group); None at the root."""
     from ..core import groups as G
     return G.targetGroup(P, sel.items)
 

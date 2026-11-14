@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Welded trunks and the loop positions on each curve (hair-modeler.clean.html:1762-2185): trunkLevels,
 trunkOnly, trunkOwnFs, trunkFade and curveRowF. Called by buildRowTables (rows.py) with the RowBuild context."""
 import math
 
-from .geom import atF, chunkBoxes, inBox, nearBoxes, nearestF, polyBox, polyLen
+from .geom import atF, chunkBoxes, inBox, nearBoxes, nearestF, nearestWithin, polyBox, polyLen
 from .js import at, clamp, index_of, js_max, js_min, js_or, js_round, js_str, nullish, to_fixed
 from .rowbase import Row, levelH, rowPlane
 from .trace import br as _br, dec as _dec, dec_near
@@ -29,10 +29,24 @@ def segsOf(D):
 
 # Welded trunks (curves of this lock running along curves of locks built earlier): this lock's loops must go exactly
 # through those locks' loop vertices on the common curves. (See the original's comment block at 1752-1761.)
+def _has(lst, x):
+    """Set.has by identity on a list without repeats (the rings of a level: JS objects in a Set)"""
+    return any(y is x for y in lst)
+
+
+def _wedge(L, ci, q, lim):
+    """L.Ps.some((Q, cj) => cj !== ci && nearestWithin(Q, q, lim)) (trunkLevels, 1.0.3: 2041)"""
+    for cj, Q in enumerate(L.Ps):
+        if cj != ci and nearestWithin(Q, q, lim, L.grids, L.plen[cj] if L.plen is not None else None) is not None:
+            return True
+    return False
+
+
 def trunkLevels(ctx, L, rows):
-    # port of trunkLevels (hair-modeler.clean.html:1762)
+    # port of trunkLevels (hair-modeler.clean.html:2014)
     if not ctx.TRUNK_PTS:
         return rows
+    opts = ctx.DBG['mergeOpts']
     hL = levelH(ctx); tol = 0.02 * hL; N = len(L.sp); unit = js_or(polyLen(L.sp) if L.spLen is None else L.spLen, 1e-9) / (N - 1); R = len(rows)
     groups = {}                                                     # neighbour loop key -> { lock, at: Map(ci -> f) }
     wsegs = set()
@@ -51,21 +65,23 @@ def trunkLevels(ctx, L, rows):
 
     for ci, P in enumerate(L.Ps):
         bb = polyBox(P, tolW, exact=True)                           # Box3().setFromPoints(P).expandByScalar(tolW), as a tuple
-        Pi = L.Pidx[ci] if L.Pidx is not None else None
-        # (speed: a point farther than tolW from every stretch of P has d > tolW > tol: `d >= tol` holds and `d < tolW`
-        # does not, so the `continue` below is certain and it is skipped before nearestF — chunkBoxes, the padded
-        # stretch boxes; lot 4.2c)
-        ch = chunkBoxes(Pi, tolW) if Pi is not None else None
+        pl = L.plen[ci] if L.plen is not None else None
         for q in ctx.TRUNK_PTS:
             if not inBox(q, bb):                                    # (bb.containsPoint(q))
                 continue
-            if ch is not None and not nearBoxes(q, ch):
+            hit = nearestWithin(P, q, tolW, L.grids, pl)            # (1.0.3, 2035; farther than tolW: neither test below holds)
+            if hit is None:
                 continue
-            f = nearestF(P, q, Pi)
+            f = hit[0]
             if not (f > 0.5 and f < N - 1.5):
                 continue
-            d = atF(P, f).distanceTo(q)
+            d = hit[1]
             if _dec('trunkLevels.onTrunk', d, tol) >= tol and not (d < tolW and onWSeg(L.cs[ci], q)):
+                continue
+            # two curves of this lock running together into one anchor (a wedge's tip at a fork): a point on one of them lies
+            # within the tolerance of the other too — it holds only the curve it is on, or every neighbour's loop near the tip
+            # held both curves, the loops of the two neighbours couldn't pair up and the wedge got both sets (twice the loops)
+            if opts.get('wedge') is not False and d - 0.01 * hL > 0 and _wedge(L, ci, q, d - 0.01 * hL):
                 continue
             key = ctx.TRUNK_KEY.get(q)
             if key is None:
@@ -107,6 +123,12 @@ def trunkLevels(ctx, L, rows):
         li, k = (int(x) for x in g['key'].split(':'))
         D = at(ctx.TRUNK_LOCKS, li - 1) if ctx.TRUNK_LOCKS else None
         g['gid'] = nullish(at(D.rowGid, k), None) if D and D.rowGid is not None else None
+        g['src'] = nullish(at(D.rowSrc, k), None) if D and D.rowSrc is not None and opts.get('ring') is not False else None
+    # The ring a neighbour's loop belongs to (rowSrc: taken over from the lock it was copied from, or its own): the loops of
+    # two neighbours from one ring are one level; from two rings of the same lock never (unless lying on top of each other)
+    # — paired by the order instead, a neighbour with an extra trunk loop before (a curve starting on a third lock's trunk)
+    # put ring k of one with ring k+1 of the other: the loop went round the hair one loop lower — a spiral. Rings of
+    # different locks (neighbours with loops of their own) are paired by the order as before.
     gRows = [r for r in rows if r.guide and r.plane]
 
     def zoneAt(s):
@@ -135,6 +157,11 @@ def trunkLevels(ctx, L, rows):
         for l in lv:
             # loops lying on top of each other on a curve (within ¼ step) are one loop, whatever made them
             same = any(ci in l['at'] and abs(l['at'][ci] - f) * unit < 0.25 * hL for ci, f in g['at'].items())
+            src = g['src']
+            if src is not None and _has(l['srcs'], src) and g['lock'] not in l['locks']:
+                best = l; break
+            if not same and src is not None and any(x.owner == src.owner for x in l['srcs']):
+                continue
             if not same and (g['lock'] in l['locks'] or not all(ci not in l['at'] or abs(l['at'][ci] - f) * unit < 2 * tol for ci, f in g['at'].items())):
                 continue
             ds = abs(g['s'] - l['s']) * unit; dr = abs(g['rank'] - l['rank'])
@@ -158,10 +185,14 @@ def trunkLevels(ctx, L, rows):
             for ci, f in g['at'].items():
                 if ci not in best['at']:
                     best['at'][ci] = f
-            best['locks'][g['lock']] = True; best['keys'][g['key']] = True; best['s'] = avg(best['at'])
+            best['locks'][g['lock']] = True; best['keys'][g['key']] = True
+            if g['src'] is not None and not _has(best['srcs'], g['src']):
+                best['srcs'].append(g['src'])
+            best['s'] = avg(best['at'])
             best['rank'] = (best['rank'] * best['n'] + g['rank']) / (best['n'] + 1); best['n'] += 1
         else:
-            lv.append({'s': g['s'], 'rank': g['rank'], 'n': 1, 'gid': g['gid'], 'at': dict(g['at']), 'locks': {g['lock']: True}, 'keys': {g['key']: True}})
+            lv.append({'s': g['s'], 'rank': g['rank'], 'n': 1, 'gid': g['gid'], 'at': dict(g['at']), 'locks': {g['lock']: True}, 'keys': {g['key']: True},
+                       'srcs': [g['src']] if g['src'] is not None else []})   # (a Set of rings: a list without repeats, by identity)
     lv.sort(key=lambda l: l['s'])
     rk = []
     for r in rows:
@@ -225,7 +256,8 @@ def trunkLevels(ctx, L, rows):
     while i > 0 or j > 0:
         h = how[i][j]
         if h == 3:
-            rows[ks[i - 1]].tm = lv[j - 1]['at']; i -= 1; j -= 1
+            r_ = rows[ks[i - 1]]; l_ = lv[j - 1]
+            r_.tm = l_['at']; r_.src = l_['srcs'][0] if l_['srcs'] else None; r_.tkeys = l_['keys']; i -= 1; j -= 1
         elif h == 1:
             i -= 1
         else:
@@ -241,8 +273,8 @@ def trunkLevels(ctx, L, rows):
 
     # A loop held on some curves by a neighbour's trunk points is one loop: on the other curves it is cut by a plane
     # through those points (the row's own direction, tilted to hold them all)
-    def trunkPlane(n0, at_):
-        pts = [atF(L.Ps[ci], f) for ci, f in at_.items()]
+    def trunkPlane(n0, at_, more=()):
+        pts = [atF(L.Ps[ci], f) for ci, f in at_.items()] + list(more)
         c = V3()
         for p in pts:
             c.add(p)
@@ -258,10 +290,38 @@ def trunkLevels(ctx, L, rows):
             if mm.lengthSq() > 1e-8:
                 n = mm
         return {'p': c, 'n': n.normalize()}
+    # The far end of a gap: this lock held on an open edge of the neighbour's ring (a curve of only one of its walls — the
+    # locks of Unite's V fill the gap between two such edges) — the plane also goes through that ring's point on the edge
+    # across the gap (the nearest other open edge, within 4 steps). Every lock filling the gap is then cut by one plane
+    # through both ends: the twist of the neighbour's loop between them is shared evenly by their walls. (Through its own
+    # trunk point alone each took the slant of its edge — all of the twist landed on the middle wall: a zigzag over the
+    # diagonal curves.)
+    def gapEnd(at_, keys):
+        if not keys or opts.get('gapPlane') is False:
+            return None
+        held = [atF(L.Ps[ci], f) for ci, f in at_.items()]; best = None; bd = 4 * hL
+        for key in keys:
+            li, k = (int(x) for x in key.split(':'))
+            D = at(ctx.TRUNK_LOCKS, li - 1) if ctx.TRUNK_LOCKS else None
+            B = at(D.ringB, k) if D and D.ringB is not None else None
+            if not B or len(B) < 2:
+                continue
+            b0 = next((q for q in B if any(p.distanceTo(q) < tolW for p in held)), None)
+            if not b0:
+                continue
+            for q in B:
+                if any(p.distanceTo(q) < 0.5 * hL for p in held):
+                    continue
+                d = q.distanceTo(b0)
+                if d < bd:
+                    bd = d; best = q
+        return best
     ownN = lambda r: (r.plane or rowPlane(ctx.CP, L.sp, r.f) or {'n': V3(0, 1, 0)})['n']
     for r in rows:
-        if r.tm is not None and len(r.tm):
-            r.tplane = trunkPlane(ownN(r), r.tm)
+        if r.tm is None or not len(r.tm):
+            continue
+        g_ = gapEnd(r.tm, r.tkeys)
+        r.tplane = trunkPlane(ownN(r), r.tm, [g_] if g_ else []); r.tgap = bool(g_)
     if not extra:
         return rows
     out = []
@@ -278,7 +338,8 @@ def trunkLevels(ctx, L, rows):
             plane = {'p': atF(L.sp, f), 'n': nn.normalize() if nn.lengthSq() > 1e-12 else V3(0, 1, 0)}
             _br('trunkLevels.addedRow')
             out.append(Row(f=f, plane=plane, tplane=trunkPlane(plane['n'], l['at']), tm=l['at'], exact=True,
-                           tgt=min(js_or(r.tgt, hL), js_or(b.tgt, hL)), prio=min(js_or(r.prio, 0), js_or(b.prio, 0)), added=True))
+                           tgt=min(js_or(r.tgt, hL), js_or(b.tgt, hL)), prio=min(js_or(r.prio, 0), js_or(b.prio, 0)), added=True,
+                           src=l['srcs'][0] if l['srcs'] else None))
     # The added loop also crosses the curves of the other side. Where it lands at the end of their trunk, the Y junction
     # on that curve moves by a loop: the nearest pinned loops there are let go and spread evenly (curveRowF `free`)
     pin = lambda r, ci: (r.tm is not None and ci in r.tm) or (r.fixed is not None and ci in r.fixed) or (r.jfix is not None and ci in r.jfix)
@@ -397,13 +458,13 @@ def trunkOwnFs(ctx, L, rows):
 
 
 def trunkFade(ctx, L, rows, Fs, Fo):
-    # port of trunkFade (hair-modeler.clean.html:2016): the trunk pulls the free curves by distance (within 2.5 steps)
+    # port of trunkFade (hair-modeler.clean.html:2329): the trunk pulls the free curves by distance (within 2.5 steps)
     unit = [(polyLen(P) if L.plen is None else L.plen[ci]) / (len(P) - 1) for ci, P in enumerate(L.Ps)]; Dm = 2.5 * levelH(ctx); R = len(rows)
     for k in range(1, R - 1):
         r = rows[k]
-        if r.tm is None or not len(r.tm):
+        if r.tm is None or not len(r.tm) or r.tgap:                # (cut through both ends of a gap: that cut stays)
             continue
-        held = lambda ci: ci in r.tm or (r.fixed is not None and ci in r.fixed) or (r.jfix is not None and ci in r.jfix) or (r.free is not None and ci in r.free)
+        held = lambda ci, r=r: ci in r.tm or (r.fixed is not None and ci in r.fixed) or (r.jfix is not None and ci in r.jfix) or (r.free is not None and ci in r.free)
         offs = [{'p': atF(L.Ps[j], Fo[j][k]), 'o': (Fs[j][k] - Fo[j][k]) * unit[j]} for j in r.tm]
         for ci, P in enumerate(L.Ps):
             if held(ci):
@@ -417,6 +478,61 @@ def trunkFade(ctx, L, rows, Fs, Fo):
             F[k] = js_max(F[k], F[k - 1] + 0.05)
         for k in range(len(F) - 2, 0, -1):
             F[k] = js_min(F[k], F[k + 1] - 0.05)
+
+# A loop next to an inner anchor where a curve of another lock begins or ends (a fork) is moved onto that anchor, so the
+# two locks' vertices meet there (within half a step; never closer than a quarter step to the loops beside it). The
+# moved point is pinned for straightenLoops (r.forkC).
+def forkSnap(ctx, L, rows, Fs):
+    # port of forkSnap (hair-modeler.clean.html:2232)
+    if ctx.ANCHOR_CURVES is None:                                   # (!ANCHOR_CURVES: null, an empty Map is truthy)
+        return
+    opts = ctx.DBG['mergeOpts']
+    hL = levelH(ctx); R = len(rows)
+    # (only where this lock is the first one built on that curve: next to the fork its segments lie on no curve of a lock
+    # built before — that lock has its vertices there already and keeps them; moved here, the two parted)
+    early = set()
+    for D in (ctx.TRUNK_LOCKS or []):
+        for d in D.cs:
+            for i in range(len(d.anchors) - 1):
+                early.add(_sk(d.anchors[i], d.anchors[i + 1]))
+    for ci, c in enumerate(L.cs):
+        P = L.Ps[ci]; F = Fs[ci]; unit = (polyLen(P) if L.plen is None else L.plen[ci]) / (len(P) - 1)
+        for k in range(1, len(c.anchors) - 1):
+            a = c.anchors[k]; ds = ctx.ANCHOR_CURVES.get(a.id) or []
+
+            # (a curve of another lock beginning or ending here. Also one that ran along this curve up to here and goes off on
+            # its own — a Y between two locks — only with DBG.mergeOpts.forkY: on Wolfcut's glued locks that one helped some
+            # seams and broke others)
+            def leaves(d, a=a, c=c):                                # (bound now: called in this iteration only)
+                i = index_of(d.anchors, a)
+                nb = [x for x in (at(d.anchors, i - 1), at(d.anchors, i + 1)) if x]
+                if len(nb) == 1:
+                    return not any(x is nb[0] for x in c.anchors)
+                return any(any(y is x for y in c.anchors) for x in nb) and any(not any(y is x for y in c.anchors) for x in nb)
+            forkY = opts.get('forkY') is True
+            if not any(d is not c and not any(d is e for e in L.cs) and
+                       (leaves(d) if forkY else (d.anchors[0] is a or d.anchors[len(d.anchors) - 1] is a)) for d in ds):
+                continue
+            if opts.get('forkOwn') is not False and (_sk(c.anchors[k - 1], a) in early or _sk(a, c.anchors[k + 1]) in early):
+                continue
+            fa = nearestF(P, a.pos, L.Pidx[ci] if L.Pidx is not None else None)
+            q = -1
+            for j in range(1, R - 1):
+                if q < 0 or abs(F[j] - fa) < abs(F[q] - fa):
+                    q = j
+            if q < 0 or abs(F[q] - fa) * unit > 0.5 * hL or abs(F[q] - fa) * unit < 1e-4 * hL:
+                continue
+            r = rows[q]
+            if (r.tm is not None and ci in r.tm) or (r.jfix is not None and ci in r.jfix) or (r.fixed is not None and ci in r.fixed):
+                continue
+            if (fa - F[q - 1]) * unit < 0.25 * hL or (F[q + 1] - fa) * unit < 0.25 * hL:
+                continue
+            F[q] = fa                                               # (straightenLoops keeps it there)
+            if r.forkC is None:
+                r.forkC = {}
+            r.forkC[ci] = True
+            _br('forkSnap.moved')
+
 
 
 # Where each loop lands on one edge curve: the loop is the cut of a plane through the spine point. Where the curve

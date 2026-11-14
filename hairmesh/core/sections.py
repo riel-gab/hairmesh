@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Cross-sections of a converted modifier's lock (1.0.1): the curves `para` made by Convert to curves & walls, every
 anchor with its section number (a.sec, file key `sc`). Pure Python, no bpy.
 
-  lockSecs (1435)          anchor id -> section number of the lock's curves, or None
-  curveSecAt (1464)        the section number at a point of one curve
-  resampleParallel (1473)  the lock's curves resampled by section (buildRowTables' `para` branch, 2601-2619)
+  lockSecs (1599)          anchor id -> section number of the lock's curves, or None
+  curveSecAt (1628)        the section number at a point of one curve
+  resampleParallel (1637)  the lock's curves resampled by section (buildRowTables' `para` branch, 2601-2619)
 
 lockSecs and curveSecAt lived in scissors.py (3.8a, the wall cut of such a lock); they moved here in 4.1 so that the
 row tables (rows.py) read them without importing the scissors (which import edit / weld)."""
@@ -29,7 +29,7 @@ def _cmp(v):
 # before a.sec: the curves with the most common anchor count number theirs by index. → Map anchor → section, or null
 # when the curves don't make one lock of sections (not increasing along a curve, different first / last section).
 def lockSecs(cs):
-    """port of lockSecs (hair-modeler.clean.html:1435): anchor id -> section number, or None when the curves don't
+    """port of lockSecs (hair-modeler.clean.html:1599): anchor id -> section number, or None when the curves don't
     make one lock of sections (not increasing along a curve, different first / last section)"""
     sec = {}
     for c in cs:
@@ -77,7 +77,7 @@ def lockSecs(cs):
 
 
 def curveSecAt(c, sec, p):
-    # port of curveSecAt (hair-modeler.clean.html:1464): the section number at point p of curve c (its nearest sample)
+    # port of curveSecAt (hair-modeler.clean.html:1628): the section number at point p of curve c (its nearest sample)
     bi = 0; bd = INF
     for i, s in enumerate(c.samples):
         d = s.p.distanceToSquared(p)
@@ -92,7 +92,7 @@ def curveSecAt(c, sec, p):
 # (inside a segment each curve goes by its own arc length). The spacing follows the mean arc length per section.
 # (Plain resample by arc length slides the edges of a curl apart: the outer edge of a turn is far longer than the inner.)
 def resampleParallel(cs, n, sec):
-    """port of resampleParallel (hair-modeler.clean.html:1473). `sec`: lockSecs(cs) (anchor id -> section).
+    """port of resampleParallel (hair-modeler.clean.html:1637). `sec`: lockSecs(cs) (anchor id -> section).
 
     The original groups the samples into a sparse array by segment (`out[s.seg]`); forEach and the sum of the
     segment lengths skip its holes, map keeps them: a hole is None here, with the same skips."""

@@ -51,17 +51,22 @@ WHEN = {
     'hairmesh.delete_now': SELECTED, 'hairmesh.hide_selected': SELECTED, 'hairmesh.hide_unselected': SELECTED,
     'hairmesh.reveal_hidden': 'Something of HairMesh hidden', 'hairmesh.deselect_all': SELECTED,
     'hairmesh.grab_anchors': IN_SELECT, 'hairmesh.rotate_anchors': IN_SELECT, 'hairmesh.scale_anchors': IN_SELECT, 'hairmesh.gizmo_move': SELECTED,
+    'hairmesh.extrude_anchor': 'Select, an end anchor of a curve selected',
     'hairmesh.gizmo_rotate': SELECTED, 'hairmesh.gizmo_scale': SELECTED, 'hairmesh.duplicate': SELECTED,
     'hairmesh.frame_selection': SELECTED, 'hairmesh.parent_to_last': 'A group selected last', 'hairmesh.unparent': 'Items inside a group selected',
+    'hairmesh.split_ends': 'Scissors > Split Ends', 'hairmesh.anchor_line': 'Off a curve, not in Draw or the Scissors',
 }
 # the tool keys that act in any sub-tool; every tool key is in WHEN or here (the test checks both ways)
-ANY_SUBTOOL = {'hairmesh.select_circle', 'hairmesh.open_modifiers', 'hairmesh.edge_hover', 'wm.call_panel', 'wm.call_menu_pie'}
+ANY_SUBTOOL = {'hairmesh.select_circle', 'hairmesh.open_modifiers', 'hairmesh.edge_hover', 'wm.call_panel', 'wm.call_menu_pie', 'hairmesh.pie'}
+PIE_OPERATORS = ('hairmesh.pie',)                                  # (our operators that open a pie: the row says only that)
 ESC_TO_SELECT = 'Any other sub-tool'                               # (Esc back to Select; in Select it is Blender's Esc)
 MODIFIERS = ('Ctrl', 'Shift', 'Alt')
 ALTERNATIVES = {('Shift', 'MMB')}                                   # (Circle Select: Shift + LMB, or MMB, deselects)
 DIGITS = {'ONE': '1', 'TWO': '2', 'THREE': '3', 'FOUR': '4', 'FIVE': '5', 'SIX': '6'}
 PAINT_NAMES = {'MASK': 'Mask', 'THICK': 'Thickness', 'TWIST': 'Twist', 'TIP': 'Density', 'ANCHOR': 'Anchors',
-               'radius': 'Radius (F)', 'hardness': 'Hardness (Shift+F)', 'drag': 'Both (Ctrl + right drag)'}
+               'radius': 'Radius (F)', 'hardness': 'Hardness (Shift+F)', 'drag': 'Both (Ctrl + right drag)',
+               'RIB_EXT': 'Extrude', 'RIB_OFF': 'Offset', 'RIB_GLUE': 'Glue',                  # (the flat lock's brushes, ops_rib.NAMES)
+               'lock_radial': 'Lock Width (F)', 'lock_drag': 'Lock Width (Ctrl + right drag)'}
 
 INTRO = """# Shortcuts
 
@@ -124,6 +129,8 @@ def operator_text(idname, props):
         label = getattr(cls, 'bl_label', props.get('name', ''))
         return label, ('Open the pie' if idname == 'wm.call_menu_pie' else 'Open the pop-up')
     mod, op = idname.split('.')
+    if idname in PIE_OPERATORS:
+        return getattr(bpy.ops, mod).__getattr__(op).get_rna_type().name, 'Open the pie'
     rna = getattr(getattr(bpy.ops, mod), op).get_rna_type()
     return rna.name, first_sentence(rna.description)
 

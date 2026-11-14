@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Lot 4.9, item M: the anchor brush (S.tool 'brush'), pure Python: what the press captures (Screen or Surface), a move of
 the stroke (the plain drag, Shift's smoothing, Ctrl's inflate and Ctrl+Alt's shrink). The projection, the cursor's ray and
 what the cursor touches come in a BrushView, so the same code runs with the camera the harness recorded and with a 3D
@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from .brush import brushWeight
 from .edit import isRingAnchor, isVisible, planeHit
 from .fdlibm import tan
-from .groups import activeGroups, guidesShown, looseCurveIds, shownCurves
+from .groups import activeGroups, guidesShown, looseCurveIds, shownCurves, visibleCurves
 from .guides import discRings
 from .js import js_hypot, js_max
 from .rows import surfaceComponents
@@ -26,7 +26,7 @@ SURFACE = 'surface'                                                 # S.brushMod
 NEAR_PX = 14                                                        # brushCenter3D's near(14): the curve under the cursor (6092)
 SMOOTH_SHARE = 0.15                                                 # smoothStep: w * 0.15 (6114)
 STROKE_PX = 250                                                     # the inflate's pixels per 100 % (5948)
-NO_LOCK = 'No lock anchors under the brush'                         # startInflate's hud (6136)
+NO_LOCK = 'No lock anchors under the brush'                         # startInflate's hud (8978)
 DEG2RAD = 3.141592653589793 / 180                                   # THREE.MathUtils.DEG2RAD
 
 
@@ -88,7 +88,7 @@ def anchorOp(shift, ctrl, alt):
 
 
 def brushAnchors(P, sel_items, anchor_list):
-    """port of brushAnchors (hair-modeler.clean.html:6076): with curves (or a NURBS disc) selected the brush works only on
+    """port of brushAnchors (hair-modeler.clean.html:8918): with curves (or a NURBS disc) selected the brush works only on
     their anchors; else on every anchor shown but a disc's rings. `anchor_list`: S.anchorList (edit.anchorList)"""
     items = [it for it in (P.items.get(i) for i in sel_items) if it is not None]
     sc = [it for it in items if it.type == 'curve']
@@ -107,7 +107,7 @@ def brushAnchors(P, sel_items, anchor_list):
 def brushVisible(P, sel_items, sel_anchors, drawing=None, active_group=None):
     """the ids of the curves c.obj.visible says are on screen (syncVisuals 11945-11952, brushCenter3D's `near`): the hair
     curves their group's mode shows, and a disc's rings while the disc is"""
-    out = {c.id for c in shownCurves(P, sel_items, sel_anchors, drawing, active_group)[0]}
+    out = {c.id for c in visibleCurves(shownCurves(P, sel_items, sel_anchors, drawing, active_group)[0], sel_items)}
     act = None
     for c in P.curves():
         if c.ring:
@@ -136,7 +136,7 @@ def anchorCurves(P):
 
 
 def worldPerPixelAt(view, p, scale):
-    """port of worldPerPixelAt (hair-modeler.clean.html:6081); `scale`: S.scale"""
+    """port of worldPerPixelAt (hair-modeler.clean.html:8923); `scale`: S.scale"""
     if view.ortho is not None:
         return view.ortho / view.H
     d = js_max(p.clone().sub(view.cam_pos).dot(view.cam_dir), scale * 1e-3)
@@ -144,7 +144,7 @@ def worldPerPixelAt(view, p, scale):
 
 
 def brushCenter3D(P, view, m, R, anchors, shown, near_px=NEAR_PX):
-    """port of brushCenter3D (hair-modeler.clean.html:6088): the 3D point the brush touches: the front-most thing under the
+    """port of brushCenter3D (hair-modeler.clean.html:8930): the 3D point the brush touches: the front-most thing under the
     cursor, a nearer curve within near_px of it, else the nearest anchor under the circle. `anchors`: brushAnchors.
     Returns a new point, or None."""
     best = None; bd = float('inf')
@@ -175,7 +175,7 @@ def brushCenter3D(P, view, m, R, anchors, shown, near_px=NEAR_PX):
 
 
 def brushCapture(P, view, m, R, hard, mode, anchors, shown, scale, near_px=NEAR_PX):
-    """port of brushCapture (hair-modeler.clean.html:6096): [(anchor, weight)] under the brush"""
+    """port of brushCapture (hair-modeler.clean.html:8938): [(anchor, weight)] under the brush"""
     out = []
     if mode != SURFACE:
         x = m[0]; y = m[1]; screen = view.screen
@@ -203,7 +203,7 @@ def brushCapture(P, view, m, R, hard, mode, anchors, shown, scale, near_px=NEAR_
 
 
 def _marked(st, anchors):
-    """markAnchorsDirty (1340) over st.through: the curves through the anchors, and the curves touching those"""
+    """markAnchorsDirty (1504) over st.through: the curves through the anchors, and the curves touching those"""
     dirty = {}
     for a in anchors:
         for c in st.through[a]:
@@ -220,7 +220,7 @@ def _capture(P, view, m, st):
 
 
 def smoothStep(P, view, m, st):
-    """port of smoothStep (hair-modeler.clean.html:6105): Shift + brush — every anchor under the brush moves towards the
+    """port of smoothStep (hair-modeler.clean.html:8947): Shift + brush — every anchor under the brush moves towards the
     middle of its neighbours on each curve through it (curve ends stay, rings wrap around). Returns whether one moved."""
     moves = []
     for a, w in _capture(P, view, m, st):
@@ -246,7 +246,7 @@ def smoothStep(P, view, m, st):
 def startStroke(P, view, m, op, R, hard, mode, anchors, shown, scale, px=1):
     """the press (5761, 5822): `op` as anchorOp gives it, `anchors`: brushAnchors, `shown`: brushVisible, `px`: the
     viewport's pixels per pixel of the original (the UI scale). Returns the Stroke; a Shift press has moved its first
-    step already (startBrush 6139)."""
+    step already (startBrush 9050)."""
     st = Stroke('brushSmooth' if op == 'smooth' else 'brush' if op == 'move' else 'inflate', anchors, anchorCurves(P), shown, R, hard, mode, scale, px)
     if op == 'smooth':
         smoothStep(P, view, m, st)
@@ -260,14 +260,14 @@ def startStroke(P, view, m, op, R, hard, mode, anchors, shown, scale, px=1):
 
 
 def _startBrush(P, view, m, st):
-    # port of startBrush (hair-modeler.clean.html:6138), the plain drag
+    # port of startBrush (hair-modeler.clean.html:9050), the plain drag
     n = st.n = view.cam_dir.clone()
     ray = view.ray(m)
     st.cap = [(a, w, a.pos.clone(), planeHit(ray, a.pos, n)) for a, w in _capture(P, view, m, st)]
 
 
 def _startInflate(P, view, m, st, sign):
-    # port of startInflate (hair-modeler.clean.html:6123): Ctrl + brush, inflate (sign 1), Ctrl+Alt, shrink (sign -1). Every
+    # port of startInflate (hair-modeler.clean.html:8965): Ctrl + brush, inflate (sign 1), Ctrl+Alt, shrink (sign -1). Every
     # anchor under the brush is scaled away from / towards the middle of its lock's cross-section there: the average of
     # the nearest points of all curves of the lock. Curves outside locks and the shared tip stay.
     lockOf = {}

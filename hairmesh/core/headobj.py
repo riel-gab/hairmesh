@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """The reference head: the OBJ parser of the original and the scene scale it derives from the head's box."""
 import re
+import json
 import struct
 
 from .js import js_or
@@ -31,6 +32,58 @@ def parseOBJ(text):
     return v, faces
 
 
+def obj_sets(text):
+    """the texture sets of an OBJ head, one per material slot in the order its faces first use them (headFromOBJ,
+    hair-modeler.clean.html:3660-3681: bySlot keyed by each face's material; 'Default' for faces before any usemtl):
+    [{'name'}]. Only what normLook reads (the names)."""
+    mats, slots, cur = [], [], -1
+    for line in text.split('\n'):
+        t = line.strip()
+        if t.startswith('usemtl '):
+            n = t[7:].strip()
+            if n not in mats:
+                mats.append(n)
+            cur = mats.index(n)
+        elif t.startswith('f '):
+            if len(_WS.split(t)[1:]) >= 3 and cur not in slots:   # (parseOBJ keeps faces of 3+ corners)
+                slots.append(cur)
+    return [{'name': 'Default' if m < 0 else mats[m]} for m in slots]
+
+
+TEX_SLOTS = ('map', 'alphaMap')                                     # (TEX_SLOTS, 4796)
+
+
+def normLook(look, sets):
+    """port of normLook (hair-modeler.clean.html:4802): a look fitted to the texture sets of its mesh — a set of the
+    old look kept by its place (same name, or the same number of sets) or else by its name"""
+    L = look or {}
+    old = L.get('sets') or []
+
+    def one(i, st):
+        o = (old[i] if i < len(old) and (old[i].get('name') == st['name'] or len(old) == len(sets)) else None) \
+            or next((x for x in old if x.get('name') == st['name']), None) or {}
+        maps = {}
+        for k in TEX_SLOTS:
+            if o.get('maps') and k in o['maps']:
+                maps[k] = o['maps'][k]
+        r = {'name': st['name'], 'on': o.get('on') is not False}
+        if o.get('color'):
+            r['color'] = o['color']
+        if o.get('alpha') is not None:
+            r['alpha'] = bool(o['alpha'])
+        r['maps'] = maps
+        return r
+    return {'tex': bool(L.get('tex')), 'flat': bool(L.get('flat')), 'sets': [one(i, st) for i, st in enumerate(sets)]}
+
+
+def head_look(look, src):
+    """the look a head gets when it is made (makeHeadItem 3800: normLook(look, head.sets)): an OBJ's sets are known
+    here; another format's are not (no GLB / FBX reader): its stored look is kept as read"""
+    if src and src.get('ext') == 'obj' and src.get('text') is not None:
+        return normLook(look, obj_sets(src['text']))
+    return json.loads(json.dumps(look)) if look else None
+
+
 def float32(x):
     """x rounded to the nearest float32, as a Python float (what a Float32BufferAttribute stores)."""
     return struct.unpack('<f', struct.pack('<f', x))[0]
@@ -53,7 +106,7 @@ def fit_to_box(v):
 
 
 def box_frame(mn, mx):
-    """The geometric part of fitToBox (hair-modeler.clean.html:4275 in 1.0.1) for a non-empty box (min, max)."""
+    """The geometric part of fitToBox (hair-modeler.clean.html:6288 in 1.0.1) for a non-empty box (min, max)."""
     size = (mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2])
     S = SceneState()
     S.scale = js_or(max(size[0], size[1], size[2]), 1)              # Math.max(size.x, size.y, size.z) || 1

@@ -27,7 +27,8 @@ def title_case(s):
 class Node:
     """A layout that keeps its shape: which props went into which row (FakeLayout gives every call a new, shapeless one)."""
     def __init__(self):
-        self.children, self.props, self.labels = [], [], []
+        self.children, self.props, self.labels, self.ops = [], [], [], []
+        self.alignment = 'EXPAND'
 
     def _child(self, **_kw):
         c = Node()
@@ -42,7 +43,14 @@ class Node:
     def label(self, text='', **_kw):
         self.labels.append(text)
 
-    def operator(self, *_a, **_kw):
+    def separator(self, **_kw):
+        pass
+
+    def context_pointer_set(self, *_a):
+        pass
+
+    def operator(self, idname, *_a, **_kw):
+        self.ops.append(idname)
         return SimpleNamespace()
 
     def walk(self):
@@ -104,6 +112,29 @@ class TestPreferencesPage(unittest.TestCase):
             self.assertNotRegex(s, BANNED, at)
         for k, kw in self.keywords.items():
             self.assertNotRegex(kw['name'], BANNED, k)
+
+    def test_no_button_is_stretched_over_the_page(self):
+        """the page's buttons (the author's page, Reset to Defaults, Restore Defaults) sit in a row aligned to the right,
+        at the width of their texts (a plain row gave each half the page); Auto / Show of Curves of New Groups and the
+        three colors in rows aligned to the left"""
+        P = self.prefs
+        page = Node()
+        with mock.patch.object(P, 'draw_shortcuts'):                # (the list of shortcuts needs a real layout)
+            P.draw_preferences(SimpleNamespace(), page, bpy.context)
+        held = {op: n.alignment for n in page.walk() for op in n.ops}
+        for op in ('wm.url_open', P.HAIRMESH_OT_selection_colors_reset.bl_idname):
+            self.assertEqual(held.get(op), 'RIGHT', op)
+        box = Node()
+        P.title_row(box, 'Shortcuts', 'KEYINGSET').operator(P.HAIRMESH_OT_keymap_restore.bl_idname)
+        self.assertEqual({op: n.alignment for n in box.walk() for op in n.ops}, {P.HAIRMESH_OT_keymap_restore.bl_idname: 'RIGHT'})
+        import inspect
+        self.assertIn("title_row(box, 'Shortcuts', 'KEYINGSET').operator(HAIRMESH_OT_keymap_restore.bl_idname", inspect.getsource(P.draw_shortcuts), 'Restore Defaults in the title row of its box')
+        rows = {a: n.alignment for n in page.walk() for c in n.children for a in c.props if a == 'new_group_guides'}
+        self.assertEqual(rows, {'new_group_guides': 'LEFT'}, 'the modes beside their name, not over the page')
+        modes = next(n for n in page.walk() if 'new_group_guides' in n.props)
+        self.assertEqual(getattr(modes, 'ui_units_x', None), P.MODES_UNITS, 'Auto / Show at the width of their texts (expanded, each took ten units)')
+        colors = [n for n in page.walk() if set(n.props) & set(P.SEL_COLOR_PROPS)]
+        self.assertEqual([n.alignment for n in colors], ['LEFT'])
 
     def test_the_three_colors_on_one_line(self):
         P = self.prefs

@@ -7,22 +7,22 @@ rings), Scale (T: boxes), with W for world / local axes and X / Y / Z to lock an
 
   HAIRMESH_GGT_anchors   the GizmoGroup of the HairMesh tool (bl_widget): Blender's own arrows, dials and boxes on the
                          selected anchors, the pivot on the LAST one selected (gizmoTargets 4567), the axes of the
-                         world or of the curve's frame (localFrame 4546); since 3.8d also on selected items (curves,
+                         world or of the curve's frame (localFrame 6559); since 3.8d also on selected items (curves,
                          walls, groups: the anchors inside them, the pivot at the center of their box, 4568-4588; the
-                         Local axes the last item's, 4548; their own rotations turned on release, rotateOwnAxes 4551;
+                         Local axes the last item's, 4548; their own rotations turned on release, rotateOwnAxes 6564;
                          since 4.0 the converted meshes inside follow, baked on release, 4646: MeshFollow).
                          Shown only with the tool active, in Select, with something selected and a gizmo mode on.
   hairmesh.gizmo_drag    what a handle runs (target_set_operator): the modal drag. The proxy follows the mouse as
-                         TransformControls makes it (an axis line, the view plane, a ring, scaleFromScreen 4614), and the
+                         TransformControls makes it (an axis line, the view plane, a ring, scaleFromScreen 6627), and the
                          model changes through the core (edit.gizmoMatrix / gizmoStep / gizmoSlide: bit for bit with the
                          original). One undo step on release; Esc or the right button go back to where it started, as
                          the direct drag of 3.3. The live walls follow with the same debounce (live.schedule). Moving one
-                         anchor ends in the weld pie (checkWeld, 4657). The non-modal form (execute) takes the mode,
+                         anchor ends in the weld pie (checkWeld, 6670). The non-modal form (execute) takes the mode,
                          the axes, the locks, Ctrl / Shift and the proxy's change (delta / axis + angle / scale), as the
                          harness's `gizmo` op, and an optional pivot: tests and the stress test.
   hairmesh.gizmo_move / gizmo_rotate / gizmo_scale   the modes (the original's E / R / T; pressed again: off)
   hairmesh.gizmo_space / gizmo_lock                  W (world / local) and X / Y / Z of the original, as buttons
-  hairmesh.duplicate     Shift+D: duplicateSelection (9904), one undo step, the copy's anchors selected (no drag:
+  hairmesh.duplicate     Shift+D: duplicateSelection (14132), one undo step, the copy's anchors selected (no drag:
                          the original starts none)
 
 The gizmo's axes are the MODEL's (the original's x, y, z under the root): with the root unrotated, model x is
@@ -170,7 +170,7 @@ def locks(hm):
 
 
 def frame(P, tg, space):
-    """(pivot, quaternion): where the proxy sits and its axes (gizmoTargets 4563, localFrame 4546), for the targets tg"""
+    """(pivot, quaternion): where the proxy sits and its axes (gizmoTargets 6576, localFrame 6559), for the targets tg"""
     q = edit.localFrame(P, [] if tg.items else tg.anchors, tg.items) if space == 'LOCAL' else edit.Quat()
     return tg.pivot.clone(), q
 
@@ -226,7 +226,7 @@ def attach_drag_end():
 
 
 def check_attach(view, P, a):
-    """checkAttach (7406): an anchor END released near a crown connector (no other anchor near): the Attach pie.
+    """checkAttach (11016): an anchor END released near a crown connector (no other anchor near): the Attach pie.
     Shared by the drag of Select (ops_select), the gizmo and G. Returns whether the pie was asked for."""
     from ..core import crowntool as CT
     from . import ops_crown, pick
@@ -243,7 +243,7 @@ def check_attach(view, P, a):
 
 
 def check_weld(view, P, sel, a):
-    """checkWeld (4876) after a drag of one anchor (the gizmo, 4657; G, 3.8c): the weld pie when another anchor is close"""
+    """checkWeld (7340) after a drag of one anchor (the gizmo, 4657; G, 3.8c): the weld pie when another anchor is close"""
     from . import ops_weld
     b = W.findWeldCandidate(P, a, view.anchors(sel), view.project)
     if b is None:
@@ -433,7 +433,7 @@ class HAIRMESH_OT_gizmo_drag(bpy.types.Operator):
         context.area.tag_redraw()
 
     def _scale_from_screen(self, event):
-        """port of scaleFromScreen (4614), the screen in the original's convention (y down): the center (uniform):
+        """port of scaleFromScreen (6627), the screen in the original's convention (y down): the center (uniform):
         exp((dx - dy) / 250); an axis handle: its tip follows the pointer with a lever of at least 60 px"""
         st = self.st; proj = self.view.project
         mx, my = event.mouse_region_x, -event.mouse_region_y
@@ -475,10 +475,10 @@ class HAIRMESH_OT_gizmo_drag(bpy.types.Operator):
         self.follow.bake(self.P, st, self.M)                        # (4646): the matrix baked into the converted meshes
         if st.mode == 'rotate':
             edit.rotateOwnAxes(self.P, st, self.quat)               # (4653): the items' own axes turn with them
-        commit_release(context, v.root, self.P, self.follow.baked)  # commit (4656): one undo step
+        commit_release(context, v.root, self.P, self.follow.baked)  # commit (6669): one undo step
         context.area.tag_redraw()
         if st.mode == 'translate' and len(st.list) == 1 and len(self.sel.anchors) == 1:
-            self._check_weld(context)                               # checkWeld (4657): the pie when another anchor is close
+            self._check_weld(context)                               # checkWeld (6670): the pie when another anchor is close
         return {'FINISHED'}
 
     def _remember(self, context):
@@ -617,7 +617,7 @@ class HAIRMESH_OT_gizmo_space(bpy.types.Operator):
     def execute(self, context):
         hm = context.scene.hairmesh
         hm.gizmo_space = 'LOCAL' if hm.gizmo_space == 'WORLD' else 'WORLD'
-        self.report({'INFO'}, f'Gizmo: {"World" if hm.gizmo_space == "WORLD" else "Local"} axes')   # toggleGizmoSpace's toast (4521)
+        self.report({'INFO'}, f'Gizmo: {"World" if hm.gizmo_space == "WORLD" else "Local"} axes')   # toggleGizmoSpace's toast (6534)
         select.redraw(context)
         return {'FINISHED'}
 
@@ -638,7 +638,7 @@ class HAIRMESH_OT_gizmo_lock(bpy.types.Operator):
         hm = context.scene.hairmesh
         attr = f'gizmo_lock_{self.axis.lower()}'
         setattr(hm, attr, not getattr(hm, attr))
-        self.report({'INFO'}, f'Axis {self.axis} {"locked" if getattr(hm, attr) else "unlocked"}')   # setAxisLock's toast (4516)
+        self.report({'INFO'}, f'Axis {self.axis} {"locked" if getattr(hm, attr) else "unlocked"}')   # setAxisLock's toast (6529)
         select.redraw(context)
         return {'FINISHED'}
 
@@ -671,6 +671,8 @@ class HAIRMESH_OT_duplicate(bpy.types.Operator):
             self.report({'INFO'}, msg)
             return {'CANCELLED'}
         select.store(context.scene.hairmesh, Selection(items, anchors))
+        from . import tool
+        tool.show_selection(context)                                # (the copy's sheet in sight under a sub-tool's page)
         from ..core import groups as G
         G.panelsRendered(P, items[len(items) - 1] if items else None)   # onSelChange -> renderOutliner (9980)
         extra = DUP.surfDirtyCurves(P, made)
@@ -699,7 +701,7 @@ def _basis(z, origin):
 
 class HAIRMESH_GGT_anchors(bpy.types.GizmoGroup):
     """The gizmo of the HairMesh tool (WorkSpaceTool.bl_widget) on the selection (anchors, or items: 3.8d): Move arrows + the view
-    ring, Rotate rings about the three axes + the view, Scale boxes + the uniform ring (updateGizmo 4698: one per
+    ring, Rotate rings about the three axes + the view, Scale boxes + the uniform ring (updateGizmo 6711: one per
     mode). Every handle runs hairmesh.gizmo_drag with its mode and axis."""
     bl_idname = 'HAIRMESH_GGT_anchors'
     bl_label = 'HairMesh Gizmo'

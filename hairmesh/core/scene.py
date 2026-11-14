@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-"""What the original's frame loop (hair-modeler.clean.html:12055-12075) does to the scene data before the surfaces
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+"""What the original's frame loop (hair-modeler.clean.html:14799-14824) does to the scene data before the surfaces
 are rebuilt, in the same order: dirty curves are rebuilt, then the guides that need it, then the surfaces (row
 tables, phase 2 subphase b). Nothing visual.
 
@@ -10,17 +11,22 @@ draw them: `extra`), and asks which part of the model the row tables depend on (
 across an undo (live.row_tables, 16/10/2026)."""
 import json
 
-from .curves import rebuildCurve
+from .curves import rebuildCurve, syncPathCurves
 from .guides import rebuildGuide
+from .js import truthy
 from .model import CONV_KEYS
 
 
-def settle(P, extra=()):
+def settle(P, extra=(), cam_dir=None):
     """Rebuilds every dirty curve and the guides that need it: a disc when it is dirty, a hair curve changed or one of
-    its rings changed; a line when it is dirty or a curve it hits changed (the frame loop, 12067-12070). Returns
+    its rings changed; a line when it is dirty or a curve it hits changed (the frame loop, 14815-14818). Returns
     what was rebuilt: 'changed' lists the rebuilt curves' ids — those rebuilt now and `extra`, the ones rebuilt since
     the last row build by whoever drew them — the frame loop's `changed` set, which buildRowTables(changed=...)
-    takes for an incremental rebuild."""
+    takes for an incremental rebuild.
+    1.0.2: first the edge curves follow the curves they run along (syncPathCurves, 16623: before the rebuild); the flat
+    locks' ribbons last (core/rib.frameRibs, 14823); `cam_dir` is camDir() for a ribbon without its own view (a file's
+    `rib`)."""
+    syncPathCurves(P)
     n_curves = 0; seen = set(extra); changed = []
     for c in P.curves():
         if c.dirty:
@@ -31,6 +37,37 @@ def settle(P, extra=()):
     for cid in extra:
         if cid not in changed:
             changed.append(cid)
+    # 1.0.2: the flat locks (16641): every ribbon rebuilt when a curve was rebuilt (or it is dirty, or has none yet); a
+    # root that followed its anchors marks its curves dirty and waits for the next frame — run here until it settles
+    # (the frames the original would run before the next user action)
+    if any(truthy(c.rib) or c.rib_geom is not None for c in P.curves()):
+        from .rib import FOLLOW_ROUNDS, frameRibs
+        rebuilt = n_curves > 0 or bool(changed)
+        for _f in range(FOLLOW_ROUNDS):
+            if not frameRibs(P, rebuilt, cam_dir):
+                break
+            rebuilt = False
+            # (the next frame: its crown part first — crownSymSync, the edge curves, updateAttachments, 1.0.3 16622-16627:
+            # a root that followed an anchor of a symmetric crown moves its pair; fuzz case 12300009)
+            from .crowntool import frameSync
+            # (its rebuilds of the dirty curves count as the frame's, 16625 / 16627: a resampled curve is `changed`; its
+            # toasts — an anchor come off its connector — are the operator's to say, session.sync: none in a settle)
+            old = {c.id: (c.samples, c.dirty) for c in P.curves()}
+            frameSync(P)
+            for c in P.curves():
+                if c.id not in old:
+                    continue
+                was, dirty = old[c.id]
+                if c.samples is not was or (dirty and not c.dirty):
+                    rebuilt = True; n_curves += 1
+                if c.samples is not was and c.id not in seen:
+                    seen.add(c.id); changed.append(c.id)
+            for c in P.curves():
+                if c.dirty:
+                    old = c.samples
+                    rebuildCurve(P, c); n_curves += 1; rebuilt = True
+                    if c.samples is not old and c.id not in seen:
+                        seen.add(c.id); changed.append(c.id)
     # (updateAttachments: anchors on crown connectors are already in place in a saved file; ported in phase 3)
     hair_changed = any(not getattr(P.items.get(cid), 'ring', None) for cid in changed if cid in P.items)
     n_guides = 0
@@ -56,9 +93,17 @@ def guides_key(P):
     the last build — a line that lost the hits of a deleted curve (deleteItem, 771: S.surfDirty there), one switched
     or removed — reshapes the locks it crosses, before and after, whether or not their curves were resampled (lot
     ux8: a delete no longer resamples every curve, curves.sampleKey). Not its eye: no table reads a guide's
-    visibility (3.7: Convert hides the guides it converted, and that must not rebuild a lock)"""
-    return {g.id: json.dumps([g.parent, g.kind, g.hits if g.kind != 'disc' else None, g.p, g.rings, g.off], default=str, sort_keys=True)
+    visibility (3.7: Convert hides the guides it converted, and that must not rebuild a lock). A disc: how many of its
+    rings are left (disc_cut)"""
+    return {g.id: json.dumps([g.parent, g.kind, g.hits if g.kind != 'disc' else disc_cut(P, g), g.p, g.rings, g.off], default=str, sort_keys=True)
             for g in P.guides()}
+
+
+def disc_cut(P, g):
+    """ours (lot 1.2a, decision 11): how many of a disc's rings are left. deleteItem takes a disc's hits off when one
+    of its rings goes, and the hits are in neither key (they follow the rings' samples), so this count is: the locks
+    the disc guided are rebuilt (fixed seed 730002). A reopened file counts the same."""
+    return sum(1 for r in g.rings or () if r in P.items)
 
 
 def crowns_key(P):
@@ -87,12 +132,26 @@ def built_state(P):
             {gid: (k, guideCurves(P, P.items[gid])) for gid, k in guides_key(P).items()}, crowns_key(P))
 
 
+def offRing(P, cid):
+    """port of offRing (hair-modeler.clean.html:16631, the frame loop): the curve is a ring of a disc that is switched off
+    (guideOn): it shapes nothing, so its move rebuilds no lock (it used to rebuild all of them: a lag)"""
+    from .guides import guideOn
+    it = P.items.get(cid)
+    ring = getattr(it, 'ring', None)
+    if not ring:
+        return False
+    d = P.items.get(ring)
+    return d is not None and not guideOn(P, d)
+
+
 def disc_moved(P, changed, guides):
     """4.2 (the review of the lot): a disc whose ring was resampled — moved by G / R / S, the gizmo, an anchor drag,
     its radii, Reset deformations — pierces other curves now, while guides_key (no disc hits in it) stays the same:
     the curves it shaped before (`guides`, built_state's) and the ones it shapes after its rebuild (settle ran it)
-    join `changed`, as the original rebuilds every lock when a ring changed (`partial`, 12068). Returns the list."""
+    join `changed`, as the original rebuilds every lock when a ring changed (`partial`, 16634). The rings of a disc
+    switched off are left out first (offRing, 1.0.2: `eff`, 16632). Returns the list."""
     from .guides import guideCurves
+    changed = [c for c in changed if not offRing(P, c)]
     seen = set(changed); out = list(changed)
     for g in P.guides():
         if g.kind == 'disc' and any(r in seen for r in (g.rings or [])):
@@ -143,11 +202,16 @@ def inherited(sig, built, guides, P):
     from .curves import rebuild_dirty
     rebuild_dirty(P)
     try:
-        changed = signature_changes(sig, tables_signature(P), P, guides)
+        new = tables_signature(P)
+        changed = signature_changes(sig, new, P, guides)
     except Exception:                                               # a model the signature cannot read: from scratch
         return None
     if changed is None:
         return None
+    # (1.2: a curve whose shape differs reaches the locks of the Even loops / Proxy shell sets it is in, as a changed item)
+    moved = [c.id for c in P.curves() if c.id not in changed and not ((b := built.get(c.id)) is not None and same_samples(b, c.samples))]
+    if moved:
+        changed = list(changed) + [c for c in evenshell_spread(sig, new, P, list(changed) + moved) if c not in moved and c not in changed]
     gone = set(changed); now = {}
     for c in P.curves():
         b = built.get(c.id)
@@ -185,22 +249,29 @@ def conv_seen(P, g):
     return c
 
 
+def _head_place(P):
+    """ours (the review of lot 1.1e): the head's center and scale — surfaceData (2740) reads them for every wall's grid
+    (the outward side of a lock of two curves), so a state with the head elsewhere is another state of the tables'
+    readers: the undo of a Set Head builds from scratch, as Set Head itself does"""
+    return [P.S.center.toArray(), P.S.scale]
+
+
 def tables_signature(P):
     """Everything the row tables depend on BESIDES the shape of the curves (their samples, compared by value by
     same_samples), per item: the conversion settings and the head height ('global'), and under 'items' (by id) the
     curves' identity, parent (convOf) and junction flags, the walls (the locks and their Clean topology), the
-    groups' tree and conv, the guides, densities and crowns (a Cap, a Fill holes, a Profile modifier and its Extras:
+    groups' tree and conv, the guides, densities, crowns, Even loops and Proxy shells (a Cap, a Fill holes, a Profile modifier and its Extras:
     read by no table, lots 4.4 / 4.6). Two projects with
     the same signature and the same samples build the same tables, so the tables of one serve the other: an undo
     re-parses the text and the live preview keeps what still fits (signature_changes says which locks must go)."""
     from .hairmesh_io import defaultStep
-    g = json.dumps([[getattr(P.settings, k) for k in CONV_KEYS], float(P.S.headH), float(defaultStep(P))], default=str, separators=(',', ':'))   # (4.4: the project step in effect, usedStep — every lock's backfillTrunk reads it)
+    g = json.dumps([[getattr(P.settings, k) for k in CONV_KEYS], float(P.S.headH), float(defaultStep(P)), _head_place(P)], default=str, separators=(',', ':'))   # (4.4: the project step in effect, usedStep — every lock's backfillTrunk reads it; lot 1.1e: the head's center and scale, read by every grid)
     items = {}
     for it in P.items.values():
         t = it.type
         if t == 'curve':
             sig = ['c', it.id, it.parent, [(a.id, list(a.pass_) if a.pass_ else None, a.sec, (a.att.c, a.att.t) if a.att else None) for a in it.anchors],
-                   it.closed, it.ring, it.junc, it.conn, it.para]
+                   it.closed, it.ring, it.junc, it.conn, it.para, truthy(it.path)]   # (1.1a-2: c.path, read by extendAlongHost 2504 and tailMates 11658 as a truth test)
         elif t == 'surface':
             sig = ['s', it.id, it.a, it.b, it.parent, bool(it.p.get('clean'))]   # (the other p keys shape the grid, not the loops)
         elif t == 'group':
@@ -209,14 +280,54 @@ def tables_signature(P):
             sig = ['g', it.id, it.parent, kids, conv_seen(P, it), bool(it.guidesOff)]
         elif t in ('guide', 'tip', 'crown', 'cap', 'skin', 'tube', 'xmod'):
             # (a guide's or a crown's eye: read by no table, 3.7; a disc's hits are derived from the samples)
-            sig = [t, it.id, it.parent, it.visible if t not in ('guide', 'crown') else None, getattr(it, 'kind', None), getattr(it, 'hits', None) if getattr(it, 'kind', None) != 'disc' else None,
+            sig = [t, it.id, it.parent, it.visible if t not in ('guide', 'crown') else None, getattr(it, 'kind', None), getattr(it, 'hits', None) if getattr(it, 'kind', None) != 'disc' else disc_cut(P, it),
                    dict(it.p) if getattr(it, 'p', None) and t != 'crown' else None,   # (4.3: a crown's p — Rings, Whorl, the symmetry — is read by crownData only, never by a table)
                    getattr(it, 'rings', None), getattr(it, 'off', None), {str(k): list(w) for k, w in it.mask.items()} if t == 'tip' and it.mask else getattr(it, 'mask', None),
                    getattr(it, 'part', None), getattr(it, 'low', None), getattr(it, 'src', None), getattr(it, 'tube', None)]
+        elif t in ('even', 'shell'):
+            sig = _evenshell_sig(it)
         else:
             continue
         items[it.id] = json.dumps(sig, default=str, separators=(',', ':'))
     return {'global': g, 'items': items}
+
+
+def _evenshell_sig(it):
+    """(1.2) what shellSets / shellSetsBuild read of an Even loops / Proxy shell item, 3008-3352 — its place in the tree
+    (shellsOf), the eye, p (str; eq, fall), the painted masks per curve, and of a shell: baked, the locks taken out
+    (off), the Brush deformation with its version v — v is written by the build itself when None"""
+    t = it.type
+    d = it.def_ if t == 'shell' else None
+    return [t, it.id, it.parent, it.visible, dict(it.p) if it.p else None,
+            {str(k): list(w) for k, w in it.mask.items()} if it.mask is not None else None,
+            bool(it.baked) if t == 'shell' else None, list(it.off) if t == 'shell' and it.off is not None else None,
+            [d.ns, d.na, list(d.d), d.v] if d is not None else None]
+
+
+def spread_changed(P, changed):
+    """(1.2, the review of phase 2, finding 1) the curves `changed` since the last row build (settle's 'changed', the
+    curves touched) spread over the Even loops / Proxy shell sets in effect (evenshell_spread): the incremental build
+    floods its rebuild through shared anchors only (buildRowTables' dirty), but a set reads every lock of its group and
+    a shell's rings reach locks of any group — without this an anchor dragged on a set's carrier left the other locks
+    of the set with the tables of before, which Convert then read. Cheap when no such item is in effect."""
+    if not changed:
+        return changed
+    items = {it.id: json.dumps(_evenshell_sig(it), default=str, separators=(',', ':')) for it in list(P.shells()) + list(P.evens())}
+    if not items:
+        return changed
+    sig = {'items': items}
+    changed = list(changed)
+    if any((c := P.items.get(i)) is None or c.type != 'curve' for i in changed):
+        # (a curve gone since — deleted, split, merged —: nothing says which set it was in; every Even loops group in
+        # effect is rebuilt, as a shell in effect rebuilds every lock)
+        from .groups import curvesIn
+        have = set(changed)
+        for s in items.values():
+            d = json.loads(s)
+            g = P.items.get(d[2])
+            if _evenshell_on(d) and g is not None and g.type == 'group':
+                changed += [c.id for c in curvesIn(P, g) if c.id not in have and not have.add(c.id)]
+    return evenshell_spread(sig, sig, P, changed)
 
 
 def _sig_curves_under(items, gid):
@@ -240,8 +351,8 @@ def _sig_curves_under(items, gid):
 def signature_changes(old, new, P, old_guides=None):
     """The curves whose locks must be rebuilt for the tables built under signature `old` to serve the model P (of
     signature `new`): the curves that differ, the two curves of a wall that differs, the curves inside a group that
-    differs, the curves a guide that differs shapes, the curves under the group of a crown or a Density that differs
-    (a Cap, a Fill holes, a Profile modifier or an Extra: none). None when the tables cannot be kept at all: the
+    differs, the curves a guide that differs shapes, the curves under the group of a crown, a Density or an Even loops
+    item that differs, every curve for a Proxy shell that differs and is or was in effect (a Cap, a Fill holes, a Profile modifier or an Extra: none). None when the tables cannot be kept at all: the
     settings, the head height or the project step differ, or a group or guide that differs is gone and nothing
     says which locks it shaped.
 
@@ -318,6 +429,81 @@ def signature_changes(old, new, P, old_guides=None):
                     g = P.items.get(gid)
                     if g is not None and g.type == 'group':
                         add([c.id for c in curvesIn(P, g)])
+        elif kind in ('even', 'shell'):
+            # (1.2) an item no table reads then nor now — hidden, not painted, a shell not converted (shellSetsBuild 3058-3060)
+            # — rebuilds nothing; an Even loops item shapes the locks of its group and sub-groups only (shellsOf, the take
+            # of 3332): the same curves as a Density; a Proxy shell's rings are taken by every lock running through three
+            # of them, OF ANY GROUP (ringIn 3315), and each ring's gap gw is the longest over all those locks: every lock
+            if not any(sig and _evenshell_on(json.loads(sig)) for sig in (a, b)):
+                continue
+            if kind == 'shell':
+                add([c.id for c in P.curves()])
+                continue
+            for sig in (a, b):
+                if sig:
+                    gid = json.loads(sig)[2]
+                    add([c for c in _sig_curves_under(old['items'], gid) if c in P.items])
+                    g = P.items.get(gid)
+                    if g is not None and g.type == 'group':
+                        add([c.id for c in curvesIn(P, g)])
         else:
             return None
+    return evenshell_spread(old, new, P, out)
+
+
+def evenshell_spread(old, new, P, ids):
+    """(1.2) the curves `ids` to rebuild, spread over what the Even loops / Proxy shell sets carry from one lock to
+    another beyond the shared anchors (buildRowTables' flood): a set reads every lock of its item's group (the carrier
+    is the longest, the axis the mean of their spines, the Density, the walls and the group settings of each — gl,
+    convOf, lockTip) and a Proxy shell's rings reach every lock running through them, of any group (ringIn 3315, the
+    gap gw the longest over all of them). So with a shell in effect then or now anything that changes rebuilds every
+    lock, and with an Even loops item a change touching its group's locks (or the ones welded to them) rebuilds the
+    whole group — the tables kept are the ones a build from scratch makes (an undo: the original rebuilds everything)."""
+    if not ids:
+        return ids
+    on = [json.loads(s) for sg in (old, new) for s in sg['items'].values() if s.startswith('["even"') or s.startswith('["shell"')]
+    on = [d for d in on if _evenshell_on(d)]
+    if not on:
+        return ids
+    if any(d[0] == 'shell' for d in on):
+        return [c.id for c in P.curves()]
+    from .groups import curvesIn
+    from .rowhist import _reach
+    out = list(ids); have = set(out); grown = True
+    while grown:                                                    # (a group rebuilt may touch another Even loops group)
+        grown = False
+        for d in on:
+            g = P.items.get(d[2])
+            if g is None or g.type != 'group':
+                continue
+            mine = list(curvesIn(P, g))
+            # (finding e of the review of phase 2: evenParts reads the samples of every curve of the mask, also of one moved
+            # out of the group after it was painted — its shape cuts the parts)
+            painted = [c for c in (P.items.get(int(i)) for i in (d[5] or {})) if c is not None and c.type == 'curve']
+            if have & _reach(P, mine + painted):
+                for c in mine:
+                    if c.id not in have:
+                        have.add(c.id); out.append(c.id); grown = True
     return out
+
+
+def evenshell_touch(P, k):
+    """(1.2) the curves to rebuild when a Density, Even loops or Proxy shell item `k` is shown, hidden or deleted (touchExtra
+    12077 / deleteItem 876 of 1.0.3: S.surfDirty, the original builds every lock again): the locks of its group, or —
+    a Proxy shell that builds a set when shown (converted, a mask: shellSetsBuild 3058) — every lock: its rings are
+    taken by locks of any group (ringIn 3315) and their gap is the longest over all of them; then spread over what the
+    sets in effect now carry (evenshell_spread: with another shell in effect, every lock — a Density switched under it
+    changes the gap of its rings for every lock taking them)"""
+    from .groups import curvesIn
+    if k.type == 'shell' and k.mask is not None and truthy(getattr(k, 'baked', None)):
+        return [c.id for c in P.curves()]
+    g = P.items.get(k.parent)
+    ids = [c.id for c in curvesIn(P, g)] if g is not None and g.type == 'group' else []
+    sig = tables_signature(P)
+    return evenshell_spread(sig, sig, P, ids)
+
+
+def _evenshell_on(sig):
+    """an Even loops / Proxy shell signature (tables_signature) that shellSetsBuild builds a set from (3058-3060): visible,
+    painted and — a shell — converted"""
+    return sig[3] is not False and sig[5] is not None and (sig[0] == 'even' or bool(sig[6]))

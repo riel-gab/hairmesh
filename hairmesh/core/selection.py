@@ -1,15 +1,20 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """The selection of the original (S.sel: selected items, S.asel: selected anchors; hair-modeler.clean.html:696) and
 what a click, a box or a paint stroke does to it (the pointer handlers, 5827-5838, 5856-5866, 6049-6053, and
-selectItem, 7844). Pure: ids only, so the Blender side can keep it on the Scene (undo, saved with the .blend) and
+selectItem, 11472). Pure: ids only, so the Blender side can keep it on the Scene (undo, saved with the .blend) and
 every rule is testable without a viewport.
 
 The two lists exclude each other, as in the original: picking an anchor clears the items, picking an item clears
 the anchors. `items` keeps insertion order (a Set in the original); `anchors` is ordered and its LAST entry is the
-anchor the panel shows (S.asel[S.asel.length - 1]), drawn in the 'last' colour."""
+anchor the panel shows (S.asel[S.asel.length - 1]), drawn in the 'last' colour.
+
+The curves of the selection's locks (lockCurvesFrom, 1.0.2: the pie's "Select all curves of the lock") read the
+project too: module functions below the class."""
 from dataclasses import dataclass, field
+
+from .js import truthy
 
 
 @dataclass(eq=False)
@@ -38,7 +43,7 @@ class Selection:
         return aid in self.anchors
 
     def select_item(self, iid, add=False):
-        """port of selectItem (7844): `add` (Shift) toggles the item, else it is the only selection; the anchors are
+        """port of selectItem (11472): `add` (Shift) toggles the item, else it is the only selection; the anchors are
         cleared. A re-selected item moves to the end (the last selected is the one the panel shows)."""
         self.anchors = []
         if not add:
@@ -107,3 +112,77 @@ class Selection:
 
     def copy(self):
         return Selection(list(self.items), list(self.anchors))
+
+
+# ======================= the curves of the selection's locks (10173-10205, 1.0.2) =======================
+
+def lockCurvesFrom(P, from_ids, anchor_ids=()):
+    """port of lockCurvesFrom (hair-modeler.clean.html:11751): the curves of the locks the given items and anchors
+    belong to — anchors (their curves, not a disc's ring), curves, walls (both curves), profile modifiers (the curve),
+    their extras (through the modifier) and crowns (the parting line, the lower connector and the crown curves); a
+    lock = curves joined by walls (as scissors.lockOf). An edge curve (c.path) counts with the curves it runs along and
+    is given as them. Curves in the order the original's Set gathers them."""
+    from .crown import crownCurves
+    seed = {}
+    for aid in anchor_ids:
+        for c in P.curves():                                        # curvesWith(a), by the anchor's id (S.asel holds ids here)
+            if any(x.id == aid for x in c.anchors) and not c.ring:
+                seed[c.id] = None
+    for iid in from_ids:
+        it = P.items.get(iid)
+        if it is None:
+            continue
+        if it.type == 'xmod' and it.tube is not None:
+            it = P.items.get(it.tube)
+        if it is None:
+            continue
+        if it.type == 'curve' and not it.ring:
+            seed[it.id] = None
+        elif it.type == 'surface':
+            seed[it.a] = None; seed[it.b] = None
+        elif it.type == 'tube':
+            seed[it.src] = None
+        elif it.type == 'crown':
+            for x in [it.part, it.low, *[r['c'].id for r in crownCurves(P, it)]]:
+                seed[x] = None
+    if not seed:
+        return []
+    # (walls on edge curves: a curve counts with the edge curves running along it, an edge curve as the curves under it)
+    for c in P.curves():
+        if truthy(c.path) and any(p[0] in seed for p in c.path):       # (c.path: [] is true in JS, as rows.py reads it)
+            seed[c.id] = None
+    ids = dict(seed); grew = True
+    while grew:
+        grew = False
+        for s in P.surfaces():
+            if (s.a in ids) != (s.b in ids):
+                ids.setdefault(s.a, None); ids.setdefault(s.b, None); grew = True
+    for iid in list(ids):
+        c = P.items.get(iid)
+        if c is not None and truthy(getattr(c, 'path', None)):
+            for p in c.path:
+                ids.setdefault(p[0], None)
+            ids.pop(iid, None)
+    return [c for c in (P.items.get(i) for i in ids) if c is not None and c.type == 'curve' and not truthy(c.path)]
+
+
+def lockCurvesOfSelection(P, sel):
+    # port of lockCurvesOfSelection (hair-modeler.clean.html:11750): lockCurvesFrom(S.sel, S.asel)
+    return lockCurvesFrom(P, sel.items, sel.anchors)
+
+
+def lockSelectItem(P, sel):
+    """the pie's item of lockSelectItem (hair-modeler.clean.html:11777): how many curves it would select, None when
+    nothing of a lock is selected (no item). Service curves (junc) count, as in the original."""
+    n = len(lockCurvesOfSelection(P, sel))
+    return n if n else None
+
+
+def selectLockCurves(P, sel):
+    """port of selectLockCurves (hair-modeler.clean.html:11771): (the new selection — the curves of the locks, no
+    anchors —, the toast), or (None, None) when there is nothing to select. No undo step of its own (no commit)."""
+    cs = lockCurvesOfSelection(P, sel)
+    if not cs:
+        return None, None
+    n = len(cs)
+    return Selection([c.id for c in cs], []), f'{n} curve{"" if n == 1 else "s"} of the lock selected'

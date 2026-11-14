@@ -35,8 +35,9 @@ GLOBAL_ITEMS = (
 TOOL_ITEMS = (
     # the sub-tool keys are one operator each (hairmesh.subtool_<name>), so Preferences > Keymap names them apart.
     # 1 / 2 / 3 (15/10/2026) cover Blender's "show / hide collection" while the tool is active; pressed again on the
-    # sub-tool they already show they do nothing (pass_through False), so the collections never toggle. W is free: the
-    # Draw key from 15/10/2026 (D before), it fell through to Blender's W (the select-tool cycle) when pressed in Draw.
+    # sub-tool they already show they do nothing (pass_through False), so the collections never toggle. W was the Draw key
+    # from 15/10/2026 (D before) until 2 took it; since lot 1.2b it is the Move gizmo's (below), over Blender's W (the
+    # select-tool cycle, which would take the user out of the tool).
     ('hairmesh.subtool_select', {'type': 'ONE', 'value': 'PRESS'}, {'pass_through': False}),   # 1: select
     ('hairmesh.subtool_draw', {'type': 'TWO', 'value': 'PRESS'}, {'pass_through': False}),     # 2: draw a curve (KeyC in the original; C is the Circle Select below)
     ('hairmesh.subtool_scissors', {'type': 'THREE', 'value': 'PRESS'}, {'pass_through': False}),   # 3: scissors
@@ -49,6 +50,7 @@ TOOL_ITEMS = (
     ('hairmesh.draw_curve', {'type': 'LEFTMOUSE', 'value': 'PRESS'}, {}),                      # LMB in the Draw sub-tool: place an anchor (passes through otherwise)
     ('hairmesh.scissors', {'type': 'LEFTMOUSE', 'value': 'PRESS', 'any': True}, {}),           # LMB in Scissors > Curve: drag the cut line (a click picks a curve; passes through otherwise)
     ('hairmesh.wall_cut', {'type': 'LEFTMOUSE', 'value': 'PRESS', 'any': True}, {}),           # LMB in Scissors > NURBS Surface: pick the wall and cut it (passes through otherwise)
+    ('hairmesh.split_ends', {'type': 'LEFTMOUSE', 'value': 'PRESS', 'any': True}, {}),         # LMB in Scissors > Split Ends (1.0.2): the curve under the cursor splits from there to its tip (passes through otherwise)
     ('hairmesh.guide_tool', {'type': 'LEFTMOUSE', 'value': 'PRESS', 'any': True}, {}),         # LMB in Guides > Line / NURBS Disc (4.2): the line, the disc's click; a click on a guide picks it (passes through otherwise)
     ('hairmesh.guide_pencil', {'type': 'LEFTMOUSE', 'value': 'PRESS', 'any': True}, {}),       # LMB in Guides > Pencil (4.2): draw the loop, a stroke per press (passes through otherwise)
     ('hairmesh.edge_click', {'type': 'LEFTMOUSE', 'value': 'PRESS', 'any': True}, {}),         # LMB in Edges (4.9): an edge, twice its loop, Shift adds, Ctrl takes off, Ctrl + drag a box, Ctrl + Shift the path (passes through otherwise)
@@ -57,6 +59,7 @@ TOOL_ITEMS = (
     ('hairmesh.select', {'type': 'LEFTMOUSE', 'value': 'PRESS', 'any': True}, {}),             # LMB in Select (and on an anchor in Crown, 4.3): pick / drag anchors (Shift adds, Ctrl toggles), pick curves, Ctrl + drag paints curves, drag in the empty boxes anchors (Alt passes through: Blender's own)
     ('hairmesh.crown_tool', {'type': 'LEFTMOUSE', 'value': 'PRESS', 'any': True}, {}),         # LMB in Crown (4.3; an anchor under the cursor passes on to Select's): a click on the head puts a crown's whorl there (passes through otherwise)
     ('hairmesh.insert_anchor', {'type': 'RIGHTMOUSE', 'value': 'PRESS'}, {}),                 # RMB on a curve: insert an anchor and drag it (passes through elsewhere: Blender's context menu)
+    ('hairmesh.anchor_line', {'type': 'RIGHTMOUSE', 'value': 'PRESS'}, {}),                   # RMB drag from empty space (1.0.2, 7583): anchors where the line crosses curves; a click opens the context menu on the release (passes through on a curve, in Draw and the Scissors)
     ('hairmesh.smooth_drag', {'type': 'B', 'value': 'PRESS'}, {}),                             # B held + LMB drag: smoothness of the selected anchors (B is taken from Blender's box select while the tool is active)
     ('hairmesh.delete_selected', {'type': 'BACK_SPACE', 'value': 'PRESS'}, {}),               # Backspace: delete the selected anchors, else the selected items
     ('hairmesh.delete_ask', {'type': 'X', 'value': 'PRESS'}, {}),                              # X (4.4, the owner's request): the same after a short question "Delete N items?" — contextual: with nothing of the HairMesh selected, Blender's X
@@ -73,17 +76,21 @@ TOOL_ITEMS = (
     ('hairmesh.grab_anchors', {'type': 'G', 'value': 'PRESS'}, {}),                          # G: HairMesh Move Selection (else Blender's G)
     ('hairmesh.rotate_anchors', {'type': 'R', 'value': 'PRESS'}, {}),                        # R: HairMesh Rotate Selection (else Blender's R)
     ('hairmesh.scale_anchors', {'type': 'S', 'value': 'PRESS'}, {}),                         # S: HairMesh Scale Selection (else Blender's S)
-    ('hairmesh.gizmo_move', {'type': 'E', 'value': 'PRESS'}, {}),                             # E: the Move gizmo on the selection (again: off)
+    # lot 1.2b (ours): E extrudes the curve from the selected end anchors (the G modal moves the new anchors); the key is
+    # ours with the tool in Select and a project, whatever is selected (a selection that cannot grow says why). The Move
+    # gizmo, on E since 3.8b, went to W (Move in Maya, Unity and Unreal; next to E)
+    ('hairmesh.extrude_anchor', {'type': 'E', 'value': 'PRESS'}, {}),                         # E: HairMesh Extrude Curve (else Blender's E)
+    ('hairmesh.gizmo_move', {'type': 'W', 'value': 'PRESS'}, {}),                             # W: the Move gizmo on the selection (again: off)
     ('hairmesh.gizmo_rotate', {'type': 'NONE', 'value': 'PRESS'}, {}),                        # (no key yet: R is Blender's rotate)
     ('hairmesh.gizmo_scale', {'type': 'NONE', 'value': 'PRESS'}, {}),                         # (no key yet: T is Blender's toolbar)
     ('hairmesh.duplicate', {'type': 'D', 'value': 'PRESS', 'shift': True}, {}),               # Shift+D: duplicate the selection (the original's D; Blender's Shift+D while the tool is off)
     # 4.0 (D4.3): the original's F and P / Shift+P, contextual like G / R / S: their poll fails without something of the
     # HairMesh selected that serves (P: the last selected a group; Shift+P: an item inside a group), and the key goes on
     # (F: the Fluent pie of the 3D View Generic keymap; P: blocksurfaces's Bs_parent_Col_Objects; Shift+P: RetopoFlow)
-    ('hairmesh.frame_selection', {'type': 'F', 'value': 'PRESS'}, {}),                        # F: frame the HairMesh selection (frameAll, 4390)
-    ('hairmesh.parent_to_last', {'type': 'P', 'value': 'PRESS'}, {}),                         # P: into the group selected last (parentSelection, 8179)
-    ('hairmesh.unparent', {'type': 'P', 'value': 'PRESS', 'shift': True}, {}),                # Shift+P: out of the groups (unparentSelection, 8187)
-    ('wm.call_menu_pie', {'type': 'RIGHTMOUSE', 'value': 'PRESS', 'shift': True}, {'name': 'HAIRMESH_MT_pie'}),   # Shift+RMB: the context pie ("HairMesh Pie")
+    ('hairmesh.frame_selection', {'type': 'F', 'value': 'PRESS'}, {}),                        # F: frame the HairMesh selection (frameAll, 6403)
+    ('hairmesh.parent_to_last', {'type': 'P', 'value': 'PRESS'}, {}),                         # P: into the group selected last (parentSelection, 12058)
+    ('hairmesh.unparent', {'type': 'P', 'value': 'PRESS', 'shift': True}, {}),                # Shift+P: out of the groups (unparentSelection, 12066)
+    ('hairmesh.pie', {'type': 'RIGHTMOUSE', 'value': 'PRESS', 'shift': True}, {}),               # Shift+RMB: the context pie ("HairMesh Pie"; 1.1f: our operator keeps the place it opened, for Detect Fill Outline Here)
     ('wm.call_panel', {'type': 'D', 'value': 'PRESS'}, {'name': 'HAIRMESH_PT_popup', 'keep_open': True}),   # D: the HairMesh Menu pop-up (the key HardOps / BoxCutter open their main menu with; "HairMesh Menu" in the keymap list)
     ('wm.call_menu_pie', {'type': 'Q', 'value': 'PRESS'}, {'name': 'HAIRMESH_MT_subtools'}),  # Q: the sub-tool pie (over HardOps's Q, which lives in the 3D View keymap: the tool keymap comes first)
     ('wm.call_panel', {'type': 'O', 'value': 'PRESS'}, {'name': 'HAIRMESH_PT_outliner', 'keep_open': True}),   # O: the HairMesh Outliner pop-up (U1, 15/10/2026; over Blender's proportional-editing toggle while the tool is active; "HairMesh Outliner" in the keymap list)
@@ -104,7 +111,7 @@ TOOL_ITEMS = TOOL_ITEMS + tuple((f'hairmesh.subtool_{t[0].lower()}', {'type': t[
 # DOUBLE_CLICK item of another add-on in "Object Mode" (DECALmachine's Select Decals took the loop of the Edges). The tool
 # keymap comes before "Object Mode" (ed_default_handlers before view3d_main_region_init), so these win; each passes through
 # in the other sub-tools. Select has none: what select_curve_anchors leaves goes on to the add-on, as ever.
-DOUBLE_PRESS = ('hairmesh.draw_curve', 'hairmesh.scissors', 'hairmesh.wall_cut', 'hairmesh.guide_tool', 'hairmesh.guide_pencil', 'hairmesh.edge_click', 'hairmesh.crown_tool')
+DOUBLE_PRESS = ('hairmesh.draw_curve', 'hairmesh.scissors', 'hairmesh.wall_cut', 'hairmesh.split_ends', 'hairmesh.guide_tool', 'hairmesh.guide_pencil', 'hairmesh.edge_click', 'hairmesh.crown_tool')
 TOOL_ITEMS = TOOL_ITEMS + tuple((i, {**e, 'value': 'DOUBLE_CLICK'}, p) for i, e, p in TOOL_ITEMS if i in DOUBLE_PRESS and e['value'] == 'PRESS')
 GENERIC_KM = '3D View Generic'
 GENERIC_ITEMS = (

@@ -7,7 +7,7 @@ import bpy
 from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
-from ..core import edit
+from ..core import edit, groups
 from ..core.hairmesh_io import ProjectFormatError, write_project
 from ..core.headobj import obj_text
 from . import owner, session, tool
@@ -35,7 +35,11 @@ def head_obj_text(root, ob, depsgraph):
 
 def set_head_object(context, root, proj, ob):
     """Makes `ob` the project's head: its geometry goes into the model (setHead, 3217) and the head datablock, the
-    object is tagged, the previous head object untagged. The object itself is left where and how it is."""
+    object is tagged, the previous head object untagged. The object itself is left where it is; on screen it follows
+    the head's eye, which setHead turns on (lot 1.1e: with the eye off, the head object was left out of the viewport),
+    and a previous head the eye had taken off the screen comes back (it is no longer the head: no eye hides it)."""
+    from .ops_outliner import head_eye
+    eye_off = proj.head is not None and not proj.head.visible
     text = head_obj_text(root, ob, context.evaluated_depsgraph_get())
     head = edit.set_head(proj, ob.name + '.obj', {'ext': 'obj', 'text': text})
     prev = session.head_object(root)
@@ -43,11 +47,14 @@ def set_head_object(context, root, proj, ob):
         for k in ('hairmesh_type', 'hairmesh_id'):
             if k in prev:
                 del prev[k]
+        if eye_off and prev.hide_viewport:
+            prev.hide_viewport = False
     ob['hairmesh_type'] = 'head'
     ob['hairmesh_id'] = head.id
     root['hairmesh_head'] = ob.name
     root['hairmesh_model_scale'] = proj.S.scale
     root.empty_display_size = proj.S.scale * 0.25
+    head_eye(root, proj)
     session.save_project(root, proj, head=True)
     return head
 
@@ -81,7 +88,9 @@ class HAIRMESH_OT_new_project(bpy.types.Operator):
         name = self.name.strip() or 'hair-project'
         if name.lower().endswith('.hairmesh'):
             name = name[:-len('.hairmesh')]
-        ob = context.active_object
+        from . import live
+        live.drop_orphans()                                         # (the previews Blender's delete left: the natural step after it, inside this undo step — the review of lot 1.2c; before the active object is read, which may be one of them)
+        ob = context.view_layer.objects.active
         head_ob = ob if self.use_head and ob is not None and ob.type == 'MESH' else None
         proj = edit.new_project(name + '.hairmesh')
         root, root_col = make_root(context, name, proj, scale=1.0)
@@ -125,12 +134,12 @@ class HAIRMESH_OT_set_head(bpy.types.Operator):
         from . import live
         live.invalidate_rows(root)                                  # S.headH is the default loop step: every lock from scratch
         live.update(context, root)
-        self.report({'INFO'}, f'HairMesh: head "{ob.name}" (id {head.id}), height {proj.S.headH:g}; loop step {proj.S.headH / 24:g} by default')
+        self.report({'INFO'}, f'HairMesh: head "{ob.name}" (id {head.id}), height {proj.S.headH:g}; loop step {groups.projectStep(proj):g}')
         return {'FINISHED'}
 
 
 def write_file(op, root, path):
-    """Writes the project of `root` to `path` as the original's Save does (projectData 10050), keeping the thumbnail
+    """Writes the project of `root` to `path` as the original's Save does (projectData 14284), keeping the thumbnail
     and the reference images of the file it was opened from / last saved to (the port never holds them: in the example
     10 MB of references a plain write would lose); `path` becomes the remembered one. Returns the FINISHED / CANCELLED
     set, reporting through `op`."""
@@ -234,6 +243,6 @@ def menu_func_export(self, context):
 
 
 def menu_func_object(self, context):
-    """Object > HairMesh: the HairMesh Menu as a submenu (everything, contextual; tool.menu_items)"""
+    """Object > HairMesh: the actions as a submenu (tool.menu_items: the sub-tools, Convert, the views, Visibility, the D and the Outliner)"""
     self.layout.separator()
     self.layout.menu('HAIRMESH_MT_menu', text='HairMesh', icon='OUTLINER_OB_EMPTY')

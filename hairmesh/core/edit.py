@@ -1,20 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Editing the model the way the original's tools do (phase 3): creating items, curves, anchors and the head.
 
 Pure Python, no bpy. Ids come from `Project.uid` (the original's UID) and names from `nextNumber` / `counters`
 exactly as in the original, so a scene built by the same actions on both sides gets the same ids and names
 (the parity scripts of the harness, `--script`, depend on it).
 """
+import builtins
 import math
 import re
 from dataclasses import dataclass, field
 
 from . import model as M
 from .curves import bez, curveHandles, curveSegs, fitHandles, markAnchorsDirty
-from .headobj import fit_to_box, float32, head_geometry
-from .js import at, clamp, index_of, js_max, js_min, js_round
+from .headobj import fit_to_box, float32, head_geometry, head_look
+from .js import at, clamp, index_of, js_max, js_min, js_round, truthy
 from .mat4 import Mat4, Quat, applyMatrix3, applyMatrix4, applyQuaternion, mat3_from_mat4
 from .raycast import FrontSide, Plane, Raycaster, TriMesh
 from .rowbase import groupConv
@@ -22,12 +23,13 @@ from .vec3 import V3, Vec3
 
 # port of TYPE_NAMES (hair-modeler.clean.html:709)
 TYPE_NAMES = {'group': 'Group', 'curve': 'Curve', 'surface': 'Surface', 'mesh': 'Mesh', 'guide': 'Guide', 'tube': 'Modifier', 'xmod': 'Extra',
-              'crown': 'Crown', 'cap': 'Cap', 'imesh': 'Imported mesh', 'skin': 'Fill holes', 'tip': 'Density'}
-# port of counters (708): the initial object of a fresh scene (no 'tip': nextNumber adds it on the first Density item)
+              'crown': 'Crown', 'cap': 'Cap', 'imesh': 'Imported mesh', 'skin': 'Fill holes', 'tip': 'Density',
+              'shell': 'Proxy shell', 'even': 'Even loops'}             # (1.0.3, 813 there)
+# port of counters (708): the initial object of a fresh scene (no 'tip', 'shell', 'even': nextNumber adds them on the first such item)
 COUNTERS0 = {'group': 0, 'curve': 0, 'surface': 0, 'mesh': 0, 'guide': 0, 'tube': 0, 'xmod': 0, 'crown': 0, 'cap': 0, 'imesh': 0, 'skin': 0}
 
 _CLASSES = {'group': M.Group, 'curve': M.Curve, 'surface': M.Surface, 'guide': M.Guide, 'crown': M.Crown, 'cap': M.Cap, 'skin': M.Skin,
-            'tip': M.Tip, 'tube': M.Tube, 'xmod': M.XMod, 'imesh': M.IMesh, 'mesh': M.MeshItem}
+            'tip': M.Tip, 'even': M.Even, 'shell': M.Shell, 'tube': M.Tube, 'xmod': M.XMod, 'imesh': M.IMesh, 'mesh': M.MeshItem}
 
 
 def new_project(name='hair-project.hairmesh'):
@@ -68,8 +70,17 @@ def addItem(P, type_, parent, props=None):
 
 
 def makeCurve(P, parent):
-    # port of makeCurve (hair-modeler.clean.html:1025), minus the line object
+    # port of makeCurve (hair-modeler.clean.html:1161), minus the line object
     return addItem(P, 'curve', parent, {'anchors': [], 'ovr': {}, 'samples': [], 'dirty': True})
+
+
+NEW_CURVE = {'round': 0.6, 'fair': 0.5}                             # port of NEW_CURVE (hair-modeler.clean.html:6788)
+
+
+def newCurveLook(c):
+    # port of newCurveLook (hair-modeler.clean.html:6789): a new curve's Roundness 60%, Smoothing 50%
+    c.round = NEW_CURVE['round']; c.fair = NEW_CURVE['fair']; c.fair_cache = None; c.dirty = True
+    return c
 
 
 def newAnchor(P, pos):
@@ -100,31 +111,41 @@ def tintOf(P, it):
     return c
 
 
+HEAD_STEP = 0.02876                                                 # port of HEAD_STEP (hair-modeler.clean.html:4774): loop step / head height of the Wolfcut example
+
+
 def set_head(P, name, src):
-    """port of makeHeadItem + setHead (hair-modeler.clean.html:3210-3227), the data part: the head gets the next id,
+    """port of makeHeadItem + setHead (hair-modeler.clean.html:3804-3817), the data part: the head gets the next id,
     `src` is the file itself ({ ext, text } or { ext, b64 }) and the scene scale comes from its bounding box
-    (fitToBox, 4184), which also makes every curve and surface dirty."""
+    (fitToBox, 6288), which also makes every curve and surface dirty. An empty scene (nothing but maybe an old head)
+    takes the loop step from the head's height (S.step = S.headH * HEAD_STEP); a scene with something in it keeps its
+    step."""
     geo = head_geometry(M.Head(id=0, name=name, src=src))
     if geo is None or not geo[0]:
         raise ValueError('No geometry in the file')                 # setHead: toast('No geometry in the file')
-    head = M.Head(id=P.uid, name=name, visible=True, showWire=False, src=src); P.uid += 1
+    empty = not any(it.type != 'head' for it in P.items.values())   # (the port keeps the head out of P.items)
+    head = M.Head(id=P.uid, name=name, visible=True, showWire=False, src=src, look=head_look(None, src)); P.uid += 1   # 1.0.2: importLook + makeHeadItem (no texture files here)
     P.head = head
     P.S = fit_to_box(geo[0])
     for c in P.curves():
         c.dirty = True
     for s in P.surfaces():
         s.dirty = True
+    if empty:
+        P.settings.step = P.S.headH * HEAD_STEP                     # 1.0.2 (setHead, 3814)
     P.gen += 1
     return head
 
 
-# ======================= Deleting (760) =======================
+# ======================= Deleting (844, 1.0.2) =======================
 
-def deleteItem(P, iid):
-    """port of deleteItem (hair-modeler.clean.html:760), the data part: an item and what depends on it (a group's
+def deleteItem(P, iid, keep=()):
+    """port of deleteItem (hair-modeler.clean.html:868), the data part: an item and what depends on it (a group's
     children, a curve's walls / tubes / crowns / guide hits, a tube's extras, a guide's rings), out of its parent's
     list, the roots and the ticked groups. Selection state (S.sel, S.asel) lives on the Blender side: callers drop
-    the ids themselves. Display objects do not exist here."""
+    the ids themselves. Display objects do not exist here.
+    `keep` (ours, lot 1.1c): the ids of service curves a deleted wall must not take along — the caller is about to give
+    them new walls (cutWall); the original has no such argument."""
     it = P.items.get(iid)
     if it is None:
         return
@@ -159,6 +180,15 @@ def deleteItem(P, iid):
                 g.hits = [h for h in g.hits if h.get('c') != iid]; g.dirty = True
                 if len(g.hits) < 2:
                     deleteItem(P, g.id)
+    if it.type == 'curve' and it.ring is not None:
+        # ours (lot 1.2a, the owner's decision 11): a disc that loses a ring guides nothing from now on. The original
+        # leaves the disc as it was (rebuildDisc 1282 returns early with fewer than two rings, its old hits stay) until a
+        # Ctrl+Z or a reopened file, whose hits are [] (projectData writes a disc's hits empty): the same result, at once.
+        # Its hitPts too (the cut lines the overlay draws, the curves guideCurves names): empty, it pierces nothing — no
+        # cut line, as in the reopened file, and no lock to rebuild for it (None would name every hair curve)
+        d = P.items.get(it.ring)
+        if d is not None and d.type == 'guide' and d.kind == 'disc' and (d.hits or d.hitPts):
+            d.hits = []; d.hitPts = {}; d.dirty = True
     if it.type == 'guide' and it.rings:
         rs = it.rings; it.rings = []
         for r in rs:
@@ -166,7 +196,7 @@ def deleteItem(P, iid):
     arr = P.childrenOf(it.parent)
     if iid in arr:
         arr.remove(iid)                                             # indexOf + splice: the first occurrence
-    del P.items[iid]
+    P.items.pop(iid, None)                                          # items.delete: a no-op when the cascade of 875 already took it
     if iid in P.settings.convChecked:
         P.settings.convChecked.remove(iid)
     if it.type == 'curve':
@@ -192,7 +222,32 @@ def deleteItem(P, iid):
                 if oid in P.items:
                     P.items[oid].visible = True
             P.conv = None
+    # 1.0.2 (deleteItem, 899): a wall made by Fill hole / Unite goes with its service curves (HC / JC, junc) — once no
+    # other wall uses them (not while an edge curve runs along it)
+    if it.type == 'surface':
+        for cid in (it.a, it.b):
+            c = P.items.get(cid)
+            if c is not None and c.junc and cid not in keep and not any(s.a == cid or s.b == cid for s in P.surfaces()) and not pathUsers(P, cid):
+                deleteItem(P, cid)
     P.gen += 1; P.rev += 1
+
+
+def pathUsers(P, cid):
+    # port of pathUsers (hair-modeler.clean.html:899, 1.0.2): whether an edge curve runs along the curve cid
+    return any(c.path and any(p[0] == cid for p in c.path) for c in P.curves())
+
+
+def dropOrphanServiceCurves(P):
+    """port of dropOrphanServiceCurves (hair-modeler.clean.html:903): service curves (junc) that no wall, edge curve or
+    tube uses any more, left from older deletions, go. Returns how many."""
+    used = set()
+    for s in P.surfaces():
+        used.add(s.a); used.add(s.b)
+    n = 0
+    for c in P.curves():
+        if c.id in P.items and c.junc and c.id not in used and not pathUsers(P, c.id) and not any(t.src == c.id for t in P.tubes()):
+            deleteItem(P, c.id); n += 1
+    return n
 
 
 def touchGroup(P, gid):
@@ -208,8 +263,10 @@ def touchGroup(P, gid):
 
 @dataclass(eq=False)
 class DrawState:
-    """S.drawing: the curve being drawn, None between drawings."""
+    """S.drawing: the curve being drawn, None between drawings. `msg`: the toast of the last click (1.0.2: a flat lock
+    started from anchors, 7200), for the caller to show and clear."""
     curve: M.Curve | None = None
+    msg: str | None = None
 
 
 def head_trimesh(P):
@@ -260,7 +317,7 @@ def placePoint(P, ray, cam_dir, pivot, drawing=None, head_visible=True):
 
 
 def headPoint(P, ray):
-    """The first half of placePoint (4741): where the ray hits the head, lifted 1.2 % of the model size along the face
+    """The first half of placePoint (6766): where the ray hits the head, lifted 1.2 % of the model size along the face
     normal; None when it misses. Shared with the drag on the head (dragOnHead)."""
     hit = pickHead(P, ray)
     if hit is None:
@@ -269,23 +326,46 @@ def headPoint(P, ray):
     return hit['point'].clone().addScaledVector(n, P.S.scale * 0.012)
 
 
-def addDrawPoint(P, drawing, ray, cam_dir, pivot, parent=None, head_visible=True):
-    """port of addDrawPoint (4653): a click of the Draw tool. The first click of a curve makes it (makeCurve into
-    `parent`, the original's targetGroup(); the Blender side passes the active collection's group). Returns the
-    new anchor, or None when the ray hits nothing (parallel to the fallback plane)."""
+def addDrawPoint(P, drawing, ray, cam_dir, pivot, parent=None, head_visible=True, lock=None):
+    """port of addDrawPoint (hair-modeler.clean.html:7182): a click of the Draw tool. The first click of a curve makes it
+    (makeCurve into `parent`, the original's targetGroup(); the Blender side passes the active collection's group).
+    `lock` (1.0.2, rib.LockDraw): on the first click the Lock mode (ribDrawOn()) — a flat lock, or started from 2 / 3+
+    selected anchors a lock between them / a volume branch; None: a plain curve. On every click to a curve with `rib`
+    (whatever the mode, 6233) it brings S.ribR and worldPerPixelAt for the point's width: without them a free lock's
+    point raises ValueError (never a width of 0). Returns the new anchor (the root, on a lock's first click
+    from anchors), or None when the ray hits nothing (parallel to the fallback plane). The caller selects the curve
+    (S.sel = it, S.asel = []) and shows drawing.msg."""
     p = placePoint(P, ray, cam_dir, pivot, drawing, head_visible)
     if p is None:
         return None
-    return addDrawPointAt(P, drawing, p, parent)
+    return addDrawPointAt(P, drawing, p, parent, lock=lock, cam_dir=cam_dir)
 
 
-def addDrawPointAt(P, drawing, p, parent=None):
-    """The second half of addDrawPoint: the point is known (tests, the non-modal operator). Returns the anchor."""
+def addDrawPointAt(P, drawing, p, parent=None, lock=None, cam_dir=None):
+    """The second half of addDrawPoint: the point is known (tests, the non-modal operator). Returns the anchor.
+    (collideBetween, 7207, the anchors a collision mesh adds, is not in the port: imported meshes never collide here.)"""
     c = drawing.curve
+    drawing.msg = None
     if c is None:
-        c = makeCurve(P, parent); drawing.curve = c
+        pair = None
+        if lock is not None:
+            from .rib import lockHostParent, lockPair
+            pair = lockPair(lock)                                   # (anchors of other curves selected before: 2 — a flat lock between them, 3 or more — a volume branch)
+            hp, has_host = lockHostParent(P, pair)
+            if has_host:
+                parent = hp
+        c = newCurveLook(makeCurve(P, parent)); drawing.curve = c     # 1.0.2 (addDrawPoint, 6212)
+        if lock is not None:
+            from .rib import startLock
+            r, drawing.msg = startLock(P, c, pair, cam_dir)
+            if r is not None:
+                P.rev += 1; P.gen += 1
+                return r
     a = newAnchor(P, p)
     c.anchors.append(a); c.dirty = True
+    if truthy(c.rib):
+        from .rib import lockPointWidth
+        lockPointWidth(P, c, a, p, lock, cam_dir)
     P.rev += 1
     return a
 
@@ -310,17 +390,17 @@ def finishDrawing(P, drawing):
 # is in selection.py; toasts, undo steps (commit) and redraws belong to the caller.
 
 def hairCurves(P):
-    # port of hairCurves (hair-modeler.clean.html:1025): the curves that are not the ring of a NURBS disc
+    # port of hairCurves (hair-modeler.clean.html:1144): the curves that are not the ring of a NURBS disc
     return [c for c in P.curves() if not c.ring]
 
 
 def isRingAnchor(P, a):
-    # port of isRingAnchor (hair-modeler.clean.html:1126)
+    # port of isRingAnchor (hair-modeler.clean.html:1261)
     return any(c.ring and a in c.anchors for c in P.curves())
 
 
 def curvesWith(P, a):
-    # port of curvesWith (hair-modeler.clean.html:4760): the curves using anchor a, in scene order
+    # port of curvesWith (hair-modeler.clean.html:7221): the curves using anchor a, in scene order
     return [c for c in P.curves() if a in c.anchors]
 
 
@@ -346,7 +426,7 @@ def anchorList(P, sel_items=(), sel_anchors=(), shown=None):
 
 
 def planeHit(ray, point, normal):
-    # port of planeHit (hair-modeler.clean.html:5655): where the cursor's ray meets the plane through `point` with
+    # port of planeHit (hair-modeler.clean.html:8413): where the cursor's ray meets the plane through `point` with
     # `normal` (the drag plane faces the camera), or None
     return ray.intersectPlane(Plane().setFromNormalAndCoplanarPoint(normal, point), V3())
 
@@ -360,7 +440,7 @@ class AnchorDrag:
     id of the curve the single anchor slides along while Shift is held (drag.snap), `inserted` marks the anchor the
     right button just made (the release commits even without a move)."""
     list: list
-    starts: list
+    starts: builtins.list                                           # (list is the field above in this body)
     n: Vec3
     ref: Vec3
     startHit: Vec3 | None
@@ -502,7 +582,7 @@ def setCurveProp(P, cs, key, v):
 # ---- inserting (4819, 5784-5787) ----
 
 def insertOnSegment(P, c, seg, a):
-    # port of insertOnSegment (hair-modeler.clean.html:4819). A new anchor on segment seg of curve c. When other
+    # port of insertOnSegment (hair-modeler.clean.html:7280). A new anchor on segment seg of curve c. When other
     # curves are welded along that very segment (both of its anchors are shared and neighbours there too, a Y-trunk),
     # the anchor goes into all of them, so they stay joined.
     p = at(c.anchors, seg); q = at(c.anchors, seg + 1)
@@ -519,6 +599,143 @@ def insertAnchorAt(P, c, seg, point):
     a = newAnchor(P, point)
     insertOnSegment(P, c, seg, a); markAnchorsDirty(P, [a])
     return a
+
+
+# ---- extrude (ours, lot 1.2b: the E key of the tool; nothing of the original) ----
+# E with an end of a curve selected: a new anchor on that end, which the G modal then moves (blender/ops_transform,
+# hairmesh.extrude_anchor). extrudeTargets decides whether E acts on the selected anchors — all of them or none — and, when
+# not, says why (the status bar's line, the tooltip of the dimmed menu item); extrudeEnd makes the anchor; extrudeUndo
+# takes the anchors made away again (Esc: the project as it was). One reason per case of the decided table:
+EXTRUDE_NEED = 'Extrude Curve: select the first or the last anchor of a curve'
+EXTRUDE_MIDDLE = 'Extrude Curve works from an end of a curve: anchor {i} of {n} is in the middle of {curve}'
+EXTRUDE_WELDED = 'Anchor {i} of {curve} is welded to {n} curves: extrude an end that belongs to one curve'
+EXTRUDE_SERVICE = '{curve} is made by its {owner}: it has no end to extrude'
+EXTRUDE_ATTACHED = 'The root of {curve} is attached to {crown}: extrude from the tip'
+EXTRUDE_CLOSED = '{curve} is closed: it has no end to extrude'
+EXTRUDE_LOCK_ROOT = 'The root of {curve} follows the anchors it starts from: extrude from the tip'
+# (not a refusal: the INFO line once the extrude is done, extrudeEndsSections)
+EXTRUDE_SECTIONS = '{curve}: its lock is no longer a lock of cross-sections (the new anchor is past its last section); its loops follow plane cuts now'
+
+
+def _serviceOwner(c):
+    """what makes a service curve's points (its anchors are its owner's to place), or None for a hair curve"""
+    if c.ring:
+        return 'disc'                                               # (a NURBS disc's ring)
+    if c.conn:
+        return 'crown'                                              # (a crown's parting line or lower connector)
+    if truthy(c.path):
+        return 'X junction'                                         # (an edge curve of an X, xjunc)
+    if c.junc:
+        return 'walls'                                              # (a junction curve of Unite Locks, a Fill hole's curve)
+    return None
+
+
+def extrudeTargets(P, anchor_ids):
+    """(ours) whether E extrudes the anchors `anchor_ids` (ids, in the selection's order): ([(curve, anchor, at the
+    start)], None) when every one is an end of one open hair curve, else (None, the reason for the first that is not).
+    The order of the reasons: welded, made by a service curve's owner, closed, in the middle, an end held in place
+    (attached to a crown connector, the root of a flat lock started from anchors)."""
+    out = []
+    for aid in anchor_ids:
+        a = P.anchors.get(aid)
+        cs = curvesWith(P, a) if a is not None else []
+        if a is None or not cs:
+            continue                                                # (an id of no anchor any more: as unselected)
+        if len(cs) > 1:
+            hair = [x for x in cs if _serviceOwner(x) is None] or cs   # (named by a curve it is an end of, where it is one)
+            c = next((x for x in hair if x.anchors[0] is a or x.anchors[len(x.anchors) - 1] is a), hair[0])
+            return None, EXTRUDE_WELDED.format(i=index_of(c.anchors, a) + 1, curve=c.name, n=len(cs))
+        c = cs[0]
+        owner = _serviceOwner(c)
+        if owner is not None:
+            return None, EXTRUDE_SERVICE.format(curve=c.name, owner=owner)
+        if c.closed:
+            return None, EXTRUDE_CLOSED.format(curve=c.name)
+        i = index_of(c.anchors, a); n = len(c.anchors)
+        if 0 < i < n - 1:
+            return None, EXTRUDE_MIDDLE.format(i=i + 1, n=n, curve=c.name)
+        if a.att is not None:
+            k = next((k for k in P.crowns() if a.att.c in (k.part, k.low)), None)
+            conn = P.items.get(a.att.c)
+            return None, EXTRUDE_ATTACHED.format(curve=c.name, crown=k.name if k is not None else conn.name if conn is not None else 'a crown')
+        start = n > 1 and i == 0
+        if start and truthy(c.rib):
+            from .rib import ribEnds
+            if ribEnds(P, c):
+                return None, EXTRUDE_LOCK_ROOT.format(curve=c.name)
+        out.append((c, a, start))
+    return (out, None) if out else (None, EXTRUDE_NEED)
+
+
+def extrudeEndsSections(P, picks):
+    """(ours, lot 1.2c) the INFO lines of an extrude about to be made on `picks` (extrudeTargets): one per lock of
+    cross-sections (a converted modifier's, every curve c.para, its tube whole) that a new anchor ends — the new anchor has
+    no section number and lies past the last one, so sections.lockSecs gives None and the lock's rows are an ordinary
+    lock's (rows.buildRowTables' `para` branch). Named by the first picked curve of each lock; nothing for any other."""
+    from .sections import lockSecs
+    out, seen = [], set()
+    for c, _a, _start in picks:
+        if not c.para or c.id in seen:
+            continue
+        ids = {c.id}; grew = True                                   # (the lock: the curves joined to it by walls, scissors.lockOf)
+        while grew:
+            grew = False
+            for s in P.surfaces():
+                if (s.a in ids) != (s.b in ids):
+                    ids.add(s.a); ids.add(s.b); grew = True
+        seen |= ids
+        cs = [P.items[i] for i in ids if i in P.items]
+        whole = all(sum(1 for s in P.surfaces() if s.a in ids and s.b in ids and x.id in (s.a, s.b)) >= 2 for x in cs)
+        if len(cs) > 1 and all(x.para for x in cs) and whole and lockSecs(cs) is not None:
+            out.append(EXTRUDE_SECTIONS.format(curve=c.name))
+    return out
+
+
+def extrudeEnd(P, c, a):
+    """(ours) a new anchor on the end `a` of curve `c`, before the first or after the last: its position and smoothness,
+    nothing else of it (no attachment, junction pass, cross-section or frozen handle); on a flat lock with its table of
+    widths, the width and rotation `a` has there. The curve is dirty. Returns the anchor."""
+    start = len(c.anchors) > 1 and c.anchors[0] is a
+    o = None
+    if truthy(c.rib):
+        K = c.rib.get('k')
+        if truthy(K):                                               # (a lock without its table: the new anchor takes its neighbours' values, as any)
+            from .rib import _key, ribAnchorVals
+            o = K.get(_key(a))
+            if not truthy(o):
+                vals = ribAnchorVals(P, c); j = index_of(c.anchors, a)
+                o = {'w': vals['w'][j], 'r': vals['r'][j]}
+    n = newAnchor(P, a.pos); n.smooth = a.smooth
+    if start:
+        c.anchors.insert(0, n)
+    else:
+        c.anchors.append(n)
+    if truthy(c.rib):
+        if o is not None:
+            c.rib['k'][str(n.id)] = {'w': o.get('w'), 'r': o.get('r')}
+        c.ribDirty = True
+    c.dirty = True; markAnchorsDirty(P, [a, n])
+    P.gen += 1; P.rev += 1
+    return n
+
+
+def extrudeUndo(P, made):
+    """(ours) the anchors extrudeEnd made taken away again, the last first: each curve has the anchors it had, in their
+    order, and a flat lock's table loses their entries. The ids are not handed out again (Project.uid never goes back)."""
+    for n in reversed(made):
+        for c in curvesWith(P, n):
+            i = index_of(c.anchors, n)
+            del c.anchors[i]; c.ovr.pop(n.id, None)
+            if truthy(c.rib):
+                K = c.rib.get('k')
+                if truthy(K):
+                    K.pop(str(n.id), None)
+                c.ribDirty = True
+            c.dirty = True
+            if c.anchors:
+                markAnchorsDirty(P, [c.anchors[min(i, len(c.anchors) - 1)]])
+        P.anchors.pop(n.id, None)
+    P.gen += 1; P.rev += 1
 
 
 def curvesOnSegment(P, c, seg):
@@ -539,7 +756,7 @@ def curvesOnSegment(P, c, seg):
 # ---- deleting (4761-4802) ----
 
 def removeAnchorFromCurve(P, c, a, keep):
-    # port of removeAnchorFromCurve (hair-modeler.clean.html:4761). `keep`: the shape stays, the neighbours' handles
+    # port of removeAnchorFromCurve (hair-modeler.clean.html:7222). `keep`: the shape stays, the neighbours' handles
     # are frozen (c.ovr) to the cubic that best fits the two segments the anchor was in
     i = index_of(c.anchors, a)
     if i < 0:
@@ -587,7 +804,7 @@ def removeAnchorFromCurve(P, c, a, keep):
 
 
 def deleteAnchors(P, lst, keep, drawing=None):
-    """port of deleteAnchors (hair-modeler.clean.html:4784), the data part. Returns the ids of the curves that lost
+    """port of deleteAnchors (hair-modeler.clean.html:7245), the data part. Returns the ids of the curves that lost
     anchors and still exist (the original's new selection, S.sel), or None when every anchor given was a disc point
     ("Disc points can't be deleted: use Reset deformations" is the caller's toast). `drawing` is the curve being
     drawn (S.drawing), which may stay with one anchor."""
@@ -598,6 +815,7 @@ def deleteAnchors(P, lst, keep, drawing=None):
     for a in lst:
         for c in curvesWith(P, a):
             removeAnchorFromCurve(P, c, a, keep); touched[c.id] = True
+            P.gen += 1                                              # (c lost an anchor: the next curve reads anchor_curves anew — roundAt, fuzz case 1200084)
     for c in P.curves():
         if len(c.anchors) < 2 and c is not drawing:
             deleteItem(P, c.id)
@@ -622,7 +840,7 @@ def deleteAnchors(P, lst, keep, drawing=None):
 # ---- recalculate (4803-4810) ----
 
 def recalcHandles(P, lst):
-    # port of recalcHandles (hair-modeler.clean.html:4803), the data part: frozen handles (left by "delete, keep
+    # port of recalcHandles (hair-modeler.clean.html:7264), the data part: frozen handles (left by "delete, keep
     # shape") and smoothness tweaks dropped, back to clean automatic arcs ("Handles recalculated" is the caller's)
     ids = {a.id for a in lst}
     for c in P.curves():
@@ -635,14 +853,14 @@ def recalcHandles(P, lst):
 
 
 def recalcCurves(P, cs):
-    # port of recalcCurves (hair-modeler.clean.html:4810): every anchor of the curves, once, in order
+    # port of recalcCurves (hair-modeler.clean.html:7271): every anchor of the curves, once, in order
     recalcHandles(P, list(dict.fromkeys(a for c in cs for a in c.anchors)))
 
 
 # ---- reverse (7947) ----
 
 def reverseCurves(P, cs):
-    """port of reverseCurves (hair-modeler.clean.html:7947), the data part. Reverse direction: the anchors go the
+    """port of reverseCurves (hair-modeler.clean.html:11817), the data part. Reverse direction: the anchors go the
     other way (the root becomes the tip). Everything tied to a place on the curve stays where it is: frozen handles
     swap in / out, guide line hits and attachments to a connector get 1 - t, painted weights of the curve's modifiers
     (mask / thickness) are flipped; modifiers then sweep from the new root. Returns the curves reversed."""
@@ -681,8 +899,8 @@ def reverseCurves(P, cs):
 
 # ======================= The anchor gizmo (4404-4708; 3.8b, D11 (a)) =======================
 # The original's gizmo is three TransformControls on one proxy; what they do to the model is here: where the drag
-# starts (gizmoTargets 4567: the selected anchors, the pivot at the LAST one; localFrame 4546), the one matrix of the
-# whole drag (gizmoMatrix 4592) and what every move does (the objectChange handler 4660: positions from the start,
+# starts (gizmoTargets 4567: the selected anchors, the pivot at the LAST one; localFrame 6559), the one matrix of the
+# whole drag (gizmoMatrix 6605) and what every move does (the objectChange handler 4660: positions from the start,
 # frozen handles by the increment, the Shift slide). The proxy's state (position, quaternion, scale) is the caller's:
 # the Blender gizmo (blender/ops_gizmo.py) or the parity scripts set it, as TransformControls does in the original.
 
@@ -694,13 +912,13 @@ AXIS_SCALE = {'X': 'x', 'Y': 'z', 'Z': 'y'}
 
 
 def ownQ(it):
-    # port of ownQ (hair-modeler.clean.html:4532) for the items an anchor's frame reads (curves, discs, groups): it.q,
+    # port of ownQ (hair-modeler.clean.html:6545) for the items an anchor's frame reads (curves, discs, groups): it.q,
     # its rotation relative to its parent group. (The imported-mesh branches read a Transform modifier: phase 5.)
     return Quat(*it.q) if it is not None and it.q else Quat()
 
 
 def worldQ(P, it):
-    # port of worldQ (4541): its own rotation turned by every group above it (nothing: the identity)
+    # port of worldQ (6554): its own rotation turned by every group above it (nothing: the identity)
     if it is None:
         return Quat()
     q = ownQ(it)
@@ -712,7 +930,7 @@ def worldQ(P, it):
 
 
 def localFrame(P, anchors, sel_items=()):
-    # port of localFrame (4546): the axes of the (first non-ring) curve of the last selected anchor; without anchors
+    # port of localFrame (6559): the axes of the (first non-ring) curve of the last selected anchor; without anchors
     # (3.8d) the world rotation of the last selected item (4548)
     if not anchors:
         return worldQ(P, P.items.get(sel_items[len(sel_items) - 1])) if sel_items else Quat()
@@ -725,25 +943,25 @@ def localFrame(P, anchors, sel_items=()):
 
 @dataclass(eq=False)
 class GizmoDrag:
-    """tcState (4638), the anchor case: the mode, the proxy where the drag started (pos = the pivot, quat = the axes),
+    """tcState (6651), the anchor case: the mode, the proxy where the drag started (pos = the pivot, quat = the axes),
     the anchors and where each started, the last matrix applied (the frozen handles turn by the increment), and the
     curve a single anchor slides along while Shift is held (st.snap)."""
     mode: str
     pos: Vec3
     quat: Quat
     list: list
-    starts: list
+    starts: builtins.list                                           # (list is the field above in this body)
     lastM: Mat4
     snap: int | None = None
     moved: bool = False
     space: str = 'world'                                            # the axes: 'world' or 'local' (ours, 3.8c: G / R / S turn by them)
-    items: list = field(default_factory=list)                       # S.sel when the drag moves items, not anchors (3.8d): rotateOwnAxes on release
-    meshes: list = field(default_factory=list)                      # st.meshes (4638): the converted meshes inside the selection, baked on release (4646)
+    items: builtins.list = field(default_factory=builtins.list)     # S.sel when the drag moves items, not anchors (3.8d): rotateOwnAxes on release
+    meshes: builtins.list = field(default_factory=builtins.list)    # st.meshes (6651): the converted meshes inside the selection, baked on release (4646)
 
 
 @dataclass(eq=False)
 class GizmoTargets:
-    """what gizmoTargets (4563) returns: the anchors to move, the converted meshes (`mesh` items with data) and the
+    """what gizmoTargets (6576) returns: the anchors to move, the converted meshes (`mesh` items with data) and the
     imported ones (imesh) inside the selection, the pivot, and S.sel when the selection is items (empty for anchors)"""
     anchors: list
     meshes: list
@@ -753,7 +971,7 @@ class GizmoTargets:
 
 
 def gizmoTargets(P, sel_items, anchors=()):
-    """port of gizmoTargets (hair-modeler.clean.html:4563; the reference-image branches are not the hair's): the
+    """port of gizmoTargets (hair-modeler.clean.html:6576; the reference-image branches are not the hair's): the
     selected anchors with the pivot on the last one; else everything inside the selected items — a group its children
     (any depth), a curve its anchors, a wall the anchors of its two curves, a disc guide its rings, a tube its curve, a
     modifier its tube (or its imported mesh), a crown its parting, its lower connector and the curves between them; a
@@ -825,7 +1043,7 @@ def gizmoTargets(P, sel_items, anchors=()):
 
 
 def frameBox(P, sel_items, anchors=()):
-    """port of frameAll (hair-modeler.clean.html:4390), F: the box framed — the selected anchors; else what the
+    """port of frameAll (hair-modeler.clean.html:6403), F: the box framed — the selected anchors; else what the
     gizmo would move in the selected items (their anchors and the converted meshes' boxes); else the head; else every
     curve's anchors — as (centre, r): the camera goes back r / tan(fov / 2) from the centre (4400). None: an empty box.
     (The imported meshes' boxes of 4394 are phase 5.)"""
@@ -917,7 +1135,7 @@ def startGizmo(P, anchors, mode, space='world'):
 
 
 def rotateOwnAxes(P, st, quat):
-    """port of rotateOwnAxes (hair-modeler.clean.html:4551), called on the release of a Rotate drag (4653) with the
+    """port of rotateOwnAxes (hair-modeler.clean.html:6564), called on the release of a Rotate drag (4653) with the
     proxy's last quaternion: the turn D = quat · q0⁻¹ turns the own rotation (it.q) of every top selected item with
     it. Anchors (a component) never turn their curve's axes: nothing when the drag moved anchors."""
     if not st.items:
@@ -935,7 +1153,7 @@ def rotateOwnAxes(P, st, quat):
 
 
 def gizmoMatrix(st, pos, quat, scale, lock=None, ctrl=False, shift=False):
-    """port of gizmoMatrix (hair-modeler.clean.html:4592): the whole change of a drag as one matrix about the start
+    """port of gizmoMatrix (hair-modeler.clean.html:6605): the whole change of a drag as one matrix about the start
     pivot. `pos` / `quat` / `scale` = the proxy now; `lock` = S.axisLock ({'x': bool, ...}); `ctrl` / `shift` = the
     keys held (scale: Ctrl uniform, Shift 0.1 steps). (The reference-image branches are not the anchors'.)"""
     lk = lock or {}
@@ -990,7 +1208,7 @@ def gizmoStep(P, st, M):
 
 
 def nearestOnCurve3(c, p):
-    # port of nearestOnCurve3 (hair-modeler.clean.html:5694): the point of curve c nearest to p in 3D
+    # port of nearestOnCurve3 (hair-modeler.clean.html:8453): the point of curve c nearest to p in 3D
     best = {'d': math.inf, 'point': None}; ab = V3(); ap = V3()
     S = c.samples
     for i in range(len(S) - 1):

@@ -12,7 +12,9 @@ group's conv filled). The 3.7b op `migrate` runs hairmesh.core.migrate.migrateFi
 file in the harness, does nothing here). The 4.10 ops `symmetry` and `union` run hairmesh.core.symmetry /
 hairmesh.core.union; each is recorded as the harness records it (symmetry.json / union.json: the toast, the
 selection after, the items made and the project file right after the op)."""
+import json
 import os
+import struct
 
 from hairmesh.core import brush as BR, conversion as CONV, crown as CR, curves as CM, duplicate as DUP, edges as ED, edit, groups as G, migrate as MG, rows as RW, scissors as SC, symmetry as SYM, tube as TB, walls as WL, weld as W
 from hairmesh.core.hairmesh_io import defaultStep, project_to_dict
@@ -24,7 +26,7 @@ from hairmesh.core.vec3 import V3, Vec3
 
 
 def js_projector(view):
-    """toScreen (5656) with the camera the harness recorded (cut.json: matrixWorldInverse, projectionMatrix, W, H):
+    """toScreen (8414) with the camera the harness recorded (cut.json: matrixWorldInverse, projectionMatrix, W, H):
     Vector3.project = applyMatrix4 twice, as three.js computes it"""
     a = view['mwi']; b = view['pm']; Wd = view['W']; Hd = view['H']
 
@@ -103,23 +105,207 @@ def run_surf_cut(P, a, rec, sf, grid=None):
     return out, c, msg
 
 
+SPLIT_OPS = ('splitEnds', 'splitPlan', 'anchorLine', 'selectLock', 'discExcl')
+
+
+def _f32(x):
+    return struct.unpack('<f', struct.pack('<f', x))[0]
+
+
+def props_item(P, gsel):
+    """the item whose panel renderProps (12548) shows for this selection (no pin in the scripts): none with anchors
+    selected (the anchors' panel, 10974), else the last selected curve, else the last selected item (10985-10986)"""
+    if gsel.anchors:
+        return None
+    ids = list(gsel.items)
+    last_curve = next((x for x in reversed(ids) if getattr(P.items.get(x), 'type', None) == 'curve'), None)
+    return last_curve if last_curve is not None else ids[len(ids) - 1] if ids else None
+
+
+def split_view(rec):
+    """the view of a splitEnds / splitPlan record (splitends.json) as the core takes it: toScreen from the recorded
+    matrices, rayAt from the two recorded rays (by their pixel: a pixel the original did not ask raises), camDir"""
+    rays = {(r['x'], r['y']): Ray(V3(*r['origin']), V3(*r['direction'])) for r in rec['rays']}
+    from hairmesh.core import anchorbrush as AB
+    return AB.BrushView(js_projector(rec['view']), lambda m: rays[(m[0], m[1])], V3(*rec['camDir']), None, rec['view']['H'])
+
+
+def plan_dict(pl):
+    """splitPlan's result as the harness records it"""
+    if pl is None:
+        return None
+    if 'err' in pl:
+        return {'err': pl['err']}
+    return {'c': pl['c'].id, 'J': pl['J'], 'seg': pl['seg'], 'u': pl['u'], 'sJ': pl['sJ'], 'tot': pl['tot'], 'w': pl['w'].toArray(), 'stay': [s.id for s in pl['stay']],
+            'move': [s.id for s in pl['move']], 'side': [[k, v] for k, v in pl['side'].items()], 'rw': pl['rw'], 'si': pl['si']}
+
+
+def run_split_op(P, i, a, K, gsel, item_ids, need, sel_last):
+    """the 1.1f ops (lib/script.mjs `splitEnds`, `splitPlan`, `anchorLine`, `selectLock`, `discExcl`) on
+    hairmesh.core.scissors / selection / guidetool, with what the harness recorded (splitends.json, passed in as
+    K['splitIn']: action -> record). Each is recorded in K['splitRecs'] as the harness records it."""
+    from hairmesh.core import guidetool as GT, selection as SL
+    recs = K.get('splitIn') or {}
+    out = K.setdefault('splitRecs', [])
+    op = a['op']
+
+    def rendered():                                                 # onSelChange -> renderProps / renderOutliner
+        sel_last[0] = props_item(P, gsel)
+        G.panelsRendered(P, sel_last[0])
+
+    def needrec():
+        if i not in recs:
+            raise ValueError(f'script: action {i} ({op}) needs what the harness recorded (splitends.json)')
+        return recs[i]
+
+    def regen():
+        if P.conv:
+            CONV.regenConversion(P, RW.buildRowTables(P).T, CR.crownData)
+
+    def record(before, **extra):
+        out.append({'action': i, 'op': op, 'sel': list(gsel.items), 'asel': list(gsel.anchors), 'made': [x for x in P.items if x not in before], 'project': project_to_dict(P), **extra})
+    if op in ('splitEnds', 'splitPlan'):
+        rec = needrec()
+        if a.get('select') is not None:
+            gsel.items = item_ids(a['select']); gsel.anchors = []; rendered()
+        if a.get('spread') is not None:
+            K['splitR'] = a['spread']
+        splitR = K.get('splitR', SC.SPLIT_R)
+        harness_settle(P)
+        view = split_view(rec); m = (rec['m'][0], rec['m'][1]); pk = rec['pick']; ch = None
+        if pk is not None:
+            c = P.items[pk['curve']]; s0 = c.samples[pk['i']]; s1 = c.samples[pk['i'] + 1]
+            ch = {'curve': c, 'i': pk['i'], 't': pk['t'], 'point': s0.p.clone().lerp(s1.p, pk['t']), 'seg': s0.seg}
+        scale = P.S.scale
+        base = {'splitR': splitR, 'scale': scale, 'point': ch['point'].toArray() if ch else None, 'plan': plan_dict(SC.splitPlan(P, ch, m, view, splitR, scale)) if ch else None}
+        if op == 'splitPlan':
+            branches, hud = SC.splitEndsHover(P, ch, m, view, splitR, scale)
+            viz = None
+            if branches is not None:
+                viz = []
+                for line in branches:
+                    for k in range(1, len(line)):
+                        for p in (line[k - 1], line[k]):
+                            viz.extend(_f32(x) for x in (p.x, p.y, p.z))
+            out.append({'action': i, 'op': op, **base, 'hud': hud or None, 'viz': viz})
+            return
+        before = set(P.items)
+        if ch is None:
+            toast = SC.SPLIT_MISS
+        else:
+            r = SC.splitEnds(P, ch, m, view, splitR, scale); toast = r['toast']
+            if 'sel' in r:
+                regen()
+                gsel.items = list(r['sel']); gsel.anchors = []; rendered()
+                if a.get('key') is not None:
+                    K['curves'][a['key']] = r['branch']
+        record(before, toast=toast, **base)
+    elif op == 'anchorLine':
+        rec = needrec()
+        if a.get('select') is not None:
+            s = a['select']
+            gsel.items = item_ids(s); gsel.anchors = [need('anchors', k).id for k in s.get('anchors') or []]; rendered()
+        harness_settle(P)
+        shown = set(rec['shown'])
+        before = set(P.items)
+        selected = GT.selectedCurves(P, gsel)
+        r = SC.anchorLine(P, *a['stroke'], selected, lambda c: c.id in shown, js_projector(rec['view']))
+        toast = None
+        if r is not None:
+            toast = r['toast']
+            if r['changed']:
+                regen()
+                gsel.anchors = [x.id for x in r['made']]; rendered()
+        record(before, toast=toast, selCurves=[c.id for c in selected])
+    elif op == 'selectLock':
+        ids = [*item_ids(a), *(need('tubes', k).id for k in a.get('tubes') or []), *(need('extras', k).id for k in a.get('extras') or []),
+               *(need('crowns', k).id for k in a.get('crowns') or [])]
+        gsel.items = list(dict.fromkeys(ids)); gsel.anchors = [need('anchors', k).id for k in a.get('anchors') or []]; rendered()
+        CM.rebuild_dirty(P)
+        lock = [c.id for c in SL.lockCurvesOfSelection(P, gsel)]; n = SL.lockSelectItem(P, gsel)
+        new, toast = SL.selectLockCurves(P, gsel)
+        if new is not None:
+            gsel.items = new.items; gsel.anchors = new.anchors; rendered()
+        out.append({'action': i, 'op': op, 'lock': lock, 'item': n, 'toast': toast, 'sel': list(gsel.items), 'asel': list(gsel.anchors), 'project': project_to_dict(P)})
+    elif op == 'discExcl':
+        d = need('guides', a['disc']); ctrl = a.get('ctrl') is not False
+        t = next((K[w][a['target']] for w in ('groups', 'curves', 'surfaces', 'guides', 'items') if a['target'] in K[w]), None)
+        if t is None:
+            raise KeyError(f'script: unknown item "{a["target"]}"')
+        gsel.items = list(dict.fromkeys(item_ids(a['sel']))) if a.get('sel') else [d.id]; gsel.anchors = []; rendered()
+        r = GT.discExclClick(P, gsel.items, t.id, ctrl)
+        if r is None:
+            gsel.select_item(t.id, ctrl)                            # selectItem(id, add) past its first line
+        else:
+            regen()
+        rendered()
+        out.append({'action': i, 'op': op, 'toast': r['toast'] if r else None, 'sel': list(gsel.items), 'asel': list(gsel.anchors),
+                    'excl': list(d.p['excl']) if d.p.get('excl') is not None else None, 'project': project_to_dict(P)})
+
+
+def es_fields(P, k, a, curve_of):
+    """the fields an `addEven` / `addShell` / `esSet` op sets on an Even loops / Proxy shell item (lib/script.mjs esFields:
+    p merged, mask / maskAll, baked, off as lock keys — keyOf 3643 of 1.0.3 —, def, visible), then what every such
+    control does after: regenConversion when a conversion is pending (S.surfDirty: the caller's tables are rebuilt)"""
+    def mask_of(m):
+        if isinstance(m, list):
+            return list(m)
+        W = [0] * TB.MASK_N
+        for f, t, w in m.get('runs') or [[m['from'], m['to'], m.get('w', 1)]]:
+            for q in range(f, t + 1):
+                W[q] = w
+        return W
+
+    def under(g):
+        out = []
+        for cid in (g.children if g is not None else []):
+            x = P.items.get(cid)
+            if x is None:
+                continue
+            if x.type == 'group':
+                out += under(x)
+            elif x.type == 'curve':
+                out.append(x)
+        return out
+    if a.get('p'):
+        k.p.update(a['p'])
+    if 'mask' in a:
+        k.mask = None if a['mask'] is None else {curve_of(ck).id: mask_of(m) for ck, m in a['mask'].items()}
+    if 'maskAll' in a:
+        k.mask = {c.id: mask_of(a['maskAll']) for c in under(P.items.get(k.parent))}
+    if 'baked' in a:
+        k.baked = a['baked']
+    if 'off' in a:
+        k.off = None if a['off'] is None else [','.join(str(x) for x in sorted(curve_of(c).id for c in ks)) for ks in a['off']]
+    if 'def' in a:
+        d = a['def']
+        k.def_ = None if d is None else M.ShellDef(ns=d['ns'], na=d['na'], d=list(d['d']), v=d.get('v'))
+    if 'visible' in a:
+        k.visible = a['visible']
+    if P.conv:
+        CONV.regenConversion(P, RW.buildRowTables(P).T, CR.crownData)
+
+
 def new_keys():
     """the keys of a run (see run_script): passed in, whoever feeds it `actions` lazily sees them as they grow (the fuzz, tests/helpers/fuzz.py)"""
-    return {'groups': {}, 'curves': {}, 'anchors': {}, 'surfaces': {}, 'tubes': {}, 'draws': [], 'migrations': [], 'cuts': [], 'surfCuts': [], 'gizmos': [], 'duplicates': [], 'guides': {}, 'guideRecs': [], 'tubeRecs': [], 'crowns': {}, 'crownRecs': [], 'symRecs': [], 'unionRecs': [], 'extras': {}, 'extraRecs': [], 'topo': {}, 'topoRecs': [], 'topoDefaults': {}, 'paintRecs': [], 'edgeRecs': [], 'brushRecs': []}
+    return {'groups': {}, 'curves': {}, 'anchors': {}, 'surfaces': {}, 'tubes': {}, 'draws': [], 'migrations': [], 'cuts': [], 'surfCuts': [], 'gizmos': [], 'duplicates': [], 'guides': {}, 'guideRecs': [], 'tubeRecs': [], 'crowns': {}, 'crownRecs': [], 'symRecs': [], 'unionRecs': [], 'xjuncRecs': [], 'fillRecs': [], 'extras': {}, 'items': {}, 'extraRecs': [], 'topo': {}, 'topoRecs': [], 'topoDefaults': {}, 'paintRecs': [], 'edgeRecs': [], 'brushRecs': [], 'ribRecs': [], 'ribClicks': [], 'esRecs': []}
 
 
-def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=False, guides=None, crowns=None, paints=None, edges=None, brushes=None, K=None):
+def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=False, guides=None, crowns=None, paints=None, edges=None, brushes=None, K=None, ribs=None):
     """Runs `actions` (any iterable, read one at a time) on project P. `draws`: the harness's draw.json records (needed for `draw` ops). `base_dir`:
     where relative files of `head` ops are. Returns the keys: {'groups': {key: item}, 'curves': {...},
     'anchors': {...}, 'draws': [{'action', 'key', 'curve' (id or None), 'anchors': [ids]}],
     'migrations': [{'action', 'file', 'name', 'ok', 'toast', 'sel', 'fit'}] (as the harness's migrate.json)}.
     `paints`: the harness's paint.json (the view each `paintMask` / `paintTip` stroke was painted in). `edges`: its
-    edges.json (the view, the pixel and the polygon hit of each press of the `edgeClick` ops). `brushes`: its brush.json (the view, rays and hits of each `brush` stroke)."""
+    edges.json (the view, the pixel and the polygon hit of each press of the `edgeClick` ops). `brushes`: its brush.json (the view, rays and hits of each `brush` stroke).
+    `ribs`: its rib.json (1.1f N1: per flat lock op the camera direction, the view of a stroke, the values the panel's sliders took)."""
     K = new_keys() if K is None else K
     paint_recs = {r['action']: r for r in (paints or [])}
     edge_recs = {r['action']: r for r in (edges or [])}
     esel = ED.EdgeSel(); ememo = [None]                             # S.edges, S.edgeClick
     brush_recs = {r['action']: r for r in (brushes or [])}
+    rib_recs = {r['action']: r for r in (ribs or [])}
+    rib_st = {'brush': None, 'ribR': None, 'cam': None}                # S.ribBrush, S.ribR, the last camDir (1.1f N1)
     brush_mode = ['screen']                                         # S.brushMode (701)
     mbrush = {'on': False, 'kind': 'mask', **TB.MASK_BRUSH}          # S.maskBrush (6578), kept between strokes as the original keeps it
     brush_rh = [BR.BRUSH_R, BR.BRUSH_HARD]                          # S.brushR, S.brushHard (701)
@@ -151,7 +337,7 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
 
     def item_ids(a):
         return [*(gid(k) for k in a.get('groups') or []), *(curve_of(k).id for k in a.get('curves') or []), *(need('surfaces', k).id for k in a.get('surfaces') or []),
-                *(need('guides', k).id for k in a.get('guides') or [])]   # (guides: 4.10)
+                *(need('guides', k).id for k in a.get('guides') or []), *(need('items', k).id for k in a.get('items') or [])]   # (guides: 4.10; items: 1.1b)
 
     def xsel(a):
         """the `extra` / `paintMask` selection: modifiers, then curves, then extras (modTubes reads S.sel in this order)"""
@@ -192,6 +378,8 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
             for k in ('closed', 'round', 'fair', 'junc', 'visible'):
                 if k in a:
                     setattr(c, k, a[k])
+            if a.get('path'):
+                c.path = [[curve_of(ck).id, anchor_of(x).id, anchor_of(y).id] for ck, x, y in a['path']]   # (1.1b: an edge curve's stretches, by keys)
             if a.get('key') is not None:
                 K['curves'][a['key']] = c
         elif op == 'settings':
@@ -231,6 +419,9 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
             K['draws'].append({'action': i, 'key': a.get('key'), 'curve': c.id if c is not None else None, 'anchors': anchors})
             if a.get('key') is not None and c is not None:
                 K['curves'][a['key']] = c
+        # ---- 1.1f N1: the flat lock / volume branch (lib/script.mjs ribDraw … ribWeld; core/rib.py) ----
+        elif op in RIB_OPS:
+            run_rib_op(P, i, a, rib_recs.get(i), by_action.get(i), K, gsel, need, item_ids, gid, rib_st, brush_rh, sel_last)
         # ---- phase 3.3: anchors (the data part of the Select tool) ----
         elif op == 'move':
             an = need('anchors', a['anchor'])
@@ -255,7 +446,9 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
             if a.get('key') is not None:
                 K['anchors'][a['key']] = an
         elif op == 'deleteAnchors':
-            edit.deleteAnchors(P, [need('anchors', k) for k in a['anchors']], bool(a.get('keep')))
+            kept = edit.deleteAnchors(P, [need('anchors', k) for k in a['anchors']], bool(a.get('keep')))
+            if kept is not None:                                    # (6282: the edited curves selected; 1.1f N1 records S.sel after it)
+                gsel.items = list(kept); gsel.anchors = []
         elif op == 'recalc':
             edit.recalcHandles(P, [need('anchors', k) for k in a['anchors']])
         elif op == 'reverse':
@@ -265,6 +458,8 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
         # ---- phase 3.4: welding, Y junctions, the anchor pie (each op first rebuilds the dirty curves, as a frame would) ----
         elif op == 'surface':
             s = edit.addItem(P, 'surface', gid(a.get('parent')), {'a': curve_of(a['a']).id, 'b': curve_of(a['b']).id, 'dirty': True, 'p': {'segs': 1, 'bulge': 0, 'flip': False, **(a.get('p') or {})}})
+            if a.get('visible') is not None:
+                s.visible = a['visible']                            # (1.1b: a hidden wall, for the cut)
             if a.get('key') is not None:
                 K['surfaces'][a['key']] = s
         elif op == 'weld':
@@ -309,6 +504,9 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
         elif op == 'optimize':
             CM.rebuild_dirty(P)
             W.optimizeAnchors(P, [curve_of(k) for k in a['curves']], set(anchor_of(k) for k in a['only']) if a.get('only') else None)
+            gsel.anchors = []                                       # (S.asel = [], 7405)
+            sel_last[0] = props_item(P, gsel)
+            G.panelsRendered(P, sel_last[0])                        # (renderProps, 8383: a selected group's panel fills its conv — fuzz case 132800050)
         # ---- phase 3.5: walls and locks (the curve pie's wall items, the surface panel) ----
         elif op == 'walls':
             CM.rebuild_dirty(P)
@@ -321,6 +519,9 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
             s, _corners, _msg = WL.fillHole(P, [curve_of(k) for k in a['curves']])
             if a.get('key') is not None and s is not None:
                 K['surfaces'][a['key']] = s
+        # ---- 1.1f: X junctions and edge curves (lib/script.mjs `settle`, `separateX`, `separateGroupX`, `xWalls`, `xZoneWalls`, `menuLabels`) ----
+        elif op in XJUNC_OPS:
+            run_xjunc_op(P, i, a, K, gsel, sel_last, anchor_of, curve_of, need)
         elif op == 'average':
             CM.rebuild_dirty(P)
             keep_curve(a.get('key'), WL.averageCurve(P, curve_of(a['a']), curve_of(a['b'])))
@@ -333,6 +534,8 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
             for k, s in zip(a.get('surfaceKeys') or [], ms):
                 if k is not None:
                     K['surfaces'][k] = s
+        elif op in ('fillAt', 'fillPlan'):                          # 1.1f: Detect the fill outline here (lib/script.mjs `fillAt`, `fillPlan`; fillat.json)
+            run_fillat_op(P, i, a, K, gsel, sel_last, anchor_of, curve_of)
         elif op == 'wallProp':
             s = need('surfaces', a['surface'])
             for k, v in (a.get('set') or {}).items():
@@ -375,7 +578,7 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
             G.tickGroup(P, need('groups', a['group']), bool(a['on']))
             t = G.convTargets(P)
             if t:
-                G.groupConv(P, t[0])                                # syncConvUI (9097)
+                G.groupConv(P, t[0])                                # syncConvUI (13177)
         elif op == 'setConv':
             G.setConv(P, a['k'], a['v'])
         elif op == 'matchStep':
@@ -386,6 +589,7 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
         elif op == 'deleteItems':
             for iid in item_ids(a):
                 edit.deleteItem(P, iid)
+            edit.dropOrphanServiceCurves(P)                         # deleteSelected (10414)
             sel_last[0] = None
             G.panelsRendered(P, None)
         # ---- 3.7b: migration ----
@@ -423,11 +627,18 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
             if c is not None:
                 keep_curve(a.get('key'), c); sel_last[0] = c.id
             K['surfCuts'].append({'action': i, 'events': events, 'toast': msg, 'curve': c.id if c is not None else None})
+        # ---- 1.1f (1.0.2): Split ends, the RMB anchor line, the lock's curves, a disc's Ctrl + click (lib/script.mjs; splitends.json) ----
+        elif op == 'curveFields':                                   # 1.1f: fields of a curve (para, rib, path) or of a group (meshesGroup, importGroup) no op has a word for
+            c = K['groups'][a['group']] if a.get('group') is not None else curve_of(a['curve'])
+            for k, v in a['set'].items():
+                setattr(c, k, json.loads(json.dumps(v)))
+        elif op in SPLIT_OPS:
+            run_split_op(P, i, a, K, gsel, item_ids, need, sel_last)
         elif op == 'key':                                           # a key for an item found by type and name (the last one): migrated items
             it = next((x for x in reversed(list(P.items.values())) if x.type == a['type'] and x.name == a['name']), None)
             if it is None:
                 raise KeyError(f'script: action {i}: no {a["type"]} named {a["name"]!r}')
-            K[{'group': 'groups', 'curve': 'curves', 'surface': 'surfaces'}[a['type']]][a['key']] = it
+            K[{'group': 'groups', 'curve': 'curves', 'surface': 'surfaces'}.get(a['type'], 'items')][a['key']] = it   # (1.1b: any other type in K['items'])
         elif op == 'preset':
             pass                                                    # (the harness writes the preset file; nothing changes in the scene)
         # ---- 3.8b: the anchor gizmo and Duplicate ----
@@ -462,9 +673,22 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
             if a['mode'] == 'rotate':
                 edit.rotateOwnAxes(P, st, quat)                     # the release (4653): the items' own axes turn with them
             K['gizmos'].append({'action': i, 'pivot': st.pos.toArray(), 'quat': st.quat.toArray()})
+        elif op == 'addItem':                                       # 1.1b: an item made by addItem (lib/script.mjs `addItem`)
+            f = dict(a.get('fields') or {})
+            if a.get('mesh') is not None:
+                f['mesh'] = need('items', a['mesh']).id
+            it = edit.addItem(P, a['type'], gid(a.get('parent')), f)
+            if a.get('name') is not None:
+                it.name = a['name']
+            if a.get('key') is not None:
+                K['items'][a['key']] = it
+        elif op == 'setItem':                                       # 1.1b: fields of a keyed item
+            for k, v in a['set'].items():
+                setattr(need('items', a['item']), k, v)
         elif op == 'duplicate':
             made, s_items, s_anchors = DUP.duplicateSelection(P, item_ids(a), [anchor_of(k).id for k in a.get('anchors') or []])
             if made is not None:                                    # ("Nothing to duplicate" leaves before onSelChange, 9907)
+                gsel.items = list(s_items); gsel.anchors = list(s_anchors)
                 sel_last[0] = s_items[len(s_items) - 1] if s_items and not s_anchors else None   # (with the copy's anchors selected the panel is the anchors', 8629)
                 G.panelsRendered(P, sel_last[0])                    # onSelChange -> renderOutliner (9980)
             K['duplicates'].append({'action': i, 'toast': DUP.duplicateMessage(made), 'sel': s_items, 'asel': s_anchors})
@@ -620,7 +844,7 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
             before = set(P.items)
             mg, msg = SYM.applySymmetry(P, g)
             if mg is not None:
-                G.panelsRendered(P, sel_last[0])                    # renderOutliner (9900)
+                G.panelsRendered(P, sel_last[0])                    # renderOutliner (14128)
             K['symRecs'].append({'action': i, 'op': op, 'toast': msg, 'sel': list(gsel.items), 'asel': [], 'made': [x for x in P.items if x not in before], 'project': project_to_dict(P)})
         elif op == 'union':
             from hairmesh.core import union as UN
@@ -637,6 +861,22 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
                 sel_last[0] = gsel.items[len(gsel.items) - 1] if gsel.items else None
                 G.panelsRendered(P, sel_last[0])                    # onSelChange -> renderOutliner
             K['unionRecs'].append({'action': i, 'op': op, 'toast': msg, 'sel': list(gsel.items), 'asel': [], 'made': [x for x in P.items if x not in before], 'project': project_to_dict(P)})
+        elif op == 'recalcLocks':                                      # 1.0.2: recalcGroup (4579), the group's "Recalculate glued locks"
+            from hairmesh.core import union as UN
+            settle_frame(P)
+            g = need('groups', a['group'])
+            gsel.items = [g.id]; gsel.anchors = []
+            sel_last[0] = g.id; G.panelsRendered(P, g.id)
+            glued = UN.gluedLocks(P, g)
+            before = set(P.items)
+            made, msg, changed, newsel = UN.recalcGroup(P, g)
+            gsel.items = list(newsel); gsel.anchors = []
+            if changed:
+                if P.conv:
+                    CONV.regenConversion(P, RW.buildRowTables(P).T, CR.crownData)
+                sel_last[0] = gsel.items[len(gsel.items) - 1] if gsel.items else None
+                G.panelsRendered(P, sel_last[0])                    # onSelChange -> renderOutliner
+            K['unionRecs'].append({'action': i, 'op': op, 'toast': msg, 'sel': list(gsel.items), 'asel': [], 'made': [x for x in P.items if x not in before], 'project': project_to_dict(P), 'glued': glued})
         # ---- 4.6: the Profile tab and the modifier's sheet (lib/script.mjs `applyModifier`, `pasteModifier`, `copyModifier`, `tubeProp`, `sameProfile`) ----
         elif op in ('applyModifier', 'pasteModifier'):
             from hairmesh.core import modifier as MOD
@@ -652,7 +892,7 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
                 made, msg = MOD.pasteModifier(P, ids, K.get('modClip'))
             if made:
                 gsel.items = [t.id for t in made]; gsel.anchors = []
-                sel_last[0] = gsel.items[len(gsel.items) - 1]; G.panelsRendered(P, sel_last[0])   # onSelChange (6730, 6752)
+                sel_last[0] = gsel.items[len(gsel.items) - 1]; G.panelsRendered(P, sel_last[0])   # onSelChange (10072, 6752)
                 if a.get('key') is not None:
                     K['tubes'][a['key']] = made[0]
             K['tubeRecs'].append({'action': i, 'op': op, 'toast': msg, 'sel': list(gsel.items), 'asel': [], 'made': [x for x in P.items if x not in before], 'project': project_to_dict(P)})
@@ -726,6 +966,41 @@ def run_script(P, actions, draws=None, base_dir=None, cuts=None, recorded_grids=
             if not (k.type == 'skin' and all(x == 'bulge' for x in a['set'])) and P.conv:
                 CONV.regenConversion(P, RW.buildRowTables(P).T, CR.crownData)
             K['topoRecs'].append({'action': i, 'op': op, 'toast': None, 'sel': list(gsel.items), 'asel': list(gsel.anchors), 'made': [], 'project': project_to_dict(P)})
+        # ---- lot 1.2 E1 (1.0.3): the Even loops / Proxy shell items as data (lib/script.mjs `addEven`, `addShell`, `esSet`, `modsOf`; evenshell.json) ----
+        elif op in ('addEven', 'addShell'):
+            from hairmesh.core import topology as TP
+            CM.rebuild_dirty(P)
+            ids = item_ids(a)
+            gsel.items = list(ids); gsel.anchors = []
+            sel_last[0] = ids[len(ids) - 1] if ids else None; G.panelsRendered(P, sel_last[0])   # (the selection given, onSelChange)
+            if op == 'addEven' and a.get('defaults') is not None:   # (S.evenDefaults: kept for the actions after)
+                K['topoDefaults']['addEven'] = {**M.EVEN_DEFAULTS, **a['defaults']}
+            before = set(P.items)
+            made, msg = TP.addEvens(P, ids, K['topoDefaults'].get('addEven')) if op == 'addEven' else TP.addShells(P, ids)
+            if made:
+                if op == 'addEven' and P.conv:                      # (addEvens 10741: S.surfDirty; if (S.conv) regenConversion())
+                    CONV.regenConversion(P, RW.buildRowTables(P).T, CR.crownData)
+                gsel.items = [x.id for x in made]; gsel.anchors = []
+                sel_last[0] = gsel.items[len(gsel.items) - 1]; G.panelsRendered(P, sel_last[0])   # onSelChange -> renderOutliner
+            new = [x for x in P.items if x not in before]
+            k = P.items[new[0]] if new else (made[0] if made else None)
+            if k is not None and a.get('key') is not None:
+                K['items'][a['key']] = k
+            if k is not None:
+                es_fields(P, k, a, curve_of)
+            K['esRecs'].append({'action': i, 'op': op, 'toast': msg, 'sel': list(gsel.items), 'asel': [], 'made': new, 'project': project_to_dict(P)})
+        elif op == 'esSet':
+            k = need('items', a['item'])
+            es_fields(P, k, a, curve_of)
+            K['esRecs'].append({'action': i, 'op': op, 'toast': None, 'sel': list(gsel.items), 'asel': list(gsel.anchors), 'made': [], 'project': project_to_dict(P)})
+        elif op == 'modsOf':
+            from hairmesh.core import scene as SCN
+            from hairmesh.core.density import evenOf, shellsOf, tipOf
+            SCN.settle(P)
+            ctx = RW.buildRowTables(P)
+            locks = sorted((e['L'] for e in ctx.LOCK_CACHE.values()), key=lambda L: L.key)
+            K['esRecs'].append({'action': i, 'op': op, 'locks': [{'key': L.key, 'cs': [c.id for c in L.cs], 'tip': getattr(tipOf(P, L), 'id', None), 'even': getattr(evenOf(P, L), 'id', None),
+                                                                   'shells': [x.id for x in shellsOf(P, L)]} for L in locks]})
         elif op == 'convertSkin':
             from hairmesh.core import topology as TP
             k = K['topo'][a['item']]
@@ -770,8 +1045,11 @@ def run_guide_op(P, i, a, rec, K, gsel, curve_of, need, sel_last):
     op = a['op']
 
     def frame():
+        # (the harness's frame(): the dirty curves rebuilt outside the frame loop, then a tick of it — which, with no curve
+        # left to rebuild, has no `changed`: a flat lock keeps its ribbon, 14823; fuzz case 1100084)
+        CM.rebuild_dirty(P)
         scene.settle(P)
-        RW.buildRowTables(P)                                        # (the frame the harness runs: rebuildSurfaces fills the groups' conv, groupConv — usedStep then reads them)
+        RW.buildRowTables(P)                                      # (the frame the harness runs: rebuildSurfaces fills the groups' conv, groupConv — usedStep then reads them)
 
     def needrec():
         if rec is None:
@@ -858,7 +1136,7 @@ CROWN_OPS = ('createCrown', 'addCrownCurve', 'crownProp', 'crownKey', 'attach', 
 
 def run_crown_op(P, i, a, rec, K, gsel, need, sel_last):
     """the 4.3 ops on hairmesh.core.crowntool (lib/script.mjs: what each does in the original), each followed by the
-    crown part of a frame (crowntool.frameSync: crownSymSync, updateAttachments, 12060-12063) and recorded as
+    crown part of a frame (crowntool.frameSync: crownSymSync, updateAttachments, 14804-14808) and recorded as
     crown.json: the toast, S.sel / S.asel, the project file, every crown's crownData"""
     from hairmesh.core import crowntool as CT
     from hairmesh.core.hairmesh_io import project_to_dict
@@ -1008,13 +1286,367 @@ def run_edges(P, a, i, K, rec, esel, ememo, gsel, sel_last):
         K['edgeRecs'].append({'action': i, 'op': op, 'toast': msg, 'sel': list(gsel.items), 'asel': list(gsel.anchors), 'made': [x for x in P.items if x not in before], 'project': project_to_dict(P), 'edges': now()})
 
 
-def settle_frame(P):
-    """What the harness's settle() does to the model between two ops of the 4.5 scripts (the frame loop, 12062-12074):
-    the dirty curves rebuilt, the row tables when there are walls (rebuildSurfaces: groupConv fills the conv of every
+RIB_OPS = ('ribDraw', 'ribSet', 'ribProp', 'ribAnchor', 'ribPaint', 'ribClear', 'ribPlain', 'ribConvert', 'ribDump', 'ribWeld')
+
+
+def rib_enc(v):
+    """lib/script.mjs's ribEnc: every number with what JSON drops — '-0', 'NaN', 'Inf' / '-Inf' — so the dumps compare
+    bit for bit (an int 0 is +0: a Python int where the original has −0 shows up)"""
+    import math
+    if isinstance(v, list):
+        return [rib_enc(x) for x in v]
+    if isinstance(v, dict):
+        return {k: rib_enc(x) for k, x in v.items()}
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return v
+    if v != v:
+        return 'NaN'
+    if v in (math.inf, -math.inf):
+        return 'Inf' if v > 0 else '-Inf'
+    if v == 0 and math.copysign(1.0, v) < 0:
+        return '-0'
+    return v
+
+
+def rib_dump(P):
+    """every flat lock's derived state as lib/script.mjs's ribDump writes it (rib.json): ribF (p, A, T, w, s), its root,
+    ribRings, ribX (rings, e, g) and what its ribObj draws (rib_geom: Float32 positions, index, outline)"""
+    return rib_enc(_rib_dump(P))
+
+
+def _rib_dump(P):
+    from hairmesh.core.js import truthy
+    out = []
+    for c in P.curves():
+        if not truthy(c.rib):
+            continue
+        F = c.ribF; R = F.root if F is not None else None; g = c.rib_geom; X = c.ribX
+        out.append({'id': c.id, 'dirty': bool(c.ribDirty),
+                    'F': [{'p': f.p.toArray(), 'A': f.A.toArray(), 'T': f.T.toArray(), 'w': f.w, 's': f.s} for f in F] if F is not None else None,
+                    'root': {'mid': R.mid.toArray(), 'A0': R.A0.toArray(), 'B0': R.B0.toArray(), 'prof': [[q['x'], q['y'], q['t']] for q in R.prof], 'w0': R.w0} if R is not None else None,
+                    'rings': [[q.toArray() for q in r] for r in c.ribRings] if c.ribRings else None,
+                    'X': {'rings': [[q.toArray() for q in r] for r in X['rings']], 'e': list(X['e']), 'g': list(X['g'])} if X else None,
+                    'geom': {'pos': list(g['pos']), 'index': list(g['index']), 'lines': list(g['lines'])} if g is not None else None})
+    return out
+
+
+def rib_convert_label(panel):
+    # the ✔ Convert button's text (6142)
+    return f'✔ Convert to {panel["n"]} curves & walls' if panel['vol'] else '✔ Convert to 2 curves & a wall'
+
+
+RIB_SLIDERS = {'smooth': (0, 1), 'tip': (0, 0.8), 'extH': (0, 3), 'extFade': (0, 1), 'offFade': (0, 1), 'r': (-180, 180)}   # ribCurveProps (6109-6129), ribAnchorProps' Rotation (6095; Width: 0 … wmax, 6094)
+
+
+def slider_value(v, lo, hi):
+    """what `+r.value` reads after `r.value = String(v)` on an <input type=range min=lo max=hi> of the harness's DOM
+    (jsdom's sanitization, helpers/form-controls.js: the value clamped to [min, max], no step rounding; a bound that is
+    no valid number string — NaN, ±Infinity — leaves the range's default, 0 / 100); -0 reads back as +0 ("0")"""
+    import math
+    lo = lo if math.isfinite(lo) else 0
+    hi = hi if math.isfinite(hi) else 100
+    x = lo if v < lo else hi if v > hi else v
+    return abs(x) if x == 0 else x
+
+
+def run_rib_op(P, i, a, rec, draw_rec, K, gsel, need, item_ids, gid, st, brush_rh, sel_last):
+    """the flat lock ops of lib/script.mjs (1.1f N1) on hairmesh.core.rib, each followed by the frames (settle_frame with
+    the camera direction the harness recorded) and recorded as the harness records it (rib.json).
+    K['ribLocal'] (the fuzz, tests/helpers/fuzz.py: no record of the harness while the list is drawn): the ops that need
+    no view of the harness run without it — the frames with the port's camera (every fuzz lock has its own `view`, which
+    the frame reads instead), the sliders' values by slider_value. With a record, slider_value is checked against the
+    value the harness's slider took."""
+    from hairmesh.core import anchorbrush as AB, rib as RB
+    op = a['op']
+    if st['brush'] is None:
+        st['brush'] = dict(RB.RIB_BRUSH); st['ribR'] = RB.RIB_R
+
+    def anchor_of(k):
+        return need('anchors', k)
+
+    def slider(k, v, lo, hi, got):
+        mine = slider_value(v, lo, hi)
+        if rec is not None and got.get(k) != mine:
+            raise AssertionError(f'mirror: action {i} ({op}): the {k} slider took {got.get(k)!r} in the harness, slider_value gives {mine!r}')
+        return mine
+
+    def record(before, toast, extra=None):
+        if rec is None and not K.get('ribLocal'):
+            raise ValueError(f'script: action {i} ({op}) needs the record of the harness (rib.json)')
+        if rec is not None:
+            st['cam'] = V3(*rec['camDir'])
+        harness_settle(P, st['cam'])
+        K['ribRecs'].append({'action': i, 'op': op, 'toast': toast, 'sel': list(gsel.items), 'asel': list(gsel.anchors),
+                             'made': [x for x in P.items if x not in before] if before is not None else [], 'project': project_to_dict(P),
+                             'ribs': rib_dump(P), **(extra or {})})
+    if op == 'ribDraw':
+        if draw_rec is None:
+            raise ValueError(f'script: action {i} (ribDraw) needs the rays recorded by the harness (draw.json)')
+        before = set(P.items)
+        parent = gid(a.get('parent'))                               # (no panel is rendered: the group's conv stays as it is)
+        sel = [anchor_of(k) for k in a.get('anchors') or []]
+        if a.get('ribR') is not None:
+            st['ribR'] = a['ribR']
+        drawing = edit.DrawState(); clicks = []
+        for j, click in enumerate(draw_rec['clicks']):
+            view = AB.BrushView(None, None, V3(*click['camDir']), V3(*click['camPos']), click['H'],
+                                tan_half=AB.tanHalf(click['fov']) if click['fov'] is not None else None, ortho=click['ortho'])
+            lock = RB.LockDraw(sel, st['ribR'], lambda p, v=view: AB.worldPerPixelAt(v, p, P.S.scale))
+            an = edit.addDrawPoint(P, drawing, Ray(V3(*click['origin']), V3(*click['direction'])), V3(*click['camDir']), V3(*click['pivot']), parent=parent, lock=lock)
+            clicks.append({'toast': drawing.msg, 'curve': drawing.curve.id if drawing.curve is not None else None, 'anchor': an.id if an is not None else None,
+                           'point': an.pos.toArray() if an is not None else None, 'wpp': lock.wpp(an.pos) if an is not None else None})
+            if a.get('anchorKeys') and j < len(a['anchorKeys']) and a['anchorKeys'][j] is not None and an is not None:
+                K['anchors'][a['anchorKeys'][j]] = an
+        had = drawing.curve is not None
+        c = edit.finishDrawing(P, drawing)
+        K['ribClicks'].append({'action': i, 'clicks': clicks})
+        gsel.items = [c.id] if c is not None else []; gsel.anchors = []
+        if a.get('key') is not None and c is not None:
+            K['curves'][a['key']] = c
+        record(before, 'A curve needs at least 2 points' if had and c is None else None)
+    elif op == 'ribSet':                                             # (restore: no frame, no record)
+        import json
+        c = need('curves', a['curve']); r = json.loads(json.dumps(a['rib']))
+        if a.get('k'):
+            r['k'] = {str(anchor_of(k).id): dict(v) for k, v in a['k'].items()}
+        if a.get('ends'):
+            r['ends'] = [anchor_of(k).id for k in a['ends']]
+        c.rib = r
+    elif op == 'ribProp':
+        c = need('curves', a['curve']); panel = RB.ribCurvePanel(P, c); got = (rec or {}).get('applied') or {}; applied = {}
+        for k, v in (a.get('set') or {}).items():
+            applied[k] = slider(k, v, *RIB_SLIDERS[k], got) if not (panel['vol'] and k in ('extH', 'extFade', 'offFade')) else None   # (a volume branch has no Extrude / Offset rows)
+            if applied[k] is not None:
+                RB.ribProp(c, k, applied[k])
+        if a.get('invert'):
+            applied['invert'] = not panel['vol']
+            if applied['invert']:
+                RB.ribInvert(c)
+        record(None, None, {'applied': applied})
+    elif op == 'ribAnchor':
+        ids = [anchor_of(k).id for k in a['anchors']]; gsel.anchors = list(ids)
+        panel = RB.ribAnchorPanel(P, ids); got = (rec or {}).get('applied') or {}; applied = {}
+        for k, v in (a.get('set') or {}).items():
+            has = panel is not None and not panel['at_root']
+            applied[k] = (slider(k, v, 0, panel['wmax'], got) if k == 'w' else slider(k, v, *RIB_SLIDERS[k], got)) if has else None
+            if has:
+                RB.ribAnchorSet(P, ids, k, applied[k])
+        title = muted = None                                         # (the panel's heading and its line at a root, 6084, 6093)
+        if panel is not None:
+            title = '▬ Flat lock at the anchor' + (f's ({panel["n"]})' if panel['n'] > 1 else '')
+            if panel['at_root']:
+                muted = f'The root spans the {panel["ends"]} anchors it started from — its shape follows them.'
+        record(None, None, {'applied': applied, 'title': title, 'muted': muted})
+    elif op == 'ribPaint':
+        settle_frame(P, st['cam'])                                  # (the harness's frame first)
+        gsel.items = list(item_ids(a)); gsel.anchors = [anchor_of(k).id for k in a.get('anchors') or []]
+        b = st['brush']; b.update(on=True, kind=a.get('kind') or 'ext'); b.update(a.get('set') or {})
+        if a.get('R') is not None:
+            brush_rh[0] = a['R']
+        if a.get('hard') is not None:
+            brush_rh[1] = a['hard']
+        Rb, hard = brush_rh
+        on = bool(b['on'] and RB.ribCurvesSel(P, gsel.items, gsel.anchors))   # (ribBrushOn: S.tool is never 'draw' here)
+        screen = js_projector(rec['view']); paint = a.get('paint') or 'paint'
+        pts = a['points']; lx, ly = pts[0]; changed = []
+        if on:
+            changed.append(RB.paintRib(P, gsel.items, gsel.anchors, (lx, ly), paint, BR.FIRST_DAB, b, Rb, hard, screen))
+            for x_, y_ in pts[1:]:
+                dd = js_hypot(x_ - lx, y_ - ly); lx, ly = x_, y_
+                changed.append(RB.paintRib(P, gsel.items, gsel.anchors, (x_, y_), paint, BR.dabAmount(dd), b, Rb, hard, screen))
+        else:
+            changed = [False] * len(pts)
+        record(None, None, {'on': on, 'changed': changed})
+    elif op in ('ribClear', 'ribPlain', 'ribConvert'):
+        c = need('curves', a['curve']); before = set(P.items); panel = RB.ribCurvePanel(P, c); toast = None
+        if op == 'ribClear':
+            pressed = not panel['vol']; label = 'Clear' if pressed else None
+            if pressed:
+                RB.ribClear(c, a['kind'])
+        elif op == 'ribPlain':
+            pressed = True; label = 'Plain curve'
+            RB.ribPlain(c)
+        else:
+            pressed = True; label = rib_convert_label(panel)
+            made, toast = RB.ribConvert(P, c, V3(*rec['camDir']) if rec else st['cam'])
+            if made:
+                gsel.items = [x.id for x in made]; gsel.anchors = []
+                sel_last[0] = made[len(made) - 1].id
+                G.panelsRendered(P, sel_last[0])                    # (onSelChange, renderOutliner)
+                for k, x in zip(a.get('keys') or [], made):
+                    K['curves'][k] = x
+        record(before, toast, {'pressed': pressed, 'label': label})
+    elif op == 'ribDump':
+        record(None, None)
+    elif op == 'ribWeld':
+        settle_frame(P, st['cam'])
+        lst = edit.anchorList(P, gsel.items, gsel.anchors); screen = js_projector(rec['view'])
+        cands = []
+        for k in a['anchors']:
+            b = W.findWeldCandidate(P, anchor_of(k), lst, screen)
+            cands.append(b.id if b is not None else None)
+        record(None, None, {'weld': cands})
+
+
+XJUNC_OPS = ('settle', 'separateX', 'separateGroupX', 'xWalls', 'xZoneWalls', 'menuLabels', 'xPartner')
+
+
+def run_xjunc_op(P, i, a, K, gsel, sel_last, anchor_of, curve_of, need):
+    """1.1f: the X junction ops of lib/script.mjs on hairmesh.core.xjunc, recorded as the harness records them
+    (xjunc.json): the toast, the selection after, the items made, the project right after the op, and per op `ok`
+    (separateAtX's result) / `pie` (the anchor pie's condition) / `nx` (the group button's count) / `labels`"""
+    from hairmesh.core import xjunc as XJ
+    op = a['op']
+    if op == 'settle':
+        harness_settle(P); return
+    if op == 'xPartner':                                            # (a lookup: no frame first, the selection as it is)
+        before = set(P.items)
+        p = XJ.xPartner(curve_of(a['curve']), [curve_of(k) for k in a['list']])
+        K['xjuncRecs'].append({'action': i, 'op': op, 'toast': None, 'sel': [x for x in gsel.items if x in P.items], 'asel': list(gsel.anchors),
+                               'made': [], 'project': project_to_dict(P), 'partner': p.id if p is not None else None})
+        return
+    if not a.get('fresh'):
+        harness_settle(P)                                           # (the frame loop first, as between two clicks)
+
+    def regen():
+        if P.conv:
+            CONV.regenConversion(P, RW.buildRowTables(P).T, CR.crownData)
+
+    def select(items, anchors=()):
+        gsel.items = list(dict.fromkeys(items)); gsel.anchors = list(anchors)   # (S.sel is a Set: a wall found twice, 8127, once)
+        sel_last[0] = props_item(P, gsel)
+        G.panelsRendered(P, sel_last[0])                            # onSelChange (renderProps, renderOutliner)
+
+    def record(msg, **extra):
+        K['xjuncRecs'].append({'action': i, 'op': op, 'toast': msg, 'sel': [x for x in gsel.items if x in P.items], 'asel': list(gsel.anchors),
+                               'made': [x for x in P.items if x not in before], 'project': project_to_dict(P), **extra})
+    if op == 'separateX':
+        J = anchor_of(a['anchor'])
+        select([], [J.id])
+        pie = XJ.canSeparateAt(P, J)
+        before = set(P.items)
+        ok, msg, _w = XJ.separateAtX(P, J, bool(a.get('silent')), regen)
+        if msg is not None and msg != XJ.NO_X:                      # (6884: not silent)
+            select([x for x in gsel.items if x in P.items])
+        for k, s in zip(a.get('keys') or [], [s for s in P.surfaces() if s.id not in before]):
+            if k is not None:
+                K['surfaces'][k] = s
+        record(msg, ok=ok, pie=pie)
+    elif op == 'separateGroupX':
+        g = need('groups', a['group'])
+        select([g.id])
+        nx = XJ.xCount(P, g)
+        before = set(P.items)
+        _k, msg = XJ.separateGroupX(P, g, regen)
+        select([x for x in gsel.items if x in P.items])             # (6895: S.asel = [], onSelChange, renderOutliner)
+        record(msg, nx=nx)
+    elif op in ('xWalls', 'xZoneWalls'):
+        cs = [curve_of(k) for k in a['curves']] if op == 'xWalls' else [curve_of(a['a']), curve_of(a['b'])]
+        select([c.id for c in cs])
+        before = set(P.items)
+        made, msg, own = XJ.xPathWalls(P, cs, regen) if op == 'xWalls' else XJ.xZoneWalls(P, cs[0], cs[1], regen)
+        if own or made:                                             # (8102 / 8130: the walls made, even none; createSurfaces: when it made some)
+            select([s.id for s in made])
+        for k, s in zip(a.get('keys') or [], made):
+            if k is not None:
+                K['surfaces'][k] = s
+        record(msg)
+    elif op == 'menuLabels':
+        cs = [curve_of(k) for k in a['curves']]
+        select([c.id for c in cs])
+        before = set(P.items)
+        record(None, labels=[t for _k, t in WL.surfaceMenuChoices(P, cs)])
+
+
+def _nz(x):
+    """a -0 written '-0' (the harness's fillAt record keeps it apart so: JSON.stringify writes -0 as 0)"""
+    if isinstance(x, list):
+        return [_nz(v) for v in x]
+    return '-0' if isinstance(x, float) and x == 0 and struct.pack('<d', x) != struct.pack('<d', 0.0) else x
+
+
+def fill_point(a, screen, anchor_of):
+    """the pointer of a `fillAt` op in the pane's pixels (y down): `at`, or `world` / `mid` (two anchors lerped) on the
+    screen, plus `off` — as lib/script.mjs computes it"""
+    if a.get('world') is not None:
+        x, y, _z = screen(V3(*a['world']))
+    elif a.get('mid') is not None:
+        md = a['mid']
+        x, y, _z = screen(anchor_of(md[0]).pos.clone().lerp(anchor_of(md[1]).pos, md[2] if len(md) > 2 and md[2] is not None else 0.5))
+    else:
+        x, y = a['at']
+    o = a.get('off') or [0, 0]
+    return (x + o[0], y + o[1])
+
+
+def run_fillat_op(P, i, a, K, gsel, sel_last, anchor_of, curve_of):
+    """1.1f: the `fillAt` op of lib/script.mjs on hairmesh.core.fillat, with the view the harness recorded (fillat.json,
+    passed in as K['fillIn']: action -> record): startFillAt at the point, then the confirmation (`confirm`) or Cancel;
+    `fillPlan`: runFillPlan on stretches given by keys. Recorded in K['fillRecs'] as the harness records them."""
+    from hairmesh.core import fillat as FA
+    gsel.items = []; gsel.anchors = []; sel_last[0] = None
+    G.panelsRendered(P, None)                                       # (nothing selected first: onSelChange)
+    rec = (K.get('fillIn') or {}).get(i) if a['op'] == 'fillAt' else None
+    if not a.get('fresh'):
+        harness_settle(P, V3(*rec['camDir']) if rec and rec.get('camDir') else None)   # (a flat lock with no view of its own faces the camera)
+
+    def regen():
+        if P.conv:
+            CONV.regenConversion(P, RW.buildRowTables(P).T, CR.crownData)
+
+    def select(r):
+        if r['sel'] is not None:
+            gsel.items = list(r['sel']); gsel.anchors = []
+            sel_last[0] = gsel.items[len(gsel.items) - 1] if gsel.items else None
+            G.panelsRendered(P, sel_last[0])                        # (onSelChange, renderOutliner)
+    if a['op'] == 'fillPlan':
+        plan = {'sides': [[{'c': curve_of(k), 'i0': i0, 'i1': i1} for k, i0, i1 in sd] for sd in a['sides']], 'zone': bool(a.get('zone'))}
+        before = set(P.items)
+        r = FA.runFillPlan(P, plan, regen); select(r)
+        K.setdefault('fillRecs', []).append({'action': i, 'op': 'fillPlan', 'toast': r['toast'], 'sel': list(gsel.items), 'asel': list(gsel.anchors),
+                                             'made': [x for x in P.items if x not in before], 'project': project_to_dict(P)})
+        return
+    if rec is None:
+        raise ValueError(f'script: action {i} (fillAt) needs the view recorded by the harness (fillat.json)')
+    screen = js_projector(rec['view'])
+    m = fill_point(a, screen, anchor_of)
+    before = set(P.items)
+    found = FA.startFillAt(P, m, screen)
+    out = {'action': i, 'op': 'fillAt', 'm': _nz([m[0], m[1]]), 'startToast': found['toast'], 'open': found['title'] is not None, 'title': found['title'],
+           'viz': _nz([_f32(x) for x in found['outline']]) if found['outline'] else None}
+    hole = FA.holeAt(P, m, screen); plan = FA.fillPlanAt(P, m, screen)
+    out['hits'] = [{'c': h['c'].id, 'si': _nz(h['si']), 't': _nz(h['t']), 'z': _nz(h['z']), 'ang': _nz(h['ang'])} for h in FA.fillHits(P, m, screen)]
+    out['hole'] = {'P': [x.id for x in hole['P']], 'V': [x.id for x in hole['V']], 'parent': hole['parent'], 'pts': [[_nz(p.toArray()) for p in L] for L in hole['pts']]} if hole else None
+    out['plan'] = {'sides': [[{'c': q['c'].id, 'i0': q['i0'], 'i1': q['i1']} for q in sd] for sd in plan['sides']], 'zone': plan['zone']} if plan else None
+    toast = None
+    if out['open'] and a.get('confirm'):
+        r = FA.fillFound(P, found, regen)
+        toast = r['toast']; select(r)
+    out.update({'vizAfter': False, 'toast': toast, 'sel': list(gsel.items), 'asel': list(gsel.anchors), 'made': [x for x in P.items if x not in before], 'project': project_to_dict(P)})
+    K.setdefault('fillRecs', []).append(out)
+
+
+def harness_settle(P, cam_dir=None):
+    """the harness's ctx.settle() before the records of the 1.1f ops: the whole frame loop — its crown part too
+    (crownSymSync, updateAttachments, 14804-14808: crowntool.frameSync; fuzz case 1200006) — then settle_frame"""
+    from hairmesh.core import crowntool as CT
+    before = {c.id: c.samples for c in P.curves()}
+    CT.frameSync(P)
+    # (the curves its rebuilds resampled are the frame's `changed`: the ribbons follow in the same frame, 14823; fuzz case 1300118)
+    rebuilt = [c.id for c in P.curves() if before.get(c.id) is not c.samples]
+    return settle_frame(P, cam_dir, rebuilt)
+
+
+def settle_frame(P, cam_dir=None, extra=()):
+    """What the harness's settle() does to the model between two ops of the 4.5 scripts (the frame loop, 14807-14822):
+    the dirty curves rebuilt, the row tables when there are walls or a Proxy shell (rebuildSurfaces: groupConv fills the conv of every
     lock's group) and the dirty modifiers rebuilt (rebuildTube: ensureTubeRef). Returns the tables' context or None."""
     from hairmesh.core import scene
-    scene.settle(P)
-    ctx = RW.buildRowTables(P) if P.surfaces() else None
+    scene.settle(P, extra=extra, cam_dir=cam_dir)                  # (1.1f N1: a flat lock without its own view faces cam_dir)
+    # (with no wall too when there is a Proxy shell: the frame's rebuildSurfaces, 4221, builds the tables with no lock
+    # all the same, and shellSets, 3008, writes the fit of a deformation saved without v into the item; fuzz case
+    # 12200001 — the add-on's live.grids always builds)
+    ctx = RW.buildRowTables(P) if P.surfaces() or P.shells() else None
     for t in P.tubes():
         if t.dirty:
             TB.rebuildTube(P, t)

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Data model of a HairMesh project: the scene the original keeps in `items`, the anchors and `S`
 (hair-modeler.clean.html:691-726), as dataclasses.
 
@@ -15,10 +15,24 @@ from typing import Any
 from .vec3 import Vec3
 
 # conversion parameters a group may override (CONV_KEYS of the original)
-CONV_KEYS = ('step', 'dev', 'straighten', 'loopOrient', 'tipMode', 'relax', 'mergeTrunks')
+CONV_KEYS = ('step', 'dev', 'straighten', 'loopOrient', 'tipMode', 'relax', 'mergeTrunks', 'mergeDist', 'proxy')   # 1.0.2: mergeDist (1638); 1.0.3: proxy (1665 there)
+# 1.0.3: the viewport display the file keeps (settings.view, viewData 15813 there): what S holds of it beside xray and
+# guideOpacity, in the order viewData writes them. The add-on shows none of it (Blender's own viewport): it is read,
+# checked as applyView does and written back, so a file goes through the add-on with its display.
+VIEW_SHOW = ('showAnchors', 'showCurves', 'showGuides', 'showGrid', 'showLoops', 'showSurfaces', 'showMods', 'showMeshWire')
+VIEW_OP = ('anchorOpacity', 'curveOpacity', 'guideOpacity', 'gridOpacity', 'surfOpacity', 'modOpacity')
+VIEW_DEFAULTS = {'oneColor': False, 'modelColor': '#808080', 'showAnchors': True, 'showCurves': True, 'showGuides': True, 'showGrid': True, 'showLoops': True,
+                 'showSurfaces': True, 'showMods': True, 'showMeshWire': True, 'anchorOpacity': 1, 'curveOpacity': 1, 'gridOpacity': 1, 'surfOpacity': 0.85, 'modOpacity': 0.45}
 # defaults merged into cap / skin items on load (hair-modeler.clean.html:8546, 8679)
 CAP_DEFAULTS = {'mode': 'quad', 'start': True, 'end': True, 'size': 0, 'segs': 2, 'round': 1}
 SKIN_DEFAULTS = {'open': False, 'bulge': 0}
+# 1.0.3 (lines of reference/v1.0.3/hair-modeler.clean.html): the defaults merged into an Even loops / Proxy shell item
+# on load (restore 1403-1404): EVEN_DEFAULTS (1688; str — the strength 0 … 1), SHELL_DEFAULTS (2971; eq — Equal
+# spacing, fall — Edge falloff)
+EVEN_DEFAULTS = {'str': 1}
+SHELL_DEFAULTS = {'eq': 0.5, 'fall': 0.3}
+SHELL_DEF_NS = 24                                                   # the Brush deformation's grid (3520): points along the shell
+SHELL_DEF_NA = 12                                                   # … and round it
 
 
 @dataclass(eq=False, kw_only=True)
@@ -37,7 +51,7 @@ class Anchor:
     pass_: list[int] | None = None       # a.pass: [id, id], the two directions passing smoothly through a junction (passRule, 4885)
     att: Attachment | None = None
     attPos: Vec3 | None = None
-    sec: float | None = None             # a.sec (1.0.1, file key `sc`): the cross-section an anchor of a converted modifier's edge lies in (lockSecs, 1435)
+    sec: float | None = None             # a.sec (1.0.1, file key `sc`): the cross-section an anchor of a converted modifier's edge lies in (lockSecs, 1599)
 
 
 @dataclass(eq=False, kw_only=True)
@@ -91,7 +105,16 @@ class Curve(Item):
     asrc: list[Vec3] | None = None       # anchor positions before Even out
     junc: bool = False                   # junction curve (Unite locks)
     conn: str | None = None              # crown connector: 'part' | 'low'
-    para: bool = False                   # 1.0.1: an edge of a converted modifier (convertTube, 6758) — the `para` branch of buildRowTables (2601)
+    para: bool = False                   # 1.0.1: an edge of a converted modifier (convertTube, 10100) — the `para` branch of buildRowTables (2601)
+    path: list | None = None             # 1.0.2: an edge curve (EC) of an X: the stretches [curve id, anchor id, anchor id] it runs along (1341); kept, not edited here
+    rib: dict | None = None              # 1.0.2: a flat lock / volume branch (Draw → Lock, 1316; core/rib.py)
+    # computed by rebuildRib (core/rib.py, 6000; never in the file)
+    ribF: Any = field(default=None, repr=False)        # c.ribF: the ribbon's frame (ribFrame), with .root
+    ribRings: Any = field(default=None, repr=False)    # c.ribRings: a volume branch's rings (ribRings)
+    ribX: Any = field(default=None, repr=False)        # c.ribX: an extruded lock's shape (ribExtShape)
+    ribDirty: bool = False                             # c.ribDirty: the frame rebuilds the ribbon
+    rib_geom: Any = field(default=None, repr=False)    # what c.ribObj draws (rib.ribbonGeometry / volumeGeometry); None = no ribObj
+    rib_key: Any = field(default=None, repr=False)     # (ours) what the ribbon was made from (rib.ribKey): the same key skips the rebuild
     # computed by rebuildCurve (1325)
     samples: list[Sample] = field(default_factory=list)
     arc: list[float] | None = None
@@ -157,6 +180,40 @@ class Tip(Item):
 
 
 @dataclass(eq=False, kw_only=True)
+class Even(Item):
+    """1.0.3: the Even loops modifier of a group (type 'even', 1686-1694; addEvens 10732): p = { str }, mask = { curve
+    id: [MASK_N weights] } painted along the curves of the group's locks (paintLockMask 9905: plain numbers, not
+    float32). The evaluation (shellSets / evenParts, 3008-3049) is core/shell.py's."""
+    p: dict = field(default_factory=dict)
+    mask: dict | None = None
+
+
+@dataclass(eq=False, kw_only=True)
+class ShellDef:
+    """k.def of a Proxy shell (3516-3520, shellDefGrid 8987): a grid of ns points along the shell x na round it, d = ns x
+    na x 3 displacements [along the axis, along the long axis, across] in the ring's frame (plain numbers; the file
+    keeps 3 decimals, snapshot 1351); v — 1: made on the older shell, 2: the newer one; None: saved without it
+    (shellSets 3009-3013 then decides and writes it)."""
+    ns: int
+    na: int
+    d: list = field(default_factory=list)
+    v: Any = None
+
+
+@dataclass(eq=False, kw_only=True)
+class Shell(Item):
+    """1.0.3: the Proxy shell modifier of a group (type 'shell', 2962-2978; addShells 10870): p = { eq, fall }, mask = {
+    curve id: [MASK_N weights] } (paintShellMask 9850: kept per curve, plain numbers), baked — converted (Convert to
+    shell), off — the keys of the locks taken out (shellLockList 10844; None when none), def_ — the Brush deformation
+    (`def` in the file; a Python keyword, hence def_)."""
+    p: dict = field(default_factory=dict)
+    baked: bool = False
+    mask: dict | None = None
+    off: list | None = None
+    def_: ShellDef | None = None
+
+
+@dataclass(eq=False, kw_only=True)
 class Tube(Item):
     src: int | None = None
     profile: list[list[float]] = field(default_factory=list)
@@ -173,12 +230,16 @@ class XMod(Item):
     p: dict = field(default_factory=dict)
     mask: list | None = None
     mesh: int | None = None
+    hold: list | None = None             # 1.0.2: an imported mesh's embedded mask, on its Thickness modifier (meshMaskMerge 1426); kept
 
 
 @dataclass(eq=False, kw_only=True)
 class IMesh(Item):
     src: Any = None
     dirty: bool = True
+    collide: bool = False                # 1.0.2: curves collide with it while drawing (1301); kept, not used here
+    smoothN: bool = False                # 1.0.2: the app's smooth normals display (1301); kept
+    look: dict | None = None             # 1.0.2: textures / flat shading of the app (cloneLook 4810); kept
 
 
 @dataclass(eq=False, kw_only=True)
@@ -196,6 +257,7 @@ class MeshItem(Item):
     srcSurfs: list[int] = field(default_factory=list)
     srcCrowns: list[int] = field(default_factory=list)
     symBaked: bool = False
+    smoothN: bool = False                # 1.0.2: the app's smooth normals display (1321); kept
     token: str | None = None             # ours (3.7): names this data; rebuilt data gets a new one (never in the file)
     pathGroup: int | None = None         # the group Path -> curve fills (edgeCurveGroup 3854; as in the original, not in the snapshot: gone after an undo or a reopen)
     bbox: Any = field(default=None, repr=False)   # the original's m.bbox (4586): (data, min, max) of Box3.setFromPoints, cleared by the bake (never in the file)
@@ -209,6 +271,7 @@ class Head:
     visible: bool = True
     showWire: bool = False
     src: dict | None = None
+    look: dict | None = None             # 1.0.2: textures / flat shading of the app (projectData 12708); kept
 
 
 @dataclass(eq=False, kw_only=True)
@@ -221,11 +284,15 @@ class Settings:
     tipMode: str = 'point'
     relax: float = 0
     mergeTrunks: bool = True
+    mergeDist: float | None = None       # 1.0.2: Merge Distance (S.mergeDist, 784); None = auto, a quarter of the loop step
+    proxy: bool = True                   # 1.0.3: Detail proxy (S.proxy, 803): lockDetail / proxyLoops in the row tables; on unless false
     convChecked: list[int] = field(default_factory=list)   # a Set in the original; kept in file order
     guideDefaults: dict = field(default_factory=lambda: {'density': 1, 'radius': None, 'blend': 1, 'local': True, 'priority': 0})
     xray: float = 0.2
     guideOpacity: float = 1
     brushMode: str = 'screen'
+    view: dict = field(default_factory=lambda: dict(VIEW_DEFAULTS))   # 1.0.3: the viewport display (VIEW_DEFAULTS)
+    extra: dict = field(default_factory=dict)   # settings of a later version the port does not know: written back as read
 
 
 @dataclass(eq=False, kw_only=True)
@@ -237,7 +304,7 @@ class SceneState:
     box.getCenter, (min + max) * 0.5. S's own initial value (center: new V3(), 699) never survives the start-up.
     Until 4.1 the center here was (0, 0, 0): a project with neither a head nor an anchor (a parity script without a
     head, a New project in Blender) oriented its two-curve walls from the wrong point (surfaceData, 2843) and mirrored
-    a symmetric group about y = 0 instead of y = 0.5 (mirrorPt, 9824) — the divergence found in 3.8b."""
+    a symmetric group about y = 0 instead of y = 0.5 (mirrorPt, 14039) — the divergence found in 3.8b."""
     scale: float = 1.0
     headH: float = 1.0
     yRef: float = 1.0
@@ -263,6 +330,7 @@ class Project:
     gen: int = 0                                                 # bumped by every structural change (items, parents, curve anchors, a group's conv.step): memos key on it
     rev: int = 0                                                 # bumped by every change that alters what a viewport shows (positions, samples, every save): drawing caches key on it
     _memo: dict = field(default_factory=dict, repr=False)        # per-project caches (usedStep), keyed on gen
+    merged_into: dict = field(default_factory=dict, repr=False)  # MERGED_INTO (7481): a piece merged into an identical one by splitAtAnchor, id -> id; cutCurves clears and reads it (never in the file, nor in a snapshot)
     conv: dict | None = None                                     # S.conv (10024): {entries, hidden} of a pending conversion (+ ours, not in the file: replaced, shown)
 
     # ---- the original's scene helpers (hair-modeler.clean.html:714-726) ----
@@ -277,7 +345,7 @@ class Project:
     def of_type(self, type_name):
         return [it for it in self.items.values() if it.type == type_name]
 
-    def curves(self): return self.of_type('curve')        # port of curves (717), file order
+    def curves(self): return self.of_type('curve')        # port of curves (820), file order
 
     def anchor_curves(self):
         """anchor id -> the curves using it, in curves() order, each curve once (a closed curve lists its first
@@ -300,4 +368,6 @@ class Project:
     def tubes(self): return self.of_type('tube')          # 723
     def crowns(self): return self.of_type('crown')        # 725
     def caps(self): return self.of_type('cap')            # 726
+    def evens(self): return self.of_type('even')          # evenItems (1689, 1.0.3)
+    def shells(self): return self.of_type('shell')        # shellItems (2972, 1.0.3)
     def groups(self): return self.of_type('group')

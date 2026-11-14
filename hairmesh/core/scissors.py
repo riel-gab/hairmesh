@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
-"""Phase 3.8a: the Scissors of the original (hair-modeler.clean.html:5062-5486), the data part. Pure Python, no bpy.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+"""Phase 3.8a: the Scissors of the original (hair-modeler.clean.html:6551-7265), the data part. Pure Python, no bpy.
 
   insertKeepShape                       a new anchor on a segment, the shape kept (de Casteljau; the handles around
                                         it frozen on every curve running along that segment)
+  worldPerPx, splitSides, splitPlan, splitPreview, splitEndsHover, splitEnds
+                                        Split ends (1.0.2): a click on a curve makes it a Y from there to its tip
+  anchorLine                            (1.0.2) the RMB line over empty space: an anchor wherever it crosses a curve
   scissorHits / cutCurves               the curve mode: a stroke dragged across the selected curves; each one crossed
                                         away from its ends is split there (split / delete the upper / lower part)
   SurfCut, startSurfCut, wallGrid, gridAt, gridParam, edgeR, endParam, wallPath, edgePick, cutFrame, cutBuild,
@@ -14,20 +17,24 @@
 
 A module of its own (like weld.py and walls.py): it needs weld.splitAtAnchor, and weld.py imports edit.py.
 
-The viewport comes in as functions: `screen(p)` is toScreen (5656) — (x, y, z) in pane pixels, z > 1 beyond the far
+The viewport comes in as functions: `screen(p)` is toScreen (8414) — (x, y, z) in pane pixels, z > 1 beyond the far
 plane, or None behind the camera (the Blender projector; the original's toScreen gives z > 1 there) — and, for the
 wall cut, the point where the cursor's ray hits the wall's own mesh (pickObjects(m, [P.sf.mesh]): `wall_hit`, a
 model-space point or None). Pixel thresholds (9 / 10 / 8 px) come scaled by the caller (Blender's UI scale).
 
 `new Anchor(p)` takes an id in the original (UID++) even for the anchors of a preview that is thrown away: the port
 does the same (tmpAnchor: the id taken, the anchor not registered in P.anchors), so a parity script gets the same ids
-on both sides. Selection, undo (commit), toasts and regenConversion are the caller's."""
+on both sides. Selection, undo (commit), toasts and regenConversion are the caller's.
+
+Line numbers: every one in this module is of 1.0.2 (reference/hair-modeler.clean.html); tools/refcheck.py checks the
+ones beside a name of the original."""
 import math
 from functools import cmp_to_key
+from typing import Any
 
 from . import model as M
 from .curves import bez, curveHandles, curveSegs, fitHandles, markAnchorsDirty, rebuildCurve, sampleCurve
-from .edit import addItem, deleteItem, makeCurve, newAnchor
+from .edit import addItem, curvesWith, deleteItem, hairCurves, makeCurve, nearestOnCurve3, newAnchor, planeHit
 from .js import clamp, index_of, js_hypot, js_max, js_min, js_or, js_round, nullish, to_int32
 from .sections import curveSecAt, lockSecs   # noqa: F401 (moved there in 4.1; re-exported)
 from .surfaces import surfaceData
@@ -38,7 +45,7 @@ INF = math.inf
 
 
 def tmpAnchor(P, pos):
-    # `new Anchor(p)` (hair-modeler.clean.html:713) for an anchor that may never reach a curve: the id is taken
+    # `new Anchor(p)` (hair-modeler.clean.html:792) for an anchor that may never reach a curve: the id is taken
     # (UID++), the anchor is not registered (the original has no registry; the file holds the anchors curves use)
     a = M.Anchor(id=P.uid, pos=pos.clone(), smooth=1); P.uid += 1
     return a
@@ -48,10 +55,10 @@ def _lerp(x, y, u):
     return x.clone().lerp(y, u)
 
 
-# ======================= insertKeepShape (5062) =======================
+# ======================= insertKeepShape (7528) =======================
 
 def insertKeepShape(P, c, seg, u):
-    """port of insertKeepShape (hair-modeler.clean.html:5062): a new anchor at Bézier parameter u of segment seg of
+    """port of insertKeepShape (hair-modeler.clean.html:7528): a new anchor at Bézier parameter u of segment seg of
     curve c — the shape kept: on every curve running along that segment (a welded trunk) the segment is split by de
     Casteljau and the handles around the new anchor are frozen"""
     p = c.anchors[seg]; q = c.anchors[seg + 1]
@@ -92,10 +99,224 @@ def insertKeepShape(P, c, seg, u):
     return a
 
 
-# ======================= the curve mode (5085-5127) =======================
+# ======================= Split ends (6572-6697, 1.0.2) =======================
+# A click on a curve makes it a Y from there to its tip: the curve itself is one branch, a new curve sharing its trunk
+# (root ... the clicked point) is the other; their ends spread apart, each by the screen radius S.splitR (`splitR`
+# here, 2-300 px, 30 by default — session state of the original, never in the file), growing from 0 at the fork.
+# Across the lock: a wall on one side stays with the curve, a wall on the other side goes over to the new branch. A tip
+# the curve shared with other curves splits too — each of them keeps the tip of its side (by the walls joining them).
+#
+# The view is an anchorbrush.BrushView (what the brush gets: `screen(p)` toScreen, `ray(m)` rayAt, `cam_dir` camDir);
+# `ch` is pickCurve's result ({curve, i, t, point, seg}; blender/pick.pick_curve) for the click / hover point `m` (x, y);
+# `scale`: S.scale; `px` is ours, not the original's: the interface scale the 10 px of the anchor near the click is
+# multiplied by (1.0 = the original's 10 px). No guard for service curves (junc,
+# path), flat locks (rib) or converted modifier edges (para): the original has none either.
+
+SPLIT_R = 30                                                        # S.splitR (780)
+SPLIT_R_MIN = 2; SPLIT_R_MAX = 300                                  # the Spread slider (11411) and the Ctrl+RMB drag's clamp (8716)
+SPLIT_ERR_OPEN = 'Only an open curve can split its end'
+SPLIT_ERR_TIP = 'Click the curve before its tip — it splits from there to the tip'
+SPLIT_MISS = 'Click a curve where its end should split'             # the click on nothing (7595)
+
+
+def worldPerPx(view, p, scale):
+    """port of worldPerPx (hair-modeler.clean.html:7558): the world size of one screen pixel at p — two rays 50 px
+    apart on the plane through p facing the camera (not anchorbrush.worldPerPixelAt, which is analytic). A point the
+    projector cannot place (None: behind a 3D View's camera) takes the fallback, as a missing plane hit does."""
+    n = view.cam_dir.clone(); s = view.screen(p)
+    if s is None:
+        return scale * 0.002
+    a = planeHit(view.ray((s[0], s[1])), p, n); b = planeHit(view.ray((s[0] + 50, s[1])), p, n)
+    return a.distanceTo(b) / 50 if a is not None and b is not None else scale * 0.002
+
+
+def splitSides(P, c, Pt, tan, cam_dir):
+    """port of splitSides (hair-modeler.clean.html:7565): where the ends of curve c go, split at point Pt (tangent
+    tan): w — the unit direction of the new branch (the curve itself goes the other way); stay / move — the walls
+    staying with the curve / going over to the new branch; side — curve id -> 1 (the curve's side) | 2 (the new
+    branch's side), for the curves joined to them by walls (a dict in insertion order, as the original's Map)."""
+    ws = [s for s in P.surfaces() if s.a != s.b and (s.a == c.id or s.b == c.id)]
+    dirs = []
+    for s in ws:
+        o = P.items.get(s.b if s.a == c.id else s.a)
+        d = nearestOnCurve3(o, Pt)['point'].sub(Pt) if o is not None and len(getattr(o, 'samples', None) or ()) > 1 else V3()
+        d.addScaledVector(tan, -d.dot(tan))
+        dirs.append(d.normalize() if d.lengthSq() > 1e-14 else None)
+    w = None
+    ok = [i for i in range(len(ws)) if dirs[i] is not None]
+    if len(ok) >= 2:                                                # the two most opposite walls: from one to the other
+        bi = ok[0]; bj = ok[1]; bd = INF
+        for i in ok:
+            for j in ok:
+                if i < j and dirs[i].dot(dirs[j]) < bd:
+                    bd = dirs[i].dot(dirs[j]); bi = i; bj = j
+        w = dirs[bj].clone().sub(dirs[bi])
+        if w.lengthSq() < 1e-10:
+            w = dirs[bj].clone()
+        w.normalize()
+    elif len(ok) == 1:
+        w = dirs[ok[0]].clone().negate()                            # an edge curve: the new branch goes outwards
+    if w is None:                                                   # no walls: across the curve on the screen
+        w = V3().crossVectors(tan, cam_dir.clone())
+        if w.lengthSq() < 1e-10:
+            w = V3(1, 0, 0).cross(tan)
+        if w.lengthSq() < 1e-10:
+            w.set(0, 1, 0)
+        w.normalize()
+    stay = []; move = []; side = {}; q = []
+    for i, s in enumerate(ws):
+        two = dirs[i].dot(w) > 0 if dirs[i] is not None else False
+        (move if two else stay).append(s)
+        o = s.b if s.a == c.id else s.a
+        if o not in side:
+            side[o] = 2 if two else 1; q.append(o)
+    k = 0
+    while k < len(q):                                               # the rest of the lock: by the walls joining them
+        iid = q[k]; k += 1
+        for s in P.surfaces():
+            if s.a != iid and s.b != iid:
+                continue
+            o = s.b if s.a == iid else s.a
+            if o == c.id or o in side:
+                continue
+            side[o] = side[iid]; q.append(o)
+    return {'w': w, 'stay': stay, 'move': move, 'side': side}
+
+
+def splitPlan(P, ch, m, view, splitR, scale, px=1.0) -> dict[str, Any]:
+    """port of splitPlan (hair-modeler.clean.html:7598): what a click at pickCurve's result `ch` (the pointer at m)
+    would do — the fork (an existing anchor within 10 px of the click: J, else seg / u for a new one), the direction
+    and the world spread at the tip; or {'err': text}. The curves must be sampled (a frame ran: c.samples, c.arc)."""
+    c = ch['curve']; A = c.anchors; n = len(A)
+    if c.ring or c.closed or n < 2 or len(c.samples) < 2:
+        return {'err': SPLIT_ERR_OPEN}
+    L = c.arc; tot = js_or(L[len(L) - 1], 1); i = min(ch['i'], len(c.samples) - 2)
+    sClick = L[i] + (L[i + 1] - L[i]) * ch['t']
+    J = None                                                        # an anchor within 10 px of the click
+    near = 10 * px                                                  # (px: ours, the interface scale; 1.0 = the original)
+    for k in range(n):
+        s = view.screen(A[k].pos)
+        if s is not None and s[2] <= 1 and js_hypot(s[0] - m[0], s[1] - m[1]) < near:
+            J = k; break
+    if J == n - 1 or sClick > tot * 0.98:
+        return {'err': SPLIT_ERR_TIP}
+    sJ = L[min(J * 24, len(L) - 1)] if J is not None else sClick
+    Pt = A[J].pos.clone() if J is not None else ch['point'].clone()
+    si = min(J * 24, len(c.samples) - 2) if J is not None else i
+    tan = c.samples[si + 1].p.clone().sub(c.samples[si].p).normalize()
+    sd = splitSides(P, c, Pt, tan, view.cam_dir); rw = splitR * worldPerPx(view, A[n - 1].pos, scale)
+    return {'c': c, 'J': J, 'seg': ch['seg'], 'u': clamp((i - ch['seg'] * 24 + ch['t']) / 24, 0, 1), 'sJ': sJ, 'tot': tot, **sd, 'rw': rw, 'si': si}
+
+
+def splitHud(c, splitR):
+    # the hud of the hover (6650), the original's words (the interface may say it its own way)
+    return f'{c.name}: click — split the end here (spread {js_round(splitR)} px · Ctrl+RMB drag to change)'
+
+
+def splitPreview(pl):
+    """the preview of splitEndsHover (hair-modeler.clean.html:6642-6646): both branches from the fork to the tip, as
+    two polylines of model-space points — [the curve's own (-w), the new branch's (+w)]. The original draws them as
+    line segments (prev, p) in a Float32 buffer."""
+    c = pl['c']; w = pl['w']; rw = pl['rw']; sJ = pl['sJ']; tot = pl['tot']; out = []
+    for sg in (-1, 1):
+        line = []
+        for k in range(pl['si'], len(c.samples)):
+            f = clamp((c.arc[k] - sJ) / js_max(tot - sJ, 1e-9), 0, 1)
+            line.append(c.samples[k].p.clone().addScaledVector(w, sg * rw * f))
+        out.append(line)
+    return out
+
+
+def splitEndsHover(P, ch, m, view, splitR, scale, px=1.0):
+    """port of splitEndsHover (hair-modeler.clean.html:7614) without the drawing: (the two branches of splitPreview
+    or None, the hud text — '' hides it). `ch`: pickCurve's result under the pointer, or None."""
+    pl = splitPlan(P, ch, m, view, splitR, scale, px) if ch else None
+    if not pl or 'err' in pl:
+        return None, pl['err'] if pl else ''
+    return splitPreview(pl), splitHud(pl['c'], splitR)
+
+
+def _cloneO(o):
+    # cloneO (7637): {in, out} with null for a side not frozen
+    return M.HandleOverride(in_=o.in_.clone() if o.in_ is not None else None, out=o.out.clone() if o.out is not None else None)
+
+
+def splitEnds(P, ch, m, view, splitR, scale, px=1.0):
+    """port of splitEnds (hair-modeler.clean.html:7629): the click. Returns {'toast'} for a refusal (the plan's
+    error), else {'toast', 'curve' (c), 'branch' (the new curve), 'sel' ([c.id, nb.id]: S.sel, S.asel cleared),
+    'curves' (the curves it changed: touched), 'walls' (stay + move, dirty)}. The caller saves, regenerates a pending
+    conversion (if S.conv) and touches the curves (S.surfDirty)."""
+    pl = splitPlan(P, ch, m, view, splitR, scale, px)
+    if 'err' in pl:
+        return {'toast': pl['err']}
+    c = pl['c']; w = pl['w']; rw = pl['rw']; stay = pl['stay']; move = pl['move']; side = pl['side']
+    J = c.anchors[pl['J']] if pl['J'] is not None else insertKeepShape(P, c, pl['seg'], pl['u'])
+    rebuildCurve(P, c)                                              # (arc lengths with the new anchor)
+    A = c.anchors; n = len(A); iJ = index_of(A, J); E = A[n - 1]; L = c.arc; tot = js_or(L[len(L) - 1], 1)
+    sJ = L[min(iJ * 24, len(L) - 1)]
+
+    def fOf(k):
+        return clamp((L[min(k * 24, len(L) - 1)] - sJ) / js_max(tot - sJ, 1e-9), 0, 1)
+    nb = makeCurve(P, c.parent); nb.round = c.round; nb.visible = c.visible
+    arr = P.childrenOf(nb.parent); arr.pop(arr.index(nb.id)); arr.insert(arr.index(c.id) + 1, nb.id)
+    nA = A[0:iJ + 1]                                                # the trunk: the very same anchors
+    for a in nA:
+        o = c.ovr.get(a.id)
+        if o:
+            nb.ovr[a.id] = _cloneO(o)
+    touched = {c: None, nb: None}
+    for k in range(iJ + 1, n - 1):                                  # the branches' own anchors
+        a = A[k]; f = fOf(k); o = c.ovr.get(a.id)
+        if len(curvesWith(P, a)) > 1:                               # welded to another curve: this one gets its own
+            a1 = newAnchor(P, a.pos); a1.smooth = a.smooth; A[k] = a1
+            if o:
+                del c.ovr[a.id]; c.ovr[a1.id] = _cloneO(o)
+            a = a1
+        a2 = newAnchor(P, a.pos.clone().addScaledVector(w, rw * f)); a2.smooth = a.smooth; nA.append(a2)
+        if o:
+            nb.ovr[a2.id] = _cloneO(o)
+        a.pos.addScaledVector(w, -rw * f)
+    # the tip: the curve keeps E (moved to its side), the new branch gets its own; curves sharing E — by their side
+    E2 = newAnchor(P, E.pos.clone().addScaledVector(w, rw)); E2.smooth = E.smooth; nA.append(E2)
+    o = c.ovr.get(E.id)
+    if o:
+        nb.ovr[E2.id] = _cloneO(o)
+    Ebefore = A[n - 2].pos.clone().addScaledVector(w, rw * fOf(n - 2))   # (where the curve's last own anchor was)
+    for h in curvesWith(P, E):
+        if h is c:
+            continue
+        j = index_of(h.anchors, E); pk = 1 if j == 0 else j - 1
+        prev = h.anchors[pk] if pk < len(h.anchors) else None       # (h.anchors[1] of a one-anchor curve: undefined)
+        two = side[h.id] == 2 if h.id in side else prev is not None and prev.pos.clone().sub(Ebefore).dot(w) > 0
+        if two:
+            h.anchors[j] = E2
+            o = h.ovr.get(E.id)
+            if o:
+                del h.ovr[E.id]; h.ovr[E2.id] = o
+        touched[h] = None
+    E.pos.addScaledVector(w, -rw)
+    nb.anchors = nA
+    for s in move:
+        if s.a == c.id:
+            s.a = nb.id
+        if s.b == c.id:
+            s.b = nb.id
+    for s in [*stay, *move]:
+        s.dirty = True
+    for h in touched:
+        h.dirty = True
+    markAnchorsDirty(P, list(dict.fromkeys(a for h in touched for a in h.anchors)))
+    P.gen += 1; P.rev += 1
+    N = len(move)
+    went = f' ({N} wall{"s" if N > 1 else ""} went over to it)' if N else ''
+    return {'toast': f'{c.name} split its end: {nb.name} branches off{went}', 'curve': c, 'branch': nb, 'sel': [c.id, nb.id],
+            'curves': list(touched), 'walls': [*stay, *move]}
+
+
+# ======================= the curve mode (6700-6775) =======================
 
 def scissorHits(P, x0, y0, x1, y1, lst, screen):
-    """port of scissorHits (hair-modeler.clean.html:5085): where the stroke (screen, pane coordinates) crosses each of
+    """port of scissorHits (hair-modeler.clean.html:7677): where the stroke (screen, pane coordinates) crosses each of
     the curves — the crossing nearest to the stroke's middle: [{c, seg, u}]. `lst`: the curves to cut (the original's
     selected curves; the caller keeps the shown ones, c.obj.visible)."""
     mx = (x0 + x1) / 2; my = (y0 + y1) / 2; out = []
@@ -122,23 +343,68 @@ def scissorHits(P, x0, y0, x1, y1, lst, screen):
     return out
 
 
+LINE_MISS_SEL = "The line doesn't cross the selected curves"
+LINE_MISS_ANY = "The line doesn't cross any curve"
+
+
+def anchorLine(P, x0, y0, x1, y1, selected, visible, screen, px=1.0):
+    """port of the release of the RMB line dragged over empty space (the pointerup of drag 'anchorLine',
+    hair-modeler.clean.html:7823-7839; 1.0.2): an anchor goes in wherever the line crosses a curve — the selected
+    curves, or with none selected every shown hair curve — the shape kept (insertKeepShape); the ends of a curve
+    (u < 0.03 or > 0.97) and the curves an earlier crossing already served (welded along there) are skipped.
+    `selected`: selectedCurves() (S.sel's curves, rings too); `visible(c)`: c.obj.visible; `px` is ours, not the
+    original's: the interface scale the 5 px of a click is multiplied by (1.0 = the original's 5 px). Returns None for a click (nothing happens), else {'made': the new anchors (they become S.asel;
+    S.sel stays), 'toast', 'changed' (an undo step: commit — also when every crossing was skipped)}."""
+    if js_hypot(x1 - x0, y1 - y0) <= 5 * px:                        # (px: ours, the interface scale; 1.0 = the original)
+        return None
+    sc = list(selected)
+    lst = sc if sc else [c for c in hairCurves(P) if visible(c)]
+    hits = scissorHits(P, x0, y0, x1, y1, [c for c in lst if visible(c)], screen)   # (scissorHits skips the hidden: !c.obj.visible)
+    if not hits:
+        return {'made': [], 'toast': LINE_MISS_SEL if sc else LINE_MISS_ANY, 'changed': False}
+    made = []; done = set()
+    for h in hits:
+        c = h['c']; u = h['u']
+        if c.id in done or u < 0.03 or u > 0.97:
+            continue                                                # (welded along there — the anchor went in already / an anchor is there)
+        a = insertKeepShape(P, c, h['seg'], u)
+        for k in curvesWith(P, a):
+            done.add(k.id)
+        made.append(a)
+    markAnchorsDirty(P, made)
+    n = len(made)
+    return {'made': made, 'toast': f'{n} anchor{"" if n == 1 else "s"} added', 'changed': True}
+
+
 CUT_MODES = ('split', 'up', 'down')
 NOTHING_CUT = 'Nothing was cut (the cut must cross a curve away from its ends)'
 
 
 def cutCurves(P, hits, mode):
-    """port of cutCurves (hair-modeler.clean.html:5102). mode: 'split' — two curves; 'up' / 'down' — split and delete
-    the upper / lower part (by the height of its free end). Curves welded along the cut go with the first one; the
-    walls of the cut curves are deleted. Returns (curves cut, the toast, the ids of the pieces that still exist)."""
-    n = 0; cutIds = set()
+    """port of cutCurves (hair-modeler.clean.html:7697). mode: 'split' - two curves; 'up' / 'down' - split and delete
+    the upper / lower part (by the height of its free end). Curves welded along the cut go with the first one.
+    Walls: a wall between two curves cut by the same stroke is cut too - the root-side pieces keep it, the tip-side
+    pieces get a copy (the deleted part takes its own wall with it); a wall with only one of its curves cut is deleted.
+    Returns (curves cut, the toast, the ids of the pieces that still exist)."""
+    n = 0; cutIds = set(); done = []
+    before = set(c.id for c in P.curves())
+    P.merged_into.clear()
+
+    def live(i):
+        k = 0
+        while k < 50 and i not in P.items and i in P.merged_into:
+            i = P.merged_into[i]; k += 1
+        return i
+    walls = [(s, s.a, s.b) for s in P.surfaces()]
+    pieceOf = {}                                                    # original curve id -> [root-side piece, tip-side piece]
     for h in hits:
         c = h['c']; seg = h['seg']; u = h['u']
         if c.id not in P.items or c.id in cutIds:
-            continue                                                # (welded along the cut — split with the first one)
+            continue                                                # (welded along the cut - split with the first one)
         A = c.anchors
         J = A[seg] if u < 0.03 else A[seg + 1] if u > 0.97 else None   # right at an anchor: cut there
         if J is not None and (J is A[0] or J is A[len(A) - 1]):
-            continue                                                # (a curve's end — nothing to cut)
+            continue                                                # (a curve's end - nothing to cut)
         if J is None:
             J = insertKeepShape(P, c, seg, u)
         pairs = splitAtAnchor(P, J, True)
@@ -147,25 +413,83 @@ def cutCurves(P, hits, mode):
         n += 1
         for pr in pairs:
             cutIds.update(pr)
-        # the NURBS surfaces of a cut curve go (both pieces' — the lock is rebuilt by hand from the new curves)
-        for s in P.surfaces():
-            if s.a in cutIds or s.b in cutIds:
-                deleteItem(P, s.id)
-        if mode == 'split':
-            continue
         for pr in pairs:
-            ps = [x for x in (P.items.get(i) for i in pr) if x is not None]
-            if len(ps) < 2:
-                continue
-
-            def far(x):
-                B = x.anchors
-                return (B[len(B) - 1] if B[0] is J else B[0]).pos.y
-            up = ps[0] if far(ps[0]) >= far(ps[1]) else ps[1]
-            down = ps[1] if up is ps[0] else ps[0]
-            deleteItem(P, (up if mode == 'up' else down).id)
+            o = next((i for i in pr if i in before), None)
+            if o is not None:
+                pieceOf[o] = pr
+        done.append((J, pairs))
     if not n:
         return 0, NOTHING_CUT, []
+
+    def pairKey(x, y):
+        return f'{min(x, y)}_{max(x, y)}'                           # Math.min(x, y) + '_' + Math.max(x, y)
+    have = set(pairKey(s.a, s.b) for s in P.surfaces())
+    for s, a, b in walls:
+        # gone: split along with its curves and its root half dropped as a copy of another wall (identical trunk pieces
+        # merged) - its tip half is still wanted
+        gone = s.id not in P.items
+        # (already split along with its curves - unless it only moved onto the piece its curve was merged into: identical
+        # trunk pieces became one curve; then its tip half is still wanted)
+        merged = (s.a == live(a) and s.b == live(b)) or (s.a == live(b) and s.b == live(a))
+        if not gone and (s.a != a or s.b != b) and not merged:
+            continue
+        pa = pieceOf.get(a); pb = pieceOf.get(b)
+        if pa is None and pb is None:
+            continue
+        if pa is not None:
+            pa = [live(i) for i in pa]
+        if pb is not None:
+            pb = [live(i) for i in pb]                              # (identical trunk pieces became one curve)
+        if pa is None or pb is None or not all(i in P.items for i in pa + pb):
+            if not gone:
+                deleteItem(P, s.id)
+            continue
+
+        # the pieces on the same side of the cut go together (by their free ends - the curves may run opposite ways)
+        def free(pr):
+            x = P.items[pr[0]].anchors; y = P.items[pr[1]].anchors
+            cut = next((v for v in x if any(v is w for w in y)), None)
+            out = []
+            for i in range(2):
+                B = y if i else x
+                out.append((B[len(B) - 1] if B[0] is cut else B[0]).pos)
+            return out
+        fa = free(pa); fb = free(pb)
+        swap = fa[0].distanceTo(fb[0]) + fa[1].distanceTo(fb[1]) > fa[0].distanceTo(fb[1]) + fa[1].distanceTo(fb[0])
+        b0 = pb[1] if swap else pb[0]; b1 = pb[0] if swap else pb[1]
+        k0 = pairKey(pa[0], b0)
+        if not gone:
+            old = pairKey(s.a, s.b)
+            if pa[0] == b0 or (k0 != old and k0 in have):
+                deleteItem(P, s.id)                                 # (both sides one curve now / another such wall)
+            else:
+                s.a = pa[0]; s.b = b0; s.dirty = True; have.add(k0)
+            # ours (lot 1.1d, docs/features-adicionadas.md): the wall left its pair, so its old key leaves `have` (unless
+            # another wall still joins those two curves). The original keeps it: cut nearer the root, both curves keep
+            # their ids on the tip pieces (firstKeeps, 6512), and the copy onto them below finds the stale key — the
+            # tip pieces were left without a wall (Bang_01, Curve 1 and Curve 2 of the example)
+            if old != k0 and not any(pairKey(w.a, w.b) == old for w in P.surfaces()):
+                have.discard(old)
+        if pa[1] != b1 and pairKey(pa[1], b1) not in have:
+            addItem(P, 'surface', s.parent, {'a': pa[1], 'b': b1, 'p': dict(s.p), 'dirty': True, 'visible': s.visible})
+            have.add(pairKey(pa[1], b1))
+    # (a wall moved onto a merged trunk piece by splitAtAnchor, its other curve not cut: one side cut - deleted too)
+    for s in list(P.surfaces()):
+        if (s.a in cutIds) != (s.b in cutIds):
+            deleteItem(P, s.id)
+    if mode != 'split':
+        for J, pairs in done:
+            for pr in pairs:
+                ps = [x for x in (P.items.get(i) for i in pr) if x is not None]
+                if len(ps) < 2:
+                    continue
+
+                def far(x):
+                    B = x.anchors
+                    return (B[len(B) - 1] if B[0] is J else B[0]).pos.y
+                up = ps[0] if far(ps[0]) >= far(ps[1]) else ps[1]
+                down = ps[1] if up is ps[0] else ps[0]
+                deleteItem(P, (up if mode == 'up' else down).id)    # (its walls go with it)
     for c in P.curves():
         c.dirty = True
     P.gen += 1; P.rev += 1
@@ -176,14 +500,14 @@ def cutCurves(P, hits, mode):
 
 
 def cutTitle(hits):
-    # the pie's title (6018)
+    # the pie's title (7848)
     return f'✂ Cut {hits[0]["c"].name if len(hits) == 1 else f"{len(hits)} curves"}'
 
 
-# ======================= the NURBS surface mode (5128-5486) =======================
+# ======================= the NURBS surface mode (6898-7265) =======================
 
 class SurfCut:
-    """S.surfCut (startSurfCut, 5334): the wall being cut, its two curves, its grid; the cut's start / placed points
+    """S.surfCut (startSurfCut, 8081): the wall being cut, its two curves, its grid; the cut's start / placed points
     (wall coordinates {r, t}) / end, the hover while placing, and the last cutBuild (build) or its error (err).
     lead (ours, 3.8f): before the start, edgePick's end under the cursor — where the first click would put it — or None."""
 
@@ -203,7 +527,7 @@ class Grid:
 
 
 def wallGrid(P, sf, T):
-    """port of wallGrid (hair-modeler.clean.html:5146): the wall as a grid of points, R rows × M across (t = 0 — curve
+    """port of wallGrid (hair-modeler.clean.html:7893): the wall as a grid of points, R rows × M across (t = 0 — curve
     a, t = M − 1 — curve b); dr / dt — mean spacing. T: the row tables (buildRowTables())."""
     d = surfaceData(P, sf, T)
     if d is None or not d.pos:
@@ -227,7 +551,7 @@ def _floor(x):
 
 
 def gridAt(G, r, t):
-    # port of gridAt (hair-modeler.clean.html:5156)
+    # port of gridAt (hair-modeler.clean.html:7902)
     k = clamp(_floor(r), 0, G.R - 2); j = clamp(_floor(t), 0, G.M - 2); a = clamp(r - k, 0, 1); b = clamp(t - j, 0, 1)
     return G.at(k, j).clone().lerp(G.at(k, j + 1), b).lerp(G.at(k + 1, j).clone().lerp(G.at(k + 1, j + 1), b), a)
 
@@ -289,7 +613,7 @@ def _finite(x):
 
 
 def gridParam(G, p):
-    """port of gridParam (hair-modeler.clean.html:5160): the wall coordinates {r, t} of the point of the wall nearest
+    """port of gridParam (hair-modeler.clean.html:7907): the wall coordinates {r, t} of the point of the wall nearest
     to p (None: no triangle)"""
     best = None; bd = INF
     for k in range(G.R - 1):
@@ -311,7 +635,7 @@ def gridParam(G, p):
 
 
 def edgeR(G, j, p):
-    # port of edgeR (hair-modeler.clean.html:5177): r of the point of the wall's edge column j (0 or M − 1) nearest to p
+    # port of edgeR (hair-modeler.clean.html:7921): r of the point of the wall's edge column j (0 or M − 1) nearest to p
     best = 0; bd = INF
     for k in range(G.R - 1):
         a = G.at(k, j); ab = G.at(k + 1, j).clone().sub(a); l2 = ab.lengthSq()
@@ -323,7 +647,7 @@ def edgeR(G, j, p):
 
 
 def endParam(G, E):
-    # port of endParam (hair-modeler.clean.html:5185)
+    # port of endParam (hair-modeler.clean.html:7929)
     return {'r': edgeR(G, G.M - 1 if E['side'] else 0, E['pos']), 't': G.M - 1 if E['side'] else 0}
 
 
@@ -332,7 +656,7 @@ def _ceil(x):
 
 
 def wallPath(G, ctl):
-    """port of wallPath (hair-modeler.clean.html:5188): a path through wall coordinates (Catmull-Rom in lengths along /
+    """port of wallPath (hair-modeler.clean.html:7932): a path through wall coordinates (Catmull-Rom in lengths along /
     across): (dense — points {r, t}, idx — where each control point is in it)"""
     X = [[c['r'] * G.dr, c['t'] * G.dt] for c in ctl]; dense = []; idx = []
 
@@ -351,13 +675,13 @@ def wallPath(G, ctl):
 
 
 def curveRev(A, B):
-    # port of curveRev (hair-modeler.clean.html:5202)
+    # port of curveRev (hair-modeler.clean.html:7944)
     a = A.anchors; b = B.anchors; n = len(a) - 1; m = len(b) - 1
     return a[0].pos.distanceTo(b[0].pos) + a[n].pos.distanceTo(b[m].pos) > a[0].pos.distanceTo(b[m].pos) + a[n].pos.distanceTo(b[0].pos)
 
 
 def virtualAnchor(P, c, seg, u):
-    """port of virtualAnchor (hair-modeler.clean.html:5205): an anchor that would go in on curve c at (seg, u) keeping
+    """port of virtualAnchor (hair-modeler.clean.html:7947): an anchor that would go in on curve c at (seg, u) keeping
     the shape — not put in yet (vh: its handles, by the neighbour's id)"""
     p0, p1, p2, p3 = curveSegs(P, c)[seg]
     q0 = _lerp(p0, p1, u); q1 = _lerp(p1, p2, u); q2 = _lerp(p2, p3, u); r0 = _lerp(q0, q1, u); r1 = _lerp(q1, q2, u)
@@ -367,7 +691,7 @@ def virtualAnchor(P, c, seg, u):
 
 
 def handleToward(P, c, a, nb):
-    """port of handleToward (hair-modeler.clean.html:5211): the handle of curve c at its anchor a facing its neighbour
+    """port of handleToward (hair-modeler.clean.html:7953): the handle of curve c at its anchor a facing its neighbour
     nb (a not put in yet — its own handles), or None"""
     i = index_of(c.anchors, a)
     if i < 0:
@@ -379,7 +703,7 @@ def handleToward(P, c, a, nb):
 
 
 def edgePick(P, cut, m, maxPx, screen, wall_hit, anchor_px=10):
-    """port of edgePick (hair-modeler.clean.html:5213): the wall's curve under the cursor m = (x, y) (within maxPx) —
+    """port of edgePick (hair-modeler.clean.html:7960): the wall's curve under the cursor m = (x, y) (within maxPx) —
     an end of the cut: {side (0 — a, 1 — b), c, a, pos} on an anchor (one within anchor_px of the cursor), else
     {side, c, seg, u, v (virtual anchor), pos}. wall_hit: where the cursor is on the wall (a stretch of a curve lying
     elsewhere — another turn of a curl behind the wall — doesn't count)."""
@@ -430,7 +754,7 @@ def _cmp(v):
 
 
 def cutLists(cut):
-    """port of cutLists (hair-modeler.clean.html:5243): the anchors of A and of B in A's direction, with the ends not
+    """port of cutLists (hair-modeler.clean.html:7989): the anchors of A and of B in A's direction, with the ends not
     put in yet among them"""
     A = cut.A; B = cut.B; rev = curveRev(A, B); para = bool(A.para and B.para)
     LA = list(A.anchors); LB = list(B.anchors); ins = []
@@ -446,7 +770,7 @@ def cutLists(cut):
 
 
 def lockOf(P, sf):
-    # port of lockOf (hair-modeler.clean.html:5250): the curves of the wall's lock (joined by walls)
+    # port of lockOf (hair-modeler.clean.html:7997): the curves of the wall's lock (joined by walls)
     ids = {sf.a: None, sf.b: None}; grew = True
     while grew:
         grew = False
@@ -464,7 +788,7 @@ def _index(L, a):
 
 
 def cutFrame(cut):
-    """port of cutFrame (hair-modeler.clean.html:5257): the cut's frame — {OA, OB, pre (anchors along the first curve up
+    """port of cutFrame (hair-modeler.clean.html:8004): the cut's frame — {OA, OB, pre (anchors along the first curve up
     to the start), post (from the end along the second curve), para, p / q (where start / end are), swapped (the cut
     was placed from the tip side)} — or an error text"""
     L = cutLists(cut)
@@ -487,7 +811,7 @@ def cutFrame(cut):
     if u(q) < u(p) or (u(q) == u(p) and q['i'] < p['i']):
         p, q = q, p; swapped = True
     bad = 'The cut must run along the wall: from a place nearer the root to one nearer the tip'
-    if (p['L'] is q['L'] and q['i'] <= p['i']) or u(q) - u(p) < 1e-6:
+    if (p['L'] is q['L'] and q['i'] <= p['i']) or u(q) - u(p) < (1e-6 if p['L'] is q['L'] else -1e-9):   # 1.0.2 (7035): straight across - fine
         return bad
     pre = p['L'][:p['i'] + 1]; post = q['L'][q['i']:]
     if any(_index(pre, x) >= 0 for x in post):
@@ -495,12 +819,12 @@ def cutFrame(cut):
     return {'A': cut.A, 'B': cut.B, 'OA': OA, 'OB': OB, 'pre': pre, 'post': post, 'para': L['para'], 'p': p, 'q': q, 'swapped': swapped}
 
 
-# ---- cross-sections of a converted modifier's lock: lockSecs 1435 and curveSecAt 1464 live in sections.py (4.1:
+# ---- cross-sections of a converted modifier's lock: lockSecs 1599 and curveSecAt 1628 live in sections.py (4.1:
 # the row tables read them too) ----
 
 
 def wallSecAt(cut, sec, q):
-    # port of wallSecAt (hair-modeler.clean.html:5273): the cross-section at wall coordinates q
+    # port of wallSecAt (hair-modeler.clean.html:8018): the cross-section at wall coordinates q
     G = cut.G; sa = curveSecAt(cut.A, sec, gridAt(G, q['r'], 0)); sb = curveSecAt(cut.B, sec, gridAt(G, q['r'], G.M - 1))
     return sa + (sb - sa) * q['t'] / (G.M - 1)
 
@@ -508,7 +832,7 @@ def wallSecAt(cut, sec, q):
 # ---- the cut's curve ----
 
 def cutBuild(P, cut):
-    """port of cutBuild (hair-modeler.clean.html:5277): the path over the wall and the new curve's anchors in between
+    """port of cutBuild (hair-modeler.clean.html:8023): the path over the wall and the new curve's anchors in between
     (mids) — {F, mids, mp, d3, at, idx, swapped} — or an error text"""
     F = cutFrame(cut)
     if isinstance(F, str):
@@ -553,7 +877,7 @@ def cutBuild(P, cut):
 
 
 def pathHandles(d3, x0, x1, P0, P3):
-    """port of pathHandles (hair-modeler.clean.html:5307): handles making the cubic from P0 (path position x0) to P3
+    """port of pathHandles (hair-modeler.clean.html:8054): handles making the cubic from P0 (path position x0) to P3
     (x1) follow the path d3 between them — {out (at P0), in (at P3)} as offsets"""
     def tan(x):
         i = clamp(js_round(x), 0, len(d3) - 1)
@@ -576,7 +900,7 @@ def pathHandles(d3, x0, x1, P0, P3):
 
 
 def surfCutCurve(P, F, mids, fit):
-    """port of surfCutCurve (hair-modeler.clean.html:5319): the cut's curve, an object not in the scene (the preview,
+    """port of surfCutCurve (hair-modeler.clean.html:8066): the cut's curve, an object not in the scene (the preview,
     then the new curve's anchors and handles). Across the wall every handle is fitted to the path (fit: {d3, at});
     at the two fork anchors the side running along A / B takes the host's own handle."""
     anchors = [*F['pre'], *mids, *F['post']]; ovr = {}; k0 = len(F['pre']) - 1; k1 = k0 + len(mids) + 1
@@ -607,7 +931,7 @@ def surfCutCurve(P, F, mids, fit):
 
 
 def startSurfCut(P, sf, T):
-    """port of startSurfCut (hair-modeler.clean.html:5334), the data part: (SurfCut, None) or (None, the toast). The
+    """port of startSurfCut (hair-modeler.clean.html:8081), the data part: (SurfCut, None) or (None, the toast). The
     selection becomes the wall (S.sel = {sf.id}): the caller's."""
     G = wallGrid(P, sf, T)
     if G is None:
@@ -616,7 +940,7 @@ def startSurfCut(P, sf, T):
 
 
 def surfCutView(P, cut):
-    """port of drawSurfCut (hair-modeler.clean.html:5344), the data part: sets cut.build / cut.err and returns
+    """port of drawSurfCut (hair-modeler.clean.html:8091), the data part: sets cut.build / cut.err and returns
     (line — model-space points of the cut, dots — [(point, kind: 'end' / 'ctl' / 'auto' / 'hover' / 'lead')], the HUD
     text). 'lead' (ours, 3.8f): before the start, where the first click would put it."""
     G = cut.G; dots = []; line = []
@@ -649,7 +973,7 @@ def surfCutView(P, cut):
 
 
 def hudText(cut):
-    # the HUD of drawSurfCut (5381-5384), with Blender's keys
+    # the HUD of drawSurfCut (7144-7147), with Blender's keys
     if not cut.start:
         return f'Cutting {cut.sf.name}: click one of its curves where the cut starts (on an anchor, or a new one goes in there) · Esc — cancel'
     if not cut.end:
@@ -660,7 +984,7 @@ def hudText(cut):
 
 
 def realizeEnds(P, cut):
-    # port of realizeEnds (hair-modeler.clean.html:5379): the ends not put in yet go into their curves now (keeping the shape)
+    # port of realizeEnds (hair-modeler.clean.html:8127): the ends not put in yet go into their curves now (keeping the shape)
     pend = [E for E in (cut.start, cut.end) if not E.get('a')]
     if not pend:
         return
@@ -675,14 +999,25 @@ def realizeEnds(P, cut):
 
 
 def applySurfCut(P, cut):
-    """port of applySurfCut (hair-modeler.clean.html:5386): a new curve along the cut and the wall split in two, (A,
+    """port of applySurfCut (hair-modeler.clean.html:8133): a new curve along the cut and the wall split in two, (A,
     cut) and (cut, B). Returns (the new curve or None, the toast, touched: whether the model changed — a failure after
     the ends went in leaves them in, as in the original; the caller decides what to keep)."""
     if not cut.start or not cut.end:
         return None, None, False
+    R = cutWall(P, cut)
+    if not isinstance(R, dict):
+        return None, R[0], R[1]
+    c = R['c']
+    return c, f'Cut: {c.name} ({len(c.anchors)} anchors) along the cut, the wall is split in two', True
+
+
+def cutWall(P, cut):
+    """port of cutWall (hair-modeler.clean.html:8143): the cut itself — a new curve along the cut and the wall split in
+    two; the two new walls keep the cut wall's visibility (1.0.2). Returns {c, root, tip} (the walls on the root's and on
+    the tip's side of the cut), or (error text, touched): touched = the ends went in before the failure."""
     chk = cutBuild(P, cut)
     if isinstance(chk, str):
-        return None, chk, False
+        return chk, False
     sf = cut.sf; lock = lockOf(P, sf); para = len(lock) > 1 and all(c.para for c in lock)
 
     def fix():
@@ -699,7 +1034,7 @@ def applySurfCut(P, cut):
     sec = fix() if para else None
     R = cutBuild(P, cut)
     if isinstance(R, str):
-        return None, R, True
+        return R, True
     F = R['F']; tmp = surfCutCurve(P, F, [tmpAnchor(P, p) for p in R['mids']], R); a0 = F['pre'][len(F['pre']) - 1]; a1 = F['post'][0]
     # the curves running through the fork anchors keep their handles there (frozen — the new curve would otherwise
     # tilt their common tangent), so the stretches along A and B stay exactly as they are
@@ -726,20 +1061,23 @@ def applySurfCut(P, cut):
     c.name = f'{F["A"].name} cut'; c.dirty = True
     if c.parent == F['A'].parent:
         arr = P.childrenOf(c.parent); arr.remove(c.id); arr.insert(index_of(arr, F['A'].id) + 1, c.id)
-    p = dict(sf.p); par = sf.parent
-    deleteItem(P, sf.id)
-    for x, y in ((F['A'], c), (c, F['B'])):
-        addItem(P, 'surface', par, {'a': x.id, 'b': y.id, 'dirty': True, 'p': dict(p)})
+    p = dict(sf.p); par = sf.parent; vis = sf.visible
+    # ours (lot 1.1c, docs/features-adicionadas.md): the cut wall goes without its service curves (a Fill Hole wall's
+    # HC, a junction's JC) — the two new walls below take them. The original deletes it first (7194) and the rule of
+    # 875 drops them, leaving the new walls pointing at deleted curves (the hole open again, broken data in the file)
+    deleteItem(P, sf.id, keep=(F['A'].id, F['B'].id))
+    walls = [addItem(P, 'surface', par, {'a': x.id, 'b': y.id, 'dirty': True, 'visible': vis, 'p': dict(p)}) for x, y in ((F['A'], c), (c, F['B']))]
     markAnchorsDirty(P, c.anchors)
     for k in P.curves():
         if any(x is a0 for x in k.anchors) or any(x is a1 for x in k.anchors):
             k.dirty = True
     P.gen += 1; P.rev += 1
-    return c, f'Cut: {c.name} ({len(c.anchors)} anchors) along the cut, the wall is split in two', True
+    startOnA = F['p']['L'] is F['OA']                               # c runs along the start's curve up to the start, then along the other one
+    return {'c': c, 'root': walls[1] if startOnA else walls[0], 'tip': walls[0] if startOnA else walls[1]}
 
 
 def cutDotAt(cut, m, screen, px=10):
-    # port of cutDotAt (hair-modeler.clean.html:5422): 0 — start, 1…n — the placed ones, n + 1 — end; −1 — none
+    # port of cutDotAt (hair-modeler.clean.html:8181): 0 — start, 1…n — the placed ones, n + 1 — end; −1 — none
     G = cut.G
     dots = [cut.start['pos'] if cut.start else None, *[gridAt(G, q['r'], q['t']) for q in cut.pts], cut.end['pos'] if cut.end else None]
     bk = -1; bd = px
@@ -756,7 +1094,7 @@ def cutDotAt(cut, m, screen, px=10):
 
 
 def surfCutDown(P, cut, m, button, double, screen, wall_hit, other_wall=None, px=1.0):
-    """port of surfCutDown (hair-modeler.clean.html:5429) once a wall is being cut: button 0 (LMB) or 2 (RMB), double —
+    """port of surfCutDown (hair-modeler.clean.html:8187) once a wall is being cut: button 0 (LMB) or 2 (RMB), double —
     the second click of a double click (e.detail >= 2), wall_hit — the cursor on cut.sf's own mesh, other_wall — the
     id of another shown wall under the cursor. Returns what the caller does next: {'toast': text}, {'switch': wall id}
     (the cut moves to that wall), {'drag': k} (an anchor of the cut follows the mouse until the release; 'redraw' —
@@ -815,7 +1153,7 @@ def surfCutDown(P, cut, m, button, double, screen, wall_hit, other_wall=None, px
 
 
 def surfCutPtMove(P, cut, k, m, screen, wall_hit, px=1.0):
-    """port of surfCutPtMove (hair-modeler.clean.html:5461): dragging anchor k of the cut — one in between over the
+    """port of surfCutPtMove (hair-modeler.clean.html:8226): dragging anchor k of the cut — one in between over the
     wall; an end along the wall's curves (refused when the cut would no longer run along the wall). True: moved."""
     if k == 0 or k == len(cut.pts) + 1:
         key = 'start' if k == 0 else 'end'
@@ -835,7 +1173,7 @@ def surfCutPtMove(P, cut, k, m, screen, wall_hit, px=1.0):
 
 
 def surfCutHover(P, cut, m, screen, wall_hit, px=1.0):
-    # port of surfCutHover (hair-modeler.clean.html:5479): while placing, the cut follows the cursor; before the start,
+    # port of surfCutHover (hair-modeler.clean.html:8237): while placing, the cut follows the cursor; before the start,
     # our leadHover (3.8f). True: drawSurfCut
     if not cut.start:
         return leadHover(P, cut, m, screen, wall_hit, px)
@@ -848,7 +1186,7 @@ def surfCutHover(P, cut, m, screen, wall_hit, px=1.0):
 
 
 def leadHover(P, cut, m, screen, wall_hit, px=1.0):
-    """ours (3.8f; the original draws nothing before the first click, surfCutHover 5480 returns): before the start, a
+    """ours (3.8f; the original draws nothing before the first click, surfCutHover 8237 returns): before the start, a
     dot follows the cursor along the nearer of the wall's two curves, where the first click would put the start — the
     same edgePick as surfCutDown's, so the click lands on the dot; out of reach of both curves, none. True: changed.
     The id its virtual anchor took (tmpAnchor, UID++) is given back: the original takes none before the first click,
@@ -864,7 +1202,7 @@ def leadHover(P, cut, m, screen, wall_hit, px=1.0):
 
 
 def removeLast(cut):
-    # Backspace while placing (8061) and the pie's "Remove the last anchor / the start" (7940)
+    # Backspace while placing (10362) and the pie's "Remove the last anchor / the start" (10169)
     if cut.pts:
         cut.pts.pop()
     else:
@@ -873,7 +1211,7 @@ def removeLast(cut):
 
 
 def cutPieItems(cut):
-    """port of openCutPie (hair-modeler.clean.html:7935), pure: [('cut', label) | ('info', label), ('remove', label)?,
+    """port of openCutPie (hair-modeler.clean.html:11739), pure: [('cut', label) | ('info', label), ('remove', label)?,
     ('cancel', label)] — while a wall is being cut the pie holds only the cut"""
     ready = bool(cut.end and cut.build)
     out = [('cut', f'✂ Cut ({len(cut.build["mids"]) + 2} anchors)') if ready else

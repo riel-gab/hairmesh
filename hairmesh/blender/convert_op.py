@@ -35,7 +35,7 @@ def collection_of_group(root_col, gid):
 
 
 def nothing_to_convert(P):
-    """why Convert would make no mesh, in the original's words (startConversion 10012: "Tick the groups to convert";
+    """why Convert would make no mesh, in the original's words (startConversion 14243: "Tick the groups to convert";
     10023: "The ticked groups contain no walls" — walls, in the port), else None"""
     if not [g for g in P.settings.convChecked if g in P.items]:
         return 'Tick the groups to convert (the Conversion tab)'
@@ -54,11 +54,22 @@ def _project(context):
         return root, None
 
 
+NO_PROJECT = 'No HairMesh project in the scene: start one with New Project... or Import .hairmesh... (the tool header, or D > Project)'
+
+
+def _has_project(cls, context):
+    """poll: a project in the scene, else the reason (dimmed with it)"""
+    if find_root(context) is not None:
+        return True
+    cls.poll_message_set(NO_PROJECT)
+    return False
+
+
 def _why_tooltip(context, fn, doc):
     """a dynamic description: why the button does nothing now (part 1 of the lot ux7), else its own text"""
     try:
         _root, P = _project(context)
-        why = fn(P) if P is not None else None
+        why = fn(P) if P is not None else NO_PROJECT
     except Exception:                                               # (a tooltip must never raise)
         why = None
     return why or doc
@@ -78,7 +89,7 @@ class HAIRMESH_OT_convert(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return owner.visible(context) and find_root(context) is not None
+        return owner.visible(context) and _has_project(cls, context)
 
     @classmethod
     def description(cls, context, properties):
@@ -97,7 +108,7 @@ class HAIRMESH_OT_convert(bpy.types.Operator):
             self.report({'ERROR'}, f'Could not read the project: {e}')
             return None
         why = nothing_to_convert(P)
-        if why:                                                     # the original's toasts (startConversion 10012, 10023): before any table is built
+        if why:                                                     # the original's toasts (startConversion 14243, 10023): before any table is built
             self.report({'INFO'}, why)
             return None
         self.P = P
@@ -218,14 +229,14 @@ def _no_pending(P):
 
 
 class HAIRMESH_OT_confirm_conversion(bpy.types.Operator):
-    """Keep the converted meshes: the preview becomes the hair mesh; the meshes of these groups from an earlier conversion are replaced"""
+    """Keep the converted meshes: the preview becomes the hair mesh; a mesh of these groups from an earlier conversion is refilled in place (its object keeps its name, modifiers, materials and collection)"""
     bl_idname = 'hairmesh.confirm_conversion'
     bl_label = 'Confirm HairMesh Conversion'
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
-        return owner.visible(context) and find_root(context) is not None
+        return owner.visible(context) and _has_project(cls, context)
 
     @classmethod
     def description(cls, context, properties):
@@ -236,7 +247,9 @@ class HAIRMESH_OT_confirm_conversion(bpy.types.Operator):
         if P is None or not P.conv:
             self.report({'INFO'}, _no_pending(P) or 'No HairMesh project')
             return {'CANCELLED'}
+        pairs = CONV.adoptions(P)                                   # (before Confirm forgets what each pending mesh replaces)
         n = CONV.confirmConversion(P)
+        meshes.adopt(context, root, P, pairs)                                   # (lot 1.1d: the user's object of a replaced mesh stays, refilled)
         session.save_project(root, P)
         live.update(context, root)
         self.report({'INFO'}, f'Conversion confirmed: {n} mesh{"" if n == 1 else "es"}')
@@ -251,7 +264,7 @@ class HAIRMESH_OT_cancel_conversion(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return owner.visible(context) and find_root(context) is not None
+        return owner.visible(context) and _has_project(cls, context)
 
     @classmethod
     def description(cls, context, properties):
@@ -277,7 +290,7 @@ VIEWS = (('LIVE', 'Live', 'Show the walls and curves the meshes were converted f
 def view_why(P, mode):
     """why the Live / Baked button does nothing now, else None"""
     if P is None:
-        return 'No HairMesh project'
+        return NO_PROJECT
     v = CONV.viewOf(P)
     if v is None:
         return 'No converted meshes yet: Convert first (D > Conversion)'
@@ -297,7 +310,7 @@ class HAIRMESH_OT_conversion_view(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return owner.visible(context) and find_root(context) is not None
+        return owner.visible(context) and _has_project(cls, context)
 
     @classmethod
     def description(cls, context, properties):

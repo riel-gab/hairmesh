@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-"""Phase 3.5 inside Blender: walls and locks between curves (the original's curve pie, surfaceMenuItems 6157, and
+"""Phase 3.5 inside Blender: walls and locks between curves (the original's curve pie, surfaceMenuItems 9367, and
 its surface panel, 8732-8822) as operators, and the menus every action lives in (rule of 14/10/2026: everything
 reachable from the pies and the HairMesh Menu; the N panel is a complement).
 
   hairmesh.create_walls (closed, exact)  "Create Wall" / "Walls between N curves (open)" / "Wall
                                         between the two trunks (facing branches)" / "...exactly these" / "Volume
                                         lock (closed)": createSurfaces over the selected curves, in selection order
+  hairmesh.x_path_walls                 "Create Walls Around the X" (xPathWalls, curves joined in an X)
   hairmesh.fill_hole                    "Fill the hole between these curves" (fillHole)
   hairmesh.average_curve                "Create average curve" (exactly 2 selected curves)
   hairmesh.segments_to_curves           "Segments -> curves" of the selected walls with width segments
@@ -21,7 +22,7 @@ live.update (the preview rebuilt inside the same undo step)."""
 import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty
 
-from ..core import curves as CM, effects as E, walls as WL
+from ..core import curves as CM, effects as E, selection as SL, walls as WL, xjunc as XJ
 from ..core.selection import Selection
 from ..core.surfaces import hasTwin, wallCrownRoot
 from . import live, owner, select, session, wording
@@ -69,6 +70,30 @@ class HAIRMESH_OT_create_walls(bpy.types.Operator):
             self.report({'INFO'}, msg)
             return {'CANCELLED'}
         return _finish(context, root, P, Selection([s.id for s in made], []), self.report, msg or f'{len(made)} wall{"s" if len(made) > 1 else ""} created')
+
+
+class HAIRMESH_OT_x_path_walls(bpy.types.Operator):
+    """Create walls around the X where the selected curves cross: a wall per zone between the curves of each X, on edge curves that follow them; the curves stay whole"""
+    bl_idname = 'hairmesh.x_path_walls'
+    bl_label = 'Create HairMesh Walls Around the X'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return _poll(context)
+
+    def execute(self, context):
+        root, P, sel = select.current(context)
+        cs = select.curves_of(P, sel)
+        if len(cs) < 2:
+            self.report({'INFO'}, 'Select two or more curves first')
+            return {'CANCELLED'}
+        CM.rebuild_dirty(P)
+        made, msg, pairs = XJ.xPathWalls(P, cs)                     # (the pending meshes: live.update, meshes.py)
+        if not pairs and not made:                                  # (no X: createSurfaces, as hairmesh.create_walls)
+            self.report({'INFO'}, msg)
+            return {'CANCELLED'}
+        return _finish(context, root, P, Selection([s.id for s in made], []), self.report, wording.core(msg))   # (8102: the walls made, even none)
 
 
 class HAIRMESH_OT_fill_hole(bpy.types.Operator):
@@ -195,22 +220,86 @@ class HAIRMESH_OT_select_wall_curves(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def lock_count(P, sel):
+    """lockSelectItem (11777, 1.0.2): how many curves Select Lock Curves would select, None when nothing of a lock is
+    selected (no item) or when they are the selection already (ours: an item that would change nothing, G4) — kept per
+    model generation and selection: the pies ask at every draw"""
+    key = (P.gen, P.rev, tuple(sel.items), tuple(sel.anchors))
+    c = P._memo.get('lock_count')
+    if c is None or c[0] != key:
+        ids = [x.id for x in SL.lockCurvesOfSelection(P, sel)]
+        same = not sel.anchors and set(ids) == set(sel.items)
+        c = (key, len(ids) if ids and not same else None); P._memo['lock_count'] = c
+    return c[1]
+
+
+def lock_item(P, sel):
+    """the pie's "Select all curves of the lock (N)" (10204) as an item, None when it has nothing to select (G4: gone)"""
+    n = lock_count(P, sel)
+    return ('op', 'hairmesh.select_lock_curves', f'Select Lock Curves ({n})', 'RESTRICT_SELECT_OFF', {}) if n else None
+
+
+class HAIRMESH_OT_select_lock_curves(bpy.types.Operator):
+    """Select every curve of the locks the selection belongs to (its anchors, curves, walls, Profile modifiers, crowns): the curves joined to them by walls"""
+    bl_idname = 'hairmesh.select_lock_curves'
+    bl_label = 'Select Lock Curves'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    # 1.0.2: selectLockCurves (11771), the anchor pie's lockSelectItem (10120-10123); a derived selection: in the
+    # Shift+RMB pies only (lot 4.3, item 1)
+    @classmethod
+    def poll(cls, context):
+        if not _poll(context):
+            return False
+        _r, P, sel = select.current(context)
+        if P is None or not lock_count(P, sel):
+            cls.poll_message_set('Select something of a lock first (an anchor, a curve, a wall, a Profile modifier or a crown) whose curves are not all selected already')
+            return False
+        return True
+
+    def execute(self, context):
+        root, P, sel = select.current(context)
+        new, msg = SL.selectLockCurves(P, sel)
+        if new is None:
+            self.report({'INFO'}, 'Nothing of a lock is selected')
+            return {'CANCELLED'}
+        select.store(context.scene.hairmesh, new)                  # S.asel = [], S.sel = the lock's curves (10198)
+        select.redraw(context)
+        if msg:
+            self.report({'INFO'}, msg)
+        return {'FINISHED'}
+
+
 # ---------------- the menus (pure descriptions, drawn by tool.draw_item) ----------------
 CREATE = {'walls': ('hairmesh.create_walls', 'MOD_LATTICE', {'closed': False, 'exact': False}),
           'exact': ('hairmesh.create_walls', 'MOD_LATTICE', {'closed': False, 'exact': True}),
           'closed': ('hairmesh.create_walls', 'MESH_CYLINDER', {'closed': True, 'exact': True}),
           'fill': ('hairmesh.fill_hole', 'MESH_PLANE', {}),
           'average': ('hairmesh.average_curve', 'CURVE_DATA', {}),
-          'merge': ('hairmesh.merge_coincident', 'AUTOMERGE_ON', {})}
-SHORT = {'walls': 'Wall', 'exact': 'Exactly These', 'closed': 'Volume Lock', 'fill': 'Fill Hole', 'average': 'Average', 'merge': 'Merge'}   # (U6: the long texts are the original's, surfaceMenuItems 6157)
+          'merge': ('hairmesh.merge_coincident', 'AUTOMERGE_ON', {}),
+          'xwalls': ('hairmesh.x_path_walls', 'MOD_LATTICE', {}),
+          'through': ('hairmesh.create_walls', 'MOD_LATTICE', {'closed': False, 'exact': True})}
+SHORT = {'walls': 'Wall', 'exact': 'Exactly These', 'closed': 'Volume Lock', 'fill': 'Fill Hole', 'average': 'Average', 'merge': 'Merge',
+         'xwalls': 'Around the X', 'through': 'Through the X'}   # (U6: the long texts are the original's, surfaceMenuItems 9367)
+
+
+def wall_choices(P, cs):
+    """surfaceMenuChoices of these curves, kept per model state and curves (lot 1.1f): the pie, the Walls menu and the
+    curve sheet draw it at every redraw, and its xPairs / resolveTrunks walk every pair of the curves (2.3 s with the
+    331 curves of the example selected). resolveTrunks and xPairs read the curves' anchors (gen) and their places (rev)."""
+    key = (P.gen, P.rev, tuple(c.id for c in cs))
+    c = P._memo.get('wall_choices')
+    if c is None or c[0] != key:
+        c = (key, WL.surfaceMenuChoices(P, cs)); P._memo['wall_choices'] = c
+    return c[1]
 
 
 def curve_wall_items(P, cs, short=False):
-    """surfaceMenuItems (6157) for 2+ selected curves as items; `short` = the texts of the pop-up's rows."""
+    """surfaceMenuItems (9367) for 2+ selected curves as items; `short` = the texts of the pop-up's rows."""
     if len(cs) < 2:
         return []
     out = []
-    for key, label in ((k, wording.core(t)) for k, t in WL.surfaceMenuChoices(P, cs)):
+    for key, label in ((k, wording.core(t)) for k, t in wall_choices(P, cs)):
         idname, icon, props = CREATE[key]
         out.append(('op', idname, SHORT[key] if short else label, icon, dict(props)))
     return out
@@ -234,9 +323,16 @@ def walls_menu_items(context):
     root, P, sel = select.current(context)
     if P is None:
         return [('label', 'No HairMesh project', 'INFO')]
+    from .ops_fill import detect_item
+    fill = detect_item(context)                                     # (1.1f: Detect Fill Outline Here, where the pie opened over a 3D View)
+    tail = [('sep',), fill] if fill is not None else []
     sf = select.last_wall(P, sel)
+    lk = lock_item(P, sel)                                          # (1.1f: Select Lock Curves, with the other selections)
     if sf is not None and not sel.anchors:
-        return wall_actions(context.scene.hairmesh, P, sf, short=False)['menu'] + ([('sep',), UNITE] if unite_offered(P, sel.items) else [])   # (4.10)
+        menu = list(wall_actions(context.scene.hairmesh, P, sf, short=False)['menu'])
+        if lk is not None:
+            menu.insert(menu.index(('sep',)), lk)
+        return menu + ([('sep',), UNITE] if unite_offered(P, sel.items) else []) + tail   # (4.10)
     cs = select.curves_of(P, sel)
     items = curve_wall_items(P, cs)
     if len([c for c in cs if not c.ring]) >= 2:
@@ -244,14 +340,14 @@ def walls_menu_items(context):
         # 7928: pickTool('guide')) — the Guides sub-tool in its Line mode, the curves still selected
         items.append(('op', 'hairmesh.set_guide_mode', 'Guide Line (Drag Across the Curves)', 'IPO_LINEAR', {'mode': 'LINE'}))
     if unite_offered(P, sel.items):
-        items.append(UNITE)                                         # (4.10: the original's curve pie, 7927)
-    walls = wall_select_items(P, cs)
+        items.append(UNITE)                                         # (4.10: the original's curve pie, 10156)
+    walls = wall_select_items(P, cs) + ([lk] if lk is not None else [])
     if items and walls:
         items.append(('sep',))
     items.extend(walls)
     if not items:
         items.append(('label', 'Select two or more curves' if cs else 'Select curves (2+) or click a wall', 'INFO'))
-    return items
+    return items + tail
 
 
 BULGE_HINT = 'Bulge only shapes the wall with Width Segments ≥ 1'
@@ -275,7 +371,7 @@ def wall_actions(hm, P, sf, short=False):
     drivers = ('label', f'{na} ↔ {nb}', 'CURVE_DATA')
     # 1e of the second manual test of 21/10/2026: with one quad across (Width Segments 0) the bulge moves no vertex —
     # sin(pi s) at the two edges (surfaceData 2872; sin(pi) = 1.2e-16 in JS, below the last bit of the coordinates) —
-    # and Segments -> Curves needs 2+ (3097); it still decides whether a Second Surface may exist (hasTwin 2945, the
+    # and Segments -> Curves needs 2+ (3097); it still decides whether a Second Surface may exist (hasTwin 4216, the
     # checkbox 8798) and gives it its bulge when switched on (8801). So: dimmed (Blender's "no effect now", still
     # editable, or a wall made with Bulge 0 could never get a second surface) unless the second surface is on
     idle_bulge = segs == 1 and not sf.p.get('b2on')
@@ -284,7 +380,7 @@ def wall_actions(hm, P, sf, short=False):
         sliders.append(('prop', 'wall_seg_off', 'Segment Offset'))
     if segs > 2:
         sliders.append(('prop', 'wall_seg_spread', 'Spread from Center'))
-    # part 1 of the lot ux7 (core/effects.fadeActs, surfaceData 2824): the root fade also blends the root row onto the
+    # part 1 of the lot ux7 (core/effects.fadeActs, surfaceData 4006): the root fade also blends the root row onto the
     # connector, the junction fade only scales the bulge (the second surface does not copy it)
     fade_hint = None
     if wallCrownRoot(P, sf):
@@ -296,7 +392,7 @@ def wall_actions(hm, P, sf, short=False):
             fade_hint = ('Bulge Fade (Junction) only scales the bulge: the Bulge is 0.' if segs >= 2 else
                          'Bulge Fade (Junction) needs Width Segments ≥ 1 (the second surface does not take it).')
     toggles = [('toggle', 'wall_flip', 'Flip' if short else 'Bulge to the Other Side', 'ARROW_LEFTRIGHT'), ('toggle', 'wall_clean', 'Clean' if short else 'Clean Topology', CLEAN_ICON)]
-    second = ('toggle', 'wall_b2on', 'Second' if short else 'Second Surface', 'MOD_ARRAY', *(() if bulge else ({'enabled': False},)))   # (the original offers it only with a bulge, 8798)
+    second = ('toggle', 'wall_b2on', 'Second' if short else 'Second Surface', 'MOD_ARRAY', *(() if bulge else ({'enabled': False},)))   # (the original offers it only with a bulge, 12756)
     twin = []
     if hasTwin(sf):
         twin = [('prop', 'wall_b2bulge', 'Second: Bulge'), ('prop', 'wall_b2segs', 'Second: Segments'), ('toggle', 'wall_b2flip', 'Second: Flip' if short else 'Second: Bulge to the Other Side', 'ARROW_LEFTRIGHT')]
@@ -307,10 +403,17 @@ def wall_actions(hm, P, sf, short=False):
     # the sheet: the blocks by subject under the identity rows the caller adds (name, group and the two curves, Move to
     # Group, Delete: tool.wall_rows) — Shape (the sliders two by two, the toggles, segments to curves), Second Surface
     # (its own values, while there is one)
-    from .tool import block
+    from .tool import GAP, block, buttons, field, without_text
     why = ' '.join(t for t in (BULGE_HINT if idle_bulge else None, fade_hint, None if bulge else 'Second Surface needs a Bulge.') if t) or None
-    shape = [sliders[i:i + 2] for i in range(0, len(sliders), 2)] + [[*toggles, second]] + ([[to_curves]] if to_curves else [])
-    blocks = [block('wall_shape', 'Shape', 'MOD_LATTICE', shape, True, why)] + ([block('wall_second', 'Second Surface', 'MOD_ARRAY', [[t] for t in twin[:2]] + [twin[2:]])] if twin else [])
+    # (G13: each value named outside its field, one to a row; G12, G14: the switches and Segments to Curves at the width
+    # of their texts, apart, a gap between the families)
+    ctx = bpy.context
+    shape = [[field(it[2], without_text(it))] for it in sliders] + [[GAP], [buttons(ctx, *toggles, second)]] + ([[GAP], [buttons(ctx, to_curves)]] if to_curves else [])
+    second_rows = []
+    if twin:                                                        # (its block says "Second Surface": the names without "Second:")
+        second_rows = [[field('Bulge', without_text(twin[0]))], [field('Width Segments', without_text(twin[1]))],
+                       [GAP], [buttons(ctx, (*twin[2][:2], 'Flip' if short else 'Bulge to the Other Side', *twin[2][3:]))]]
+    blocks = [block('wall_shape', 'Shape', 'MOD_LATTICE', shape, True, why)] + ([block('wall_second', 'Second Surface', 'MOD_ARRAY', second_rows)] if twin else [])
     menu = [label, drivers, sel_a, sel_b, both, ('sep',), *([to_curves] if to_curves else []), delete]
     return {'pie': pie, 'blocks': blocks, 'menu': menu, 'label': label, 'drivers': drivers, 'delete': delete}
 
@@ -321,7 +424,7 @@ class HAIRMESH_OT_unite_locks(bpy.types.Operator):
     bl_label = 'Unite Locks (Y / X Junction)'
     bl_options = {'REGISTER', 'UNDO'}
 
-    # 4.10 (D4.10): unionSelectedLocks (3221), the pie's "⊕ Unite locks (Y / X junction)" (7927: two locks or more)
+    # 4.10 (D4.10): unionSelectedLocks (4540, 1.0.2), the pie's "⊕ Unite locks (Y / X junction)" (10156: two locks or more)
     @classmethod
     def poll(cls, context):
         if not (owner.visible(context) and session.find_root(context) is not None):
@@ -352,7 +455,7 @@ class HAIRMESH_OT_unite_locks(bpy.types.Operator):
 
 
 def unite_offered(P, sel_items):
-    """canUnite (7927: unionLocks() gives two locks or more), kept per model generation and selection — the menus
+    """canUnite (10156: unionLocks() gives two locks or more), kept per model generation and selection — the menus
     draw it often"""
     from ..core import union as UN
     key = (P.gen, P.rev, tuple(sel_items))
@@ -366,8 +469,59 @@ UNITE = ('op', 'hairmesh.unite_locks', 'Unite Locks (Y / X Junction)', 'MOD_BOOL
 UNITE_S = ('op', 'hairmesh.unite_locks', 'Unite Locks', 'MOD_BOOLEAN', {})
 
 
-_CLASSES = (HAIRMESH_OT_unite_locks, HAIRMESH_OT_create_walls, HAIRMESH_OT_fill_hole, HAIRMESH_OT_average_curve, HAIRMESH_OT_segments_to_curves,
-            HAIRMESH_OT_select_wall, HAIRMESH_OT_select_wall_curves)
+def glued_count(P, g):
+    """gluedLocks (4590): how many locks of the group are glued to another lock of it, kept per model generation —
+    the sheet draws it often. The group sheet shows Recalculate Glued Locks when this is 2 or more (11045)."""
+    from ..core import union as UN
+    key = (P.gen, P.rev, g.id)
+    c = P._memo.get('glued_locks')
+    if c is None or c[0] != key:
+        c = (key, UN.gluedLocks(P, g)); P._memo['glued_locks'] = c
+    return c[1]
+
+
+class HAIRMESH_OT_recalc_glued_locks(bpy.types.Operator):
+    """Recalculate the locks of this group that are welded to each other: curves that wander off a shared stretch and come back are welded onto it, then every pair of facing walls is replaced from the fork (Unite Locks)"""
+    bl_idname = 'hairmesh.recalc_glued_locks'
+    bl_label = 'Recalculate Glued Locks'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    # 1.0.2: recalcGroup (4579), the group panel's "Recalculate glued locks" (11045; shown with gluedLocks >= 2)
+    @classmethod
+    def poll(cls, context):
+        if not (owner.visible(context) and session.find_root(context) is not None):
+            return False
+        _r, P, sel = select.current(context)
+        g = select.selected_group(P, sel) if P is not None else None
+        if g is None or glued_count(P, g) < 2:
+            cls.poll_message_set('Select a group with two or more locks welded to each other')
+            return False
+        return True
+
+    def execute(self, context):
+        from ..core import scene as SC, union as UN
+        from . import slow
+        root, P, sel = select.current(context)
+        g = select.selected_group(P, sel)
+        if g is None:
+            return {'CANCELLED'}
+        SC.settle(P)
+        with slow.part('recalculate glued locks'), live.heavy(context, root, 'recalculating the glued locks', live.estimate(root, P)[1]):
+            made, msg, changed, new_sel = UN.recalcGroup(P, g, tables=lambda: live.row_tables(root, P).T)
+        if changed:                                                 # (welds and/or a union: one undo step)
+            # S.sel = the new walls, or the group's walls; S.asel = []. Ours (lot 1.1c, docs/features-adicionadas.md):
+            # only when the model changed — the original sets it on a cancel too, a change no undo step holds
+            select.store(context.scene.hairmesh, Selection(new_sel, []))
+            session.save_project(root, P)
+            live.touch(root, [c.id for c in P.curves()])
+            live.update(context, root)
+        select.redraw(context)
+        self.report({'INFO'}, msg)
+        return {'FINISHED'} if changed else {'CANCELLED'}
+
+
+_CLASSES = (HAIRMESH_OT_unite_locks, HAIRMESH_OT_recalc_glued_locks, HAIRMESH_OT_create_walls, HAIRMESH_OT_x_path_walls, HAIRMESH_OT_fill_hole, HAIRMESH_OT_average_curve, HAIRMESH_OT_segments_to_curves,
+            HAIRMESH_OT_select_wall, HAIRMESH_OT_select_wall_curves, HAIRMESH_OT_select_lock_curves)
 
 
 def register():

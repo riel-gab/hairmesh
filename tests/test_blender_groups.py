@@ -8,6 +8,7 @@ the curves in the drawing and the picking, undo."""
 import json
 import os
 import unittest
+from tests.helpers.dlist import d_items                            # noqa: E402  (the D as a list: Object > HairMesh lists actions only since lot 1.2a)
 
 try:
     import bpy
@@ -231,16 +232,16 @@ class TestGroupOperators(unittest.TestCase):
         self.assertEqual([t for t, _i, _r in sections], ['Sub-tool', 'Selection', 'Modifiers', 'Conversion', 'Viewport', 'Project'], 'the top row and the five tabs (U5; Project last: 1a of the manual test of the lot ux5)')
         tabs = self.tool.popup_tabs(ctx)
         self.assertEqual(list(tabs), ['SELECTION', 'MODIFIERS', 'CONVERSION', 'OPTIONS', 'PROJECT'])
-        self.assertEqual(tabs['SELECTION'][0], [('label', 'Nothing selected', 'INFO')]); self.assertEqual(self.ops(tabs['SELECTION'][1]), [('hairmesh.add_group', {})])
+        self.assertEqual(tabs['SELECTION'][0], [('label', 'Nothing selected', 'INFO')]); self.assertEqual(self.ops(self.tool.flat_items([tabs['SELECTION'][1]])), [('hairmesh.add_group', {})])   # (lot 1.2b: at the width of its text)
         popup = self.popup()
-        self.assertIn(('hairmesh.add_group', {}), popup); self.assertIn(('prop', 'conv_step'), popup); self.assertIn(('hairmesh.step_from_object', {}), popup)
+        self.assertIn(('hairmesh.add_group', {}), popup); self.assertIn(('prop', self.tool.props.measure(self.P(), 'conv_step')), popup); self.assertIn(('hairmesh.step_from_object', {}), popup)   # (lot 1.2b: a small project draws the loop step's twin of 4 decimals)
         self.assertIn(('prop', 'settings_xray'), popup)
         self.assertNotIn('HAIRMESH_MT_select_group', [it[1] for it in popup], 'the list of groups is the outliner (U6)'); self.assertFalse(hasattr(bpy.types, 'HAIRMESH_MT_select_group'))
         self.assertEqual(popup.count(('hairmesh.convert', {})), 1, 'Convert once: the Conversion tab'); self.assertEqual(popup.count(('hairmesh.set_head', {})), 1)
         self.assertEqual([it for it in sections[0][2][0]], [*self.tool._subtool_buttons(), self.tool.OUTLINER_OP_S], 'the top row: the sub-tools (the active one named, 4.4) and the outliner')
-        menu = self.ops(self.tool.menu_items(ctx))
+        menu = self.ops(d_items(self.tool, ctx))
         self.assertIn(('hairmesh.add_group', {}), menu); self.assertIn(('prop', 'conv_dev'), menu); self.assertIn(('hairmesh.export_project', {}), menu)
-        self.assertEqual([it[2] for it in self.tool.menu_items(ctx) if it[0] == 'op' and it[1] == 'hairmesh.live_rebuild'], ['Rebuild Live Preview'], 'icon-only buttons get their long name in the list')
+        self.assertEqual([it[2] for it in d_items(self.tool, ctx) if it[0] == 'op' and it[1] == 'hairmesh.live_rebuild'], ['Rebuild Live Preview'], 'icon-only buttons get their long name in the list')
         self.assertEqual(self.tool.conversion_menu_items(ctx)[0], ('label', 'No groups', 'INFO'))
         self.assertFalse(self.ui.HAIRMESH_PT_group.poll(ctx), 'no group selected'); self.assertTrue(self.ui.HAIRMESH_PT_conversion.poll(ctx)); self.assertTrue(self.ui.HAIRMESH_PT_selection.poll(ctx)); self.assertTrue(self.ui.HAIRMESH_PT_options.poll(ctx))
         self.assertEqual(self.ops(self.tool.group_menu_items(ctx))[-1], ('hairmesh.add_group', {}), 'Group >: New Group without a selected group')
@@ -250,9 +251,10 @@ class TestGroupOperators(unittest.TestCase):
         rows, title = self.tool.group_rows(ctx, P)
         self.assertEqual(title, 'Fringe')
         flat = self.ops(self.tool.flat_items(rows))
-        for key in ('group_name', 'group_color', 'group_guides', 'group_step', 'group_sym_axis'):
+        for key in ('group_name', 'group_color', 'group_guides', self.tool.props.measure(P, 'group_step'), 'group_sym_axis', 'group_merge_trunks',   # (Merge Shared Trunks a checkbox since lot 1.2a, decision 16;
+                    'group_container', 'group_loose', 'group_ticked'):                                       # Container, Free Curves and Convert This Group since lot 1.2b; a small project's loop step: its twin)
             self.assertIn(('prop', key), flat)
-        for key in ('group_visible', 'group_container', 'group_loose', 'group_ticked', 'group_sym_on', 'group_merge_trunks'):
+        for key in ('group_visible', 'group_sym_on'):
             self.assertIn(('toggle', key), flat)
         for idname in ('hairmesh.match_project_step', 'hairmesh.detach_group', 'hairmesh.add_group', 'hairmesh.rename_item', 'hairmesh.delete_group'):
             self.assertIn((idname, {}), flat)
@@ -286,7 +288,7 @@ class TestGroupOperators(unittest.TestCase):
         rows = self.tool.hidden_rows(self.P(), self.select.load(self.hm))
         self.assertEqual(rows[0][0][1], '2 curves hidden by Auto (select the group in the Outliner, O, to show them):'); self.assertEqual(self.ops(self.tool.flat_items([rows[1]])), [])   # (4.3, item 1: named, no selection button)
         self.assertEqual([it[1] for it in self.tool.flat_items([rows[1]]) if it[0] == 'label' and it[1]], [f'{g.name} (2)'])
-        self.assertEqual(self.tool.popup_tabs(ctx)['SELECTION'][2:], rows, 'the Selection tab says so')
+        self.assertEqual(self.tool.popup_tabs(ctx)['SELECTION'][2:], [[self.tool.GAP]] + rows, 'the Selection tab says so, a gap after New Group (lot 1.2b)')
         for name in ('HAIRMESH_MT_group', 'HAIRMESH_MT_conversion', 'HAIRMESH_MT_move_to_group'):
             self.assertTrue(hasattr(bpy.types, name), name)
         # U2: the preference for new groups (given explicitly here: the add-on is registered by hand, no preferences)

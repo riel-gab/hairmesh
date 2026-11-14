@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Crown (whorl / parting), hair-modeler.clean.html:6724-7238: the conversion-time part only — crownData builds the
 crown mesh between the lower connector and the parting line from the crown curves. The tools that create and edit
 crowns (createCrown, connectors, symmetry) are phase 3."""

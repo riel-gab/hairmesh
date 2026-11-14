@@ -34,17 +34,17 @@ from math import ceil, hypot
 import bpy
 from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, IntProperty
 
-from ..core import crowntool as CT, curves as CM, edit, effects, weld as W
+from ..core import crowntool as CT, curves as CM, edit, effects, guidetool as GT, weld as W
 from ..core.crown import crownCurves
 from ..core.model import Attachment
 from ..core.selection import Selection
 from ..core.vec3 import V3
-from . import draw as drawmod, live, modal_keys, owner, pick, select, session
+from . import draw as drawmod, live, modal_keys, owner, pick, pointer, select, session
 from .coords import f32
 from .ops_draw import NAV_EVENTS, head_visible, model_cam, model_ray
 
-PICK_ANCHOR_PX = 10                                                 # pickAnchor (5668)
-PICK_CURVE_PX = 7                                                   # pickCurve (5675)
+PICK_ANCHOR_PX = 10                                                 # pickAnchor (8426)
+PICK_CURVE_PX = 7                                                   # pickCurve (8432)
 BOX_MIN_PX = 3                                                      # a marquee no bigger than this is a click (6050)
 PAINT_STEP_PX = 4                                                   # paintSel samples the stroke every 4 px (5857)
 PAINT_CURSOR_PX = PICK_CURVE_PX                                     # the blue disc of the paint stroke shows the pick radius (an addition of this port)
@@ -129,7 +129,9 @@ class View:
 
     def anchors(self, sel):
         """S.anchorList: the anchors shown and pickable (the anchors of the curves a group's mode hides go with them, 1381)"""
-        return edit.anchorList(self.P, sel.items, sel.anchors, shown={c.id for c in self.curves()})
+        from ..core import groups as G
+        shown = G.shownCurves(self.P, sel.items, sel.anchors, None, None, drawmod.snap_curve)[0]   # (rebuildAnchors: the mode's curves, a service curve's anchors too)
+        return edit.anchorList(self.P, sel.items, sel.anchors, shown={c.id for c in shown})
 
     def curves(self):
         """the curves pickCurve sees: hair curves that are visible and drawn (c.obj.visible, syncVisuals 11952):
@@ -137,7 +139,7 @@ class View:
         15/10/2026, U1; the curve an anchor slides along shows anyway)"""
         from ..core import groups as G
         sel = select.load(self.context.scene.hairmesh)
-        return G.shownCurves(self.P, sel.items, sel.anchors, None, None, drawmod.snap_curve)[0]
+        return G.visibleCurves(G.shownCurves(self.P, sel.items, sel.anchors, None, None, drawmod.snap_curve)[0], sel.items)   # (a service curve only while selected, 16484)
 
     def occluder(self):
         """`occluded(point)` for snap_drag_to_curve: the head (as the original raycasts it) hides the point when its
@@ -145,7 +147,7 @@ class View:
         P = self.P
         if P.head is None or not P.head.visible or not head_visible(self.root) or edit.head_trimesh(P) is None:
             return None
-        if pick.blender_xray(self.context):                         # Blender's X-ray (3.8c): the head hides nothing
+        if pick.blender_xray(self.context):                         # Blender's X-Ray (3.8c): the head hides nothing
             return None
 
         def occluded(point):
@@ -275,7 +277,7 @@ class _AnchorDragMixin:
             live.cancel(v.root.name)                                # a drag that moved nothing: no timer may fire after the operator
         context.area.tag_redraw()
         if d.moved and len(d.list) == 1:
-            self._check_weld(context)                               # checkWeld (5998): the pie when another anchor is within 14 px
+            self._check_weld(context)                               # checkWeld (8797): the pie when another anchor is within 14 px
         return {'FINISHED'}
 
     def _drag_restore(self):
@@ -301,7 +303,7 @@ class _AnchorDragMixin:
         return gone
 
     def _check_attach(self, context):
-        """checkAttach (7406): an anchor END dragged near a crown connector (and not near another anchor): the Attach pie"""
+        """checkAttach (11016): an anchor END dragged near a crown connector (and not near another anchor): the Attach pie"""
         from .ops_gizmo import check_attach
         return check_attach(self.view, self.view.P, self.drag.list[0])
 
@@ -312,7 +314,7 @@ class _AnchorDragMixin:
         b = W.findWeldCandidate(v.P, a, v.anchors(sel), v.project, )
         if b is None:
             ops_weld.pending = None
-            return self._check_attach(context)                      # (checkWeld 4878: no weld candidate -> checkAttach)
+            return self._check_attach(context)                      # (checkWeld 7340: no weld candidate -> checkAttach)
         ops_weld.ask_weld(a, b, v.P)
         bpy.ops.wm.call_menu_pie('INVOKE_DEFAULT', name=ops_weld.HAIRMESH_MT_weld_pie.bl_idname)
         return True
@@ -329,7 +331,7 @@ class HAIRMESH_OT_select(_AnchorDragMixin, bpy.types.Operator):
     wall: IntProperty(name='Wall', description='Non-modal form: the wall (surface item) id clicked', default=-1, options={'HIDDEN', 'SKIP_SAVE'})
     item: IntProperty(name='Item', description='Any item by id (a group row of the HairMesh Outliner, a curve, a wall): selectItem of the original', default=-1, options={'HIDDEN', 'SKIP_SAVE'})
     extend: BoolProperty(name='Extend', description='Shift: add to the selection (a curve or wall: toggle it)', default=False, options={'SKIP_SAVE'})
-    toggle: BoolProperty(name='Toggle', description='Ctrl: toggle the anchor', default=False, options={'SKIP_SAVE'})
+    toggle: BoolProperty(name='Toggle', description="Ctrl: toggle the anchor; with a NURBS disc selected, a curve, wall or item clicked puts its group into the disc's Groups list (again: out)", default=False, options={'SKIP_SAVE'})
     deselect_all: BoolProperty(name='Deselect All', description='Non-modal form: clear the selection (a click in the empty space)', default=False, options={'SKIP_SAVE'})
 
     @classmethod
@@ -386,12 +388,21 @@ class HAIRMESH_OT_select(_AnchorDragMixin, bpy.types.Operator):
                 return {'FINISHED'}
             self.mode = 'drag'
             return self._drag_start(context, event, select.anchors_of(v.P, sel), a.pos)
+        if event.ctrl and GT.selectedDisc(v.P, sel.items) is not None:
+            # 1.0.2 (7637-7640): a NURBS disc selected, Ctrl + click on a curve or on what pickObjects finds (a wall, a
+            # converted mesh): its group into the disc's Groups list, again out; nothing for it — the paint below
+            from . import ops_guides
+            cc = pick.pick_curve(v.curves(), v.project, x, y, v.px(PICK_CURVE_PX))
+            tid = cc['curve'].id if cc is not None else pick.item_under(context, v.root, x, y)
+            if ops_guides.disc_excl_click(context, v.root, v.P, sel, tid, self.report):
+                return {'FINISHED'}
         if event.ctrl:
             # Ctrl + drag over curves: select them, or, if the first touched curve was selected, deselect (5839-5841)
             sel.anchors = []; self.sel = sel; self.mode = 'paint'; self.paint_mode = None; self.last = None
             select.store(hm, sel)
             drawmod.overlay = ('paint', x, y, v.px(PAINT_CURSOR_PX))   # the blue disc under the cursor while the stroke paints
             self._paint(context, x, y)
+            pointer.claim('select'); pointer.ask('select', context, pointer.cursor_for(2 * PAINT_CURSOR_PX))   # (lot 1.2a, item 7: the pointer over a circle, as over Blender's brushes)
             context.window_manager.modal_handler_add(self)
             return {'RUNNING_MODAL'}
         ch = pick.pick_curve(v.curves(), v.project, x, y, v.px(PICK_CURVE_PX))
@@ -421,16 +432,31 @@ class HAIRMESH_OT_select(_AnchorDragMixin, bpy.types.Operator):
 
     def modal(self, context, event):
         try:
-            return self._modal(context, event)
+            ret = self._modal(context, event)
         except Exception:                                           # (4.4, the review: an error mid-slide or mid-drag must not keep the root held)
             self.cancel(context)
             raise
+        if getattr(self, 'mode', None) == 'paint':
+            self._pointer(context, event, ret)
+        return ret
+
+    def _pointer(self, context, event, ret):
+        """the paint stroke draws a disc at the cursor (the pick radius): the pointer over it as over Blender's brushes
+        (pointer.py), Blender's own off the viewport and once the stroke ends"""
+        if 'FINISHED' in ret or 'CANCELLED' in ret:
+            pointer.release('select')
+            return
+        r = getattr(context, 'region', None)
+        x, y = getattr(event, 'mouse_region_x', -1), getattr(event, 'mouse_region_y', -1)
+        inside = r is not None and 0 <= x < r.width and 0 <= y < r.height
+        pointer.follow('select', context, event, inside, 2 * PAINT_CURSOR_PX, passed='PASS_THROUGH' in ret)
 
     def cancel(self, context):
         # Blender ends the modal itself (a window closed, a file loaded) or an error did: the hold off, the drawing
         # state cleared, no timer left behind — no area to talk to, no datablock written
         from .ops_gizmo import attach_drag_end
         modal_keys.clear(context)
+        pointer.release('select')                                   # (the paint stroke's pointer, if it asked for one)
         attach_drag_end(); drawmod.overlay = None; drawmod.snap_curve = None; drawmod.weld_cand = None
         v = getattr(self, 'view', None)
         if v is None:
@@ -453,8 +479,8 @@ class HAIRMESH_OT_select(_AnchorDragMixin, bpy.types.Operator):
         if event.type == 'MOUSEMOVE':
             x, y = event.mouse_region_x, event.mouse_region_y
             if self.mode == 'slide':
-                if CT.slideStep(self.view.P, self.slide, (x, y), lambda p, f=self.view.project: f(p) or (0.0, 0.0, 2.0)):   # (slideStep 7447 on the connector as the drag began; behind the view: skipped, as z > 1)
-                    self.view.P.rev += 1                            # (4.4, 2a: the anchor and its curve drawn at every step, as slideStep 7447)
+                if CT.slideStep(self.view.P, self.slide, (x, y), lambda p, f=self.view.project: f(p) or (0.0, 0.0, 2.0)):   # (slideStep 11057 on the connector as the drag began; behind the view: skipped, as z > 1)
+                    self.view.P.rev += 1                            # (4.4, 2a: the anchor and its curve drawn at every step, as slideStep 11057)
                     live.schedule(self.view.root.name)              # (its frame step too: live._drag_sync; the root held: the locks at the release)
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
@@ -581,6 +607,11 @@ class HAIRMESH_OT_select(_AnchorDragMixin, bpy.types.Operator):
     def execute(self, context):
         root, P, sel = select.current(context)
         hm = context.scene.hairmesh
+        tid = self.curve if self.curve >= 0 else self.wall if self.wall >= 0 else self.item if self.item >= 0 else None
+        if self.toggle and self.anchor < 0 and tid is not None:     # (Ctrl + click with a NURBS disc selected, 7637-7640)
+            from . import ops_guides
+            if ops_guides.disc_excl_click(context, root, P, sel, tid, self.report):
+                return {'FINISHED'}
         if self.anchor >= 0:
             if self.anchor not in P.anchors:
                 self.report({'ERROR'}, f'No anchor {self.anchor} in the project')
@@ -601,7 +632,7 @@ class HAIRMESH_OT_select(_AnchorDragMixin, bpy.types.Operator):
                 self.report({'ERROR'}, f'No wall {self.wall} in the project')
                 return {'CANCELLED'}
             sel.select_item(it.id, self.extend)
-        elif self.item >= 0:                                        # the outliner's click (selectItem, 7844; Shift adds)
+        elif self.item >= 0:                                        # the outliner's click (selectItem, 11472; Shift adds)
             it = P.items.get(self.item)
             if it is None or it.type == 'head':
                 self.report({'ERROR'}, f'No item {self.item} in the project')
@@ -726,6 +757,12 @@ class HAIRMESH_OT_move_anchors(bpy.types.Operator):
         return _finish_edit(context, root, P)
 
 
+def rmb_picks_curve(subtool, cut_mode):
+    """RMB picks the curve under the cursor instead of inserting an anchor: the Scissors (7568), in every mode but the
+    wall's, whose cut takes RMB itself (7567)"""
+    return subtool == 'SCISSORS' and cut_mode != 'SURFACE'
+
+
 class HAIRMESH_OT_insert_anchor(_AnchorDragMixin, bpy.types.Operator):
     """Insert an anchor where the right button hits a curve and drag it; curves welded along that segment get it too"""
     bl_idname = 'hairmesh.insert_anchor'
@@ -742,8 +779,8 @@ class HAIRMESH_OT_insert_anchor(_AnchorDragMixin, bpy.types.Operator):
 
     def invoke(self, context, event):
         hm = context.scene.hairmesh
-        if hm.subtool == 'SCISSORS' and hm.cut_mode == 'CURVE' and not (event.shift or event.ctrl or event.alt or event.oskey):
-            from .ops_scissors import pick_curve_rmb                # the Scissors: RMB picks the curve to cut (5780; Shift+RMB stays the pie)
+        if rmb_picks_curve(hm.subtool, hm.cut_mode) and not (event.shift or event.ctrl or event.alt or event.oskey):
+            from .ops_scissors import pick_curve_rmb                # the Scissors: RMB picks the curve to cut (8553; Shift+RMB stays the pie)
             v = View.of(context)
             return {'FINISHED'} if v is not None and pick_curve_rmb(context, event, v) else {'PASS_THROUGH'}
         if hm.subtool in ('DRAW', 'SCISSORS') or event.shift or event.ctrl or event.alt or event.oskey:
@@ -890,30 +927,38 @@ class HAIRMESH_OT_delete_selected(bpy.types.Operator):
 
 
 def delete_selection(op, context, keep_shape=False):
-    """deleteSelected (8107): the selected anchors (deleteAnchors), else every selected item (deleteItem: curves, walls,
+    """deleteSelected (11985): the selected anchors (deleteAnchors), else every selected item (deleteItem: curves, walls,
     guides, crowns, groups with everything inside, converted meshes) — Backspace, X (after its question) and Delete"""
     root, P, sel = select.current(context)
     anchors = select.anchors_of(P, sel)
     groups = False
+    gone = []
     if anchors:
+        ids = {a.id for a in anchors}
+        had = {c.id: (c.name, sum(1 for x in c.anchors if x.id not in ids)) for a in anchors for c in edit.curvesWith(P, a) if not c.ring}
         touched = edit.deleteAnchors(P, anchors, keep_shape)
         if touched is None:
             op.report({'WARNING'}, "Disc points can't be deleted: use Reset deformations")
             return {'CANCELLED'}
         sel = Selection(touched, [])                                # the edited curves stay selected (4798)
         msg = f'HairMesh: {len(anchors)} anchor{"s" if len(anchors) > 1 else ""} deleted'
+        # (lot 1.2a, the owner's decision 15: the original's rule stays — a curve whose every segment left runs along
+        # other curves is deleted, 7254; after Separate Zones at an X that is the whole source curve — and now it says so)
+        gone = [name for iid, (name, left) in had.items() if iid not in P.items and left >= 2]
     elif sel.items:
         n = 0
-        from ..core import groups as G
-        tips = [P.items[i] for i in sel.items if getattr(P.items.get(i), 'type', None) == 'tip']
-        tip_curves = [c.id for k in tips if getattr(P.items.get(k.parent), 'type', None) == 'group' for c in G.curvesIn(P, P.items[k.parent])]
+        from ..core import groups as G, scene as SC
+        # (1.0.3: shell / even too, deleteItem 876 there; also those inside a group deleted)
+        tips = [it for it in P.items.values() if it.type in ('tip', 'shell', 'even') and any(G.isDescendant(P, it.id, i) for i in sel.items)]
+        tip_curves = [cid for k in tips for cid in SC.evenshell_touch(P, k)]   # (a converted shell: every lock — its rings reach any group's)
         for iid in list(sel.items):
             if iid in P.items:
                 groups = groups or P.items[iid].type == 'group'
                 edit.deleteItem(P, iid); n += 1                     # deleteSelected (8106): every selected item, groups with everything inside
+        edit.dropOrphanServiceCurves(P)                             # 1.0.2 (10414): the Hole curves left by walls deleted before
         sel = Selection([], [])
         msg = f'HairMesh: {n} item{"s" if n > 1 else ""} deleted'
-        if tip_curves:                                              # (a Density deleted, 769: S.surfDirty — the locks of its group)
+        if tip_curves:                                              # (a Density, Proxy shell or Even loops deleted, 769: S.surfDirty — the locks of its group, scene.evenshell_touch)
             live.touch(root, [i for i in tip_curves if i in P.items])
     else:
         op.report({'INFO'}, 'Nothing selected')
@@ -925,7 +970,10 @@ def delete_selection(op, context, keep_shape=False):
         G.panelsRendered(P, None)
         session.save_project(root, P)
         ops_groups.sync_collections(context, root, P)               # (S.surfDirty: the locks that lost walls are rebuilt by themselves)
-    return _finish_edit(context, root, P, op.report, msg)
+    r = _finish_edit(context, root, P, op.report, msg)
+    if gone:
+        op.report({'INFO'}, f'HairMesh: {", ".join(gone)} deleted too: what was left of {"it" if len(gone) == 1 else "them"} runs along other curves')
+    return r
 
 
 def delete_question(P, sel):

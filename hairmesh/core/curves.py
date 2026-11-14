@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Port of the Curve math of the original (hair-modeler.clean.html:789-1013, plus passRule at 4872-4897).
 
 A curve is a chain of anchors; between two anchors runs a cubic Bezier whose control points are the anchors'
@@ -19,7 +19,7 @@ import math
 from struct import pack as _pack
 
 from .fdlibm import asin as _asin, tan as _tan
-from .js import at, clamp, index_of, js_max, js_or, js_pow, js_round
+from .js import at, clamp, index_of, js_max, js_or, js_pow, js_round, truthy
 from .model import Sample
 from .trace import DecisionTrace, get_trace, set_trace, set_ctx, dec as _dec, br as _br   # noqa: F401  (re-exported for the tests)
 from .vec3 import V3
@@ -399,7 +399,7 @@ def sampleKey(P, c):
             nb.append((h.id, h.junc, h.conn, h.ring, h.closed, k, len(A), _anchorKey(A[k - 1] if k > 0 else None), _anchorKey(A[k + 1] if 0 <= k < len(A) - 1 else None)))
         an.append((a.id, _bits(a.pos), a.smooth, tuple(a.pass_) if a.pass_ else None, tuple(nb)))
     ovr = tuple((k, None if o.in_ is None else _bits(o.in_), None if o.out is None else _bits(o.out)) for k, o in c.ovr.items())
-    shapes = not c.closed and len(c.anchors) >= 3                  # Roundness / Smoothing are read only then (roundAt 843, curveHandles 929)
+    shapes = not c.closed and len(c.anchors) >= 3                  # Roundness / Smoothing are read only then (roundAt 962, curveHandles 929)
     rnd = js_or(c.round, 0); fair = js_or(c.fair, 0)
     return (c.closed, c.ring, rnd if shapes and rnd > 0 else 0, fair if shapes and fair > 0 else 0, tuple(an), ovr)
 
@@ -471,9 +471,62 @@ def markAnchorsDirty(P, anchors):
         c.dirty = True
 
 
+# ---- edge curves (1.0.2, hair-modeler.clean.html:8001-8022; the rest of the X junctions is core/xjunc.py) ----
+# An edge curve (junc, c.path) is a service curve running along stretches of other curves: c.path = [[curve id, from
+# anchor id, to anchor id], …]; its anchors are theirs (the same objects) and its shape is theirs (juncHandles takes
+# their control points). syncPathCurves keeps it on them while they are edited (anchors put in / taken out). They live
+# here, not in xjunc.py, because the frame's part of the port (scene.settle, crowntool.frameSync) calls syncPathCurves.
+
+def _findIndexById(anchors, aid):
+    for i, a in enumerate(anchors):
+        if a.id == aid:
+            return i
+    return -1
+
+
+def pathAnchors(P, path):
+    # port of pathAnchors (hair-modeler.clean.html:9076): the anchors (the very objects) along a c.path; None when a
+    # curve or an anchor of it is gone, or fewer than 2
+    out = []
+    for cid, a0, a1 in path:
+        c = P.items.get(cid)
+        if c is None:
+            return None
+        i0 = _findIndexById(c.anchors, a0); i1 = _findIndexById(c.anchors, a1)
+        if i0 < 0 or i1 < 0:
+            return None
+        run = c.anchors[i0:i1 + 1] if i0 <= i1 else c.anchors[i1:i0 + 1][::-1]
+        for a in run:
+            if not out or out[len(out) - 1] is not a:
+                out.append(a)
+    return out if len(out) >= 2 else None
+
+
+def syncPathCurves(P):
+    """port of syncPathCurves (hair-modeler.clean.html:9086), run by the frame (14805: after crownSymSync, before the
+    dirty curves are rebuilt): every edge curve takes the anchors its path runs along now (a stretch that can't be
+    found leaves it as it was). Returns the edge curves changed — dirty; where the original sets S.surfDirty the caller
+    touches them (live.touch)."""
+    changed = []
+    for c in P.curves():
+        if not truthy(c.path):
+            continue
+        L = pathAnchors(P, c.path)
+        if L is None:
+            continue                                                # (a stretch can't be found — it stays as it was)
+        if len(L) != len(c.anchors) or any(a is not c.anchors[k] for k, a in enumerate(L)):
+            c.anchors = L; c.dirty = True; changed.append(c)
+    if changed:
+        P.gen += 1; P.rev += 1                                      # (a curve's anchors changed: the memos keyed on gen go)
+    return changed
+
+
 def rebuild_dirty(P):
     """What the frame loop does for curves (11311): rebuild every dirty curve. Order does not matter: handles only
-    depend on anchor positions, never on other curves' samples."""
+    depend on anchor positions, never on other curves' samples.
+    1.0.2: the frame runs syncPathCurves first (14805); here it does not — the operators call this to have the samples
+    they read, as the harness's script ops call their `frame()` (only the dirty curves rebuilt). The frame's own place in
+    the port is scene.settle and crowntool.frameSync (session.sync, before every save)."""
     n = 0
     for c in P.curves():
         if c.dirty:
@@ -489,12 +542,12 @@ def rebuild_dirty(P):
 # computed from the positions before (c.asrc), so the slider can go back; anchors moved by hand meanwhile start anew.
 # Curve ends, anchors shared with other curves and attached anchors stay. ----
 def evenIters(v):
-    # port of evenIters (hair-modeler.clean.html:960): gentle at the start of the slider (`** 2` is x * x in V8)
+    # port of evenIters (hair-modeler.clean.html:1079): gentle at the start of the slider (`** 2` is x * x in V8)
     return js_round(js_pow(clamp(v, 0, 1), 2) * 60)
 
 
 def taubin(P, fixed, closed, iters):
-    # port of taubin (hair-modeler.clean.html:961)
+    # port of taubin (hair-modeler.clean.html:1080)
     X = [p.clone() for p in P]; n = len(X)
     for it in range(iters * 2):
         k = -0.53 if it % 2 else 0.5
@@ -535,7 +588,7 @@ def evenAnchors(P, lst, v):
 
 
 def fitHandles(pts, P0, P3, d1, d2):
-    # port of fitHandles (hair-modeler.clean.html:1000): the handle lengths a, b (P0 + a d1, P3 + b d2) of the cubic
+    # port of fitHandles (hair-modeler.clean.html:1117): the handle lengths a, b (P0 + a d1, P3 + b d2) of the cubic
     # that best fits the polyline `pts` in the least-squares sense (chord-length parameters); a degenerate fit or a
     # non-positive length falls back to a third of the chord
     L = [0]

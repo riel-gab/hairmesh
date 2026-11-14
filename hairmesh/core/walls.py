@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Walls and locks between curves, the data part of the original's curve pie and surface panel (phase 3.5):
 creating walls (createSurfaces / makeSurface, with resolveTrunks picking the facing branches of two trunks), the
 volume lock (closed), filling a hole bounded by welded curves (fillHole), the average curve of two curves, the
@@ -23,14 +23,14 @@ def hasSurface(P, c1, c2):
 
 
 def makeSurface(P, c1, c2):
-    # port of makeSurface (hair-modeler.clean.html:2965): one wall between two curves (None when one exists already)
+    # port of makeSurface (hair-modeler.clean.html:4236): one wall between two curves (None when one exists already)
     if hasSurface(P, c1, c2):
         return None
     return addItem(P, 'surface', c1.parent, {'a': c1.id, 'b': c2.id, 'dirty': True, 'p': {'segs': 1, 'bulge': 0.15, 'flip': False}})
 
 
 def sharedRun(c1, c2):
-    # port of sharedRun (hair-modeler.clean.html:3139): the longest run of 2+ anchors the two curves share in the
+    # port of sharedRun (hair-modeler.clean.html:4419): the longest run of 2+ anchors the two curves share in the
     # same order: {i0, i1 (on c1), j0, j1 (on c2)} or None
     best = None
     A1 = c1.anchors; A2 = c2.anchors
@@ -47,7 +47,7 @@ def sharedRun(c1, c2):
 
 
 def trunkMates(P, c):
-    # port of trunkMates (hair-modeler.clean.html:2970): c and every curve sharing a trunk with it (directly or
+    # port of trunkMates (hair-modeler.clean.html:4241): c and every curve sharing a trunk with it (directly or
     # through others); a click on a trunk picks any one of them
     out = [c]; cs = [h for h in P.curves() if not h.junc and not h.ring and not h.conn]
     i = 0
@@ -73,7 +73,7 @@ def curveGap(a, b):
 
 
 def resolveTrunks(P, lst):
-    """port of resolveTrunks (hair-modeler.clean.html:2985). Two trunks selected (each curve has trunk mates, the
+    """port of resolveTrunks (hair-modeler.clean.html:4256). Two trunks selected (each curve has trunk mates, the
     two are not mates of each other): the wall goes between the branches facing each other, the closest pair, not
     between whichever curves the clicks picked. Several selected curves of one trunk count as that trunk. Returns
     the SAME list object when nothing is resolved (callers test identity, as the original tests `res !== list`)."""
@@ -115,7 +115,7 @@ FEW_CURVES = 'Select the curves around the hole (at least 2)'
 
 
 def fillHole(P, sel):
-    """port of fillHole (hair-modeler.clean.html:3028). Returns (surface, corners, None), or (None, 0, message)
+    """port of fillHole (hair-modeler.clean.html:4299). Returns (surface, corners, None), or (None, 0, message)
     when there is no hole to fill."""
     cs = [c for c in sel if c is not None and c.type == 'curve' and len(c.anchors) >= 2]
     if len(cs) < 2:
@@ -159,13 +159,21 @@ def fillHole(P, sel):
         dfs(s, [s], [], 0)
     if best is None:
         return None, 0, NO_LOOP
-    Pth = best['path']; n = len(Pth); V = best['via']               # V[i]: the curve from Pth[i] to Pth[i+1]
+    s, corners = fillCycle(P, best['path'], best['via'], cs[0].parent)
+    return s, corners, None
+
+
+def fillCycle(P, Pth, V, parent):
+    """port of fillCycle (hair-modeler.clean.html:4329): the hole along the closed loop Pth (anchors; V[i] — the curve
+    from Pth[i] to Pth[i + 1], the last back to Pth[0]): split at two corners into two paths of about equal length,
+    each a junction curve; a wall between them fills it. Returns (the wall, the number of corners)."""
+    n = len(Pth)
     corners = [i for i in range(n) if V[i] is not V[(i + n - 1) % n]]
     if len(corners) < 2:
         corners = [0, n // 2]
     cum = [0]
     for i in range(n):
-        cum.append(cum[i] + ln(Pth[i], Pth[(i + 1) % n]))
+        cum.append(cum[i] + Pth[i].pos.distanceTo(Pth[(i + 1) % n].pos))
     split = None
     for u in corners:
         for w in corners:
@@ -183,23 +191,32 @@ def fillHole(P, sel):
         if i == split['w']:
             break
         i = (i + n - 1) % n
-    parent = cs[0].parent
+    # both run towards the tip, as the lock's curves do (one starting on a lock tip is turned round). Tips: where the
+    # ordinary curves of walls end (a free helper curve may end anywhere)
+    tips = set()
+    inWalls = {x for sf in P.surfaces() for x in (sf.a, sf.b)}
+    for h in P.curves():
+        if h.id in inWalls and not h.junc and not h.ring and len(h.anchors):
+            tips.add(h.anchors[len(h.anchors) - 1])
+    if X[0] in tips and X[len(X) - 1] not in tips:
+        X.reverse(); Y.reverse()
 
     def mk(lst):
-        c = makeCurve(P, parent); c.anchors = lst; c.junc = True; c.name = 'Hole ' + c.name
+        from .groups import serviceName
+        c = makeCurve(P, parent); c.anchors = lst; c.junc = True; c.name = serviceName(P, 'HC')   # 1.0.2 (fillCycle, 3377)
         return c
     cx = mk(X); cy = mk(Y)
     s = addItem(P, 'surface', parent, {'a': cx.id, 'b': cy.id, 'dirty': True, 'p': {'segs': 1, 'bulge': 0, 'flip': False}})
     markAnchorsDirty(P, [*X, *Y])
     P.rev += 1
-    return s, len(corners), None
+    return s, len(corners)
 
 
 ALREADY = 'Surfaces between these curves already exist'
 
 
 def createSurfaces(P, lst, closed, exact=False):
-    """port of createSurfaces (hair-modeler.clean.html:3076): walls between consecutive curves (in selection order);
+    """port of createSurfaces (hair-modeler.clean.html:4356): walls between consecutive curves (in selection order);
     closed = also last -> first; without `exact`, two trunks resolve to their facing branches. Returns (made, msg):
     the new walls and the original's toast, if any (ALREADY when nothing was made)."""
     res = lst if exact else resolveTrunks(P, lst)
@@ -225,7 +242,7 @@ def createSurfaces(P, lst, closed, exact=False):
 
 
 def createSurface(P, c1, c2):
-    # port of createSurface (hair-modeler.clean.html:3089)
+    # port of createSurface (hair-modeler.clean.html:4369)
     return createSurfaces(P, [c1, c2], False)
 
 
@@ -295,7 +312,7 @@ def segmentsToCurves(P, lst):
 # A new curve halfway between two curves: both are sampled at the same arc-length fractions (as many anchors as the
 # denser curve) and averaged. Ends the two curves share (e.g. a welded tip) stay shared.
 def averageCurve(P, c1, c2):
-    # port of averageCurve (hair-modeler.clean.html:6169); None when a curve has no samples yet
+    # port of averageCurve (hair-modeler.clean.html:9389); None when a curve has no samples yet
     if len(c1.samples) < 2 or len(c2.samples) < 2:
         return None
     n = max(len(c1.anchors), len(c2.anchors))
@@ -363,14 +380,23 @@ def wallsOfCurves(P, cs):
 
 
 def surfaceMenuChoices(P, sc):
-    """port of surfaceMenuItems (hair-modeler.clean.html:6157), as pure choices: [(key, label)] for the selected
+    """port of surfaceMenuItems (hair-modeler.clean.html:9367, 1.0.2), as pure choices: [(key, label)] for the selected
     curves `sc` (2+). Keys: 'walls' (createSurfaces open; between two trunks it is the facing branches), 'exact'
-    (exactly these curves, only when trunks resolve), 'closed' (3+), 'fill', 'average' (2), 'merge'."""
+    (exactly these curves, only when trunks resolve — first, 9380), 'closed' (3+), 'fill', 'average' (2), 'merge'.
+    Curves joined in an X (xjunc.xPairs, 9370): only 'xwalls' (xjunc.xPathWalls), 'through' (createSurfaces exact: one
+    wall through the X, pinched there), 'fill' and 'merge'. The labels are the original's without the leading symbol."""
+    from .xjunc import xPairs                                       # (xjunc imports this module)
     tr = resolveTrunks(P, sc) is not sc                             # two trunks: one wall between the facing branches
     n = len(sc)
+    # two curves joined in an X: a wall per zone first (one wall through the X is pinched to nothing there)
+    if xPairs(sc):
+        return [('xwalls', 'Create NURBS surfaces round the X — the curves stay whole (missing ones only)'),
+                ('through', 'One wall through the X (pinched there)' if n == 2 else f'Walls between {n} curves (through the X)'),
+                ('fill', 'Fill the hole between these curves'),
+                ('merge', 'Merge anchors at identical places')]
     out = [('walls', 'Wall between the two trunks (facing branches)' if tr else 'Create NURBS surface (wall)' if n == 2 else f'Walls between {n} curves (open)')]
     if tr:
-        out.append(('exact', 'Wall between exactly these two curves' if n == 2 else f'Walls between exactly these {n} curves'))
+        out.insert(0, ('exact', 'Wall between exactly these two curves' if n == 2 else f'Walls between exactly these {n} curves'))   # (first: the usual choice)
     if n >= 3:
         out.append(('closed', f'Volume lock from {n} curves (closed)'))
     out.append(('fill', 'Fill the hole between these curves'))

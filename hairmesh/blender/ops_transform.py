@@ -4,11 +4,13 @@
 E / R / T, the gizmo tools; 3.8d, the owner's option (a) of 28/10/2026: any selection, not only anchors).
 
 With the HairMesh tool active, in Select, with anything of the HairMesh selected — anchors, or curves, walls, groups
-(the anchors inside them, as the gizmo takes them: gizmoTargets 4563) — G moves, R turns and S scales them in a modal in
+(the anchors inside them, as the gizmo takes them: gizmoTargets 6576) — G moves, R turns and S scales them in a modal in
 Blender's own style (not through the gizmo); with nothing of the HairMesh selected (or the tool off) the operators fail
 their poll and G / R / S reach Blender as always (its transform of the active object). A selection that moves nothing
 here (a guide line; imported meshes inside it: phase 5) keeps the key and says why in the status bar, so Blender's
-objects never move by mistake; the converted meshes inside it move with it (4.0, D4.11: baked on confirm). The modal:
+objects never move by mistake; the converted meshes inside it move with it (4.0, D4.11: baked on confirm). R on one
+anchor alone (with no frozen handle) would turn it about itself: it keeps the key, says so and starts no modal (lot
+1.0.2, issue #1: effects.rotateActs). The modal:
 
   - follows the mouse from where the key was pressed: G on the plane facing the view (as the direct drag), R the angle
     about the pivot on the screen, S the ratio of the distances to the pivot on the screen;
@@ -31,10 +33,11 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty
 from mathutils import Vector
 
-from ..core import curves as CM, edit, weld as W
+from ..core import curves as CM, edit, effects, weld as W
 from ..core.mat4 import applyQuaternion
+from ..core.selection import Selection
 from ..core.vec3 import V3
-from . import draw as drawmod, live, modal_keys, owner, select, session
+from . import draw as drawmod, errorlog, live, modal_keys, owner, select, session
 from .coords import f32, to_blender
 from .ops_draw import NAV_EVENTS
 from .ops_gizmo import MeshFollow, _Undo, blocked_reason, check_weld, commit_release, set_drag, targets
@@ -53,6 +56,7 @@ DIGITS = {'ZERO': '0', 'ONE': '1', 'TWO': '2', 'THREE': '3', 'FOUR': '4', 'FIVE'
           'NUMPAD_7': '7', 'NUMPAD_8': '8', 'NUMPAD_9': '9', 'PERIOD': '.', 'NUMPAD_PERIOD': '.'}
 NEED = ('Select anchors (click one, Shift+click adds, or drag a box), curves, walls or a group first: G / R / S then move, '
         "turn or scale them; with nothing of the HairMesh selected G / R / S stay Blender's")
+ONE_ANCHOR = 'Rotate needs 2 or more anchors: one anchor turns about itself'   # (lot 1.0.2, issue #1: effects.rotateActs)
 
 
 def in_view(context):
@@ -129,6 +133,7 @@ class _Transform:
     """the modal of G / R / S (one class per key, so Preferences > Keymap names them apart)"""
     bl_options = {'REGISTER', 'UNDO'}
     mode = 'translate'
+    title = None                                                    # (the header's name of the modal; None: LABEL[mode])
 
     axis: EnumProperty(name='Axis', items=AXES, default='NONE', options={'SKIP_SAVE'})
     local: BoolProperty(name='Local', description='The local axes (the frame of the last anchor\'s curve and its groups), as the gizmo\'s Local', default=False, options={'SKIP_SAVE'})
@@ -147,7 +152,15 @@ class _Transform:
     def description(cls, context, properties):
         if not select.has_any(context.scene.hairmesh):
             return NEED
-        return blocked_reason(context) or cls.__doc__
+        why = blocked_reason(context)
+        if why is None and cls.mode == 'rotate':
+            try:                                                    # (lot 1.0.2, issue #1: the tooltip says it too)
+                _r, P, sel = select.current(context)
+                if P is not None and not effects.rotateActs(P, select.gizmo_targets(P, sel)):
+                    why = ONE_ANCHOR
+            except Exception:
+                pass
+        return why or cls.__doc__
 
     # ---- the modal ----
     def invoke(self, context, event):
@@ -159,7 +172,10 @@ class _Transform:
         tg = targets(v.P, sel, self.report)                         # (none: the reason in the status bar; the key stays ours)
         if tg is None:
             return {'CANCELLED'}
-        self.view = v; self.P = v.P; self.sel = sel
+        if self.mode == 'rotate' and not effects.rotateActs(v.P, tg):
+            self.report({'INFO'}, ONE_ANCHOR)                        # (no modal that turns nothing: the reason in the status bar, the key stays ours)
+            return {'CANCELLED'}
+        self.view = v; self.P = v.P; self.sel = sel; self.writing = False
         self.tg = tg; self.anchors = tg.anchors
         self.undo = _Undo(v.P, tg.anchors)
         self.follow = MeshFollow(v.root, tg); self.M = None          # (4.0: the converted meshes inside follow, baked on confirm)
@@ -172,7 +188,9 @@ class _Transform:
         self.gz_q = frame(v.P, tg, context.scene.hairmesh.gizmo_space)[1]   # (the gizmo's own axes, when it is on: not the constraint's)
         self.cons = None                                             # (axis, local, plane) or None
         self.typed = ''
-        self.m0 = Vector((event.mouse_region_x, event.mouse_region_y)); self.virt = self.m0.copy(); self.last = self.m0.copy()
+        # (the mouse in the pixels of the view's region: event.mouse_region_x itself for a key pressed over the 3D View; from
+        # a button of a sheet the event's region is the panel's, and the modal's events come in the view's)
+        self.m0 = Vector((event.mouse_x - v.region.x, event.mouse_y - v.region.y)); self.virt = self.m0.copy(); self.last = self.m0.copy()
         self.cam = v.cam().clone().normalize()
         self.pivot_world = v.root.matrix_world @ Vector(to_blender(tg.pivot))
         self.ps = pixel_size(context, v.root, self.pivot_world)
@@ -255,7 +273,7 @@ class _Transform:
                     d = t - self.t0
                 elif self.ps:
                     # the axis points at the view (no line to follow on the screen): up / down moves along it, up away
-                    # from the camera (as the original's axisDepthDrag, 4483)
+                    # from the camera (as the original's axisDepthDrag, 6496)
                     d = (self.virt.y - self.m0.y) * self.ps * (1 if self._dir(cons[0]).dot(self.cam) > 0 else -1)
                 else:
                     return None
@@ -346,7 +364,7 @@ class _Transform:
             else:
                 val = f'{max((sc.x, sc.y, sc.z), key=lambda x: abs(x - 1)):.3f}×'
         follow = self.mode == 'translate' and getattr(self, 'surface_ok', False)
-        live.header(context.area, f'HairMesh {LABEL[self.mode]} {what}: {val}', (*MODAL_KEYS, FOLLOW_KEY) if follow else MODAL_KEYS)
+        live.header(context.area, f'HairMesh {self.title or LABEL[self.mode]} {what}: {val}',(*MODAL_KEYS, FOLLOW_KEY) if follow else MODAL_KEYS)
 
     def modal(self, context, event):
         try:
@@ -355,8 +373,9 @@ class _Transform:
             self.cancel(context)
             try:
                 live.header(context.area, None)
+                self._after_error(context)
             except Exception:
-                pass
+                errorlog.record('transform: after an error mid-drag')
             raise
 
     def _modal(self, context, event):
@@ -410,18 +429,50 @@ class _Transform:
         attach_drag_end()
         drawmod.snap_curve = None; drawmod.weld_cand = None
         v = self.view
-        if not self.st.moved:
-            live.cancel(v.root.name)
-            return {'CANCELLED'}
+        if not self.st.moved or self._still():
+            return self._unmoved(context)
         self._remember()
         self.follow.bake(self.P, self.st, self.M)                   # (the gizmo's release, 4646: baked into the converted meshes)
         if self.mode == 'rotate':
             edit.rotateOwnAxes(self.P, self.st, self.result[1])     # (the gizmo's release, 4653: the items' own axes turn with them)
+        self.writing = True                                         # (from here an error leaves the text as the truth: `cancel`)
         commit_release(context, v.root, self.P, self.follow.baked)  # one undo step
         context.area.tag_redraw()
         if self.mode == 'translate' and len(self.st.list) == 1 and len(self.sel.anchors) == 1:
             check_weld(self.view, self.P, self.sel, self.st.list[0])
         return {'FINISHED'}
+
+    def _unmoved(self, context):
+        """a confirm that moved nothing: nothing to write"""
+        live.cancel(self.view.root.name)
+        return {'CANCELLED'}
+
+    def _drop(self, context, P, select_back=True):
+        """what a cancel takes away besides the move, in memory, before the preview is redrawn (the extrude's new anchors);
+        nothing here"""
+
+    def _still(self):
+        """a confirm after steps that displaced nothing (an axis key, Ctrl or a typed 0 run the step with the mouse where it
+        was) counts as one that moved nothing where anchors were made for the move (`born`, the extrude): by the
+        displacement asked for, exactly zero then — the anchors themselves may sit some 1e-14 away, what the frame's
+        matrix and its inverse leave on a local axis. G / R / S make no anchors and write what they have"""
+        return bool(getattr(self, 'born', None)) and self.result[0].equals(self.st.pos)
+
+    def _reread(self, context, root):
+        """an error once the confirm began to write: the saved text is the truth, written or not — the model read again
+        from it at the next access (what the move did in memory is neither undone over a text that has it nor kept over
+        one that has not)"""
+        session.forget_model(root.name)
+        live.cancel(root.name)
+
+    def _after_error(self, context):
+        """after an error put the model back (`cancel`), still inside the operator: the preview of the model read again"""
+        if getattr(self, 'writing', False):
+            live.update(context, self.view.root, commit=False)
+
+    def _gives_up(self):
+        """the non-modal form applies and then cancels (the modal's Esc)"""
+        return self.cancel_
 
     def _remember(self):
         """the result as the non-modal properties (Adjust Last Operation redoes it through execute)"""
@@ -448,19 +499,31 @@ class _Transform:
         drawmod.snap_curve = None; drawmod.weld_cand = None
         self.undo.restore(); self.follow.reset()
         CM.markAnchorsDirty(self.P, self.anchors); self.P.rev += 1
+        self._drop(context, self.P)
         live.update(context, self.view.root, commit=False); context.area.tag_redraw()
         return {'CANCELLED'}
 
     def cancel(self, context):
         # Blender ends the modal itself (a window closed, a file loaded): the model back in memory only
         modal_keys.clear(context)
-        try:
-            self.undo.restore()
-            CM.markAnchorsDirty(self.P, self.anchors); self.P.rev += 1
-            live.cancel(self.view.root.name)
-            self.follow.reset()
-        except Exception:
-            pass
+        if getattr(self, 'writing', False):                         # (the confirm failed while or after writing)
+            try:
+                self._reread(context, self.view.root)
+            except Exception:
+                errorlog.record('transform: cancel after the confirm began to write')
+        else:
+            try:
+                self.undo.restore()
+                CM.markAnchorsDirty(self.P, self.anchors); self.P.rev += 1
+                live.cancel(self.view.root.name)
+                self.follow.reset()
+            except Exception:
+                pass
+            try:
+                r = session.find_root(context)                      # (the selection back only in the project the modal ran in: not in a file loaded since)
+                self._drop(context, self.P, select_back=r is not None and r.as_pointer() == getattr(self, 'root_ptr', None))
+            except Exception:
+                errorlog.record('transform: cancel')                # (never raised: Blender is ending the modal; written, so a model left apart from its text is seen)
         drawmod.snap_curve = None; drawmod.weld_cand = None
         from .ops_gizmo import attach_drag_end
         attach_drag_end()
@@ -468,6 +531,7 @@ class _Transform:
 
     # ---- non-modal (tests, the stress test) ----
     def execute(self, context):
+        self.writing = False
         root, P, sel = select.current(context)
         tg = targets(P, sel, self.report)
         if tg is None:
@@ -475,7 +539,7 @@ class _Transform:
         anchors = tg.anchors
         space = 'local' if self.local else 'world'
         st = edit.startGizmo(P, tg, self.mode, space)
-        undo = _Undo(P, anchors) if self.cancel_ else None
+        undo = _Undo(P, anchors) if self._gives_up() else None
         if self.axis != 'NONE':
             v = f32(self.value)
             r = proxy(st, self.mode, self.axis, math.radians(v) if self.mode == 'rotate' else v, plane=self.plane)
@@ -491,11 +555,13 @@ class _Transform:
         if undo is not None:                                        # the modal's Esc: everything back, nothing written
             undo.restore()
             CM.markAnchorsDirty(P, anchors); P.rev += 1
+            self._drop(context, P)
             live.update(context, root, commit=False)
             return {'CANCELLED'}
         baked = edit.bakeMeshes(P, st, M) if st.meshes else []    # (the release, 4646)
         if self.mode == 'rotate':
             edit.rotateOwnAxes(P, st, r[1])
+        self.writing = True
         commit_release(context, root, P, baked)
         select.redraw(context)
         return {'FINISHED'}
@@ -522,7 +588,164 @@ class HAIRMESH_OT_scale_anchors(_Transform, bpy.types.Operator):
     mode = 'scale'
 
 
-_CLASSES = (HAIRMESH_OT_grab_anchors, HAIRMESH_OT_rotate_anchors, HAIRMESH_OT_scale_anchors)
+EXTRUDE_KEY_OFF = 'E extrudes with the HairMesh tool active (Shift+Alt+H), in Select (key 1)'
+
+
+def view_region(context):
+    """the 3D View's own region of the area a button of a sheet was clicked in (the N panel, the HairMesh Menu pop-up), or
+    None outside a 3D View; with a quad view, its first"""
+    a = context.area
+    if a is None or a.type != 'VIEW_3D':
+        return None
+    return next((r for r in a.regions if r.type == 'WINDOW'), None)
+
+
+def extrude_why(P, sel):
+    """why E extrudes nothing with this selection (edit.extrudeTargets), or None"""
+    if P is None:
+        return 'No HairMesh project in this scene'
+    return edit.extrudeTargets(P, sel.anchors)[1]
+
+
+class HAIRMESH_OT_extrude_anchor(_Transform, bpy.types.Operator):
+    """Extrude the curve from the selected end anchor (E): a new anchor on the first or the last anchor follows the mouse as with G; X / Y / Z lock an axis (again: local), Shift+X / Y / Z a plane; type a distance; Ctrl: grid steps; Shift: fine; Enter / LMB confirm, Esc / RMB cancel (the new anchor goes)"""
+    bl_idname = 'hairmesh.extrude_anchor'
+    bl_label = 'HairMesh Extrude Curve'
+    mode = 'translate'
+    title = 'Extrude Curve'
+
+    # (ours, lot 1.2b; nothing of the original.) The selected ends get a new anchor each (edit.extrudeEnd), which becomes
+    # the selection, and the G modal moves them: one undo step on confirm (commit_release), the weld pie when one lands near
+    # another anchor. Esc / RMB, a confirm that moved nothing, an error or Blender ending the modal take them away again
+    # (edit.extrudeUndo) and give back the selection of before, nothing written. Unlike G the key stays ours with any
+    # selection: what cannot grow says why in the status bar. From the button of the anchor's sheet (the N panel, the
+    # HairMesh Menu pop-up) the modal runs in the area's 3D View region: the new anchor moves by what the mouse moves from
+    # the click on, as G called from a menu.
+
+    @classmethod
+    def poll(cls, context):
+        if not owner.visible(context) or context.mode != 'OBJECT':
+            return False
+        if session.find_root(context) is None:
+            cls.poll_message_set('No HairMesh project in this scene')
+            return False
+        if in_view(context):
+            from . import tool
+            hm = context.scene.hairmesh
+            if not (hm.subtool == 'SELECT' and tool.is_active(context)):
+                cls.poll_message_set(EXTRUDE_KEY_OFF)
+                return False
+        return True
+
+    @classmethod
+    def description(cls, context, properties):
+        try:
+            _r, P, sel = select.current(context)
+            why = extrude_why(P, sel)
+        except Exception:
+            why = None
+        return why or cls.__doc__
+
+    def _grow(self, context, root, P, sel, picks):
+        """the new anchors on the ends `picks`, the selection now (in memory: nothing written)"""
+        self.sel0 = Selection(list(sel.items), list(sel.anchors)); self.root_ptr = root.as_pointer()
+        self.ends_sections = edit.extrudeEndsSections(P, picks)    # (before the anchors are made: the lock as it is now)
+        self.made = [edit.extrudeEnd(P, c, a) for c, a, _start in picks]
+        self.born = [(n, n.pos.clone()) for n in self.made]         # (where each was made: the end it came from)
+        select.store(context.scene.hairmesh, Selection([], [n.id for n in self.made]))
+        from . import tool
+        tool.show_selection(context)                                # (from a sheet's button under a sub-tool's page: the new anchor's sheet in sight)
+
+    def _drop(self, context, P, select_back=True):
+        made = getattr(self, 'made', None)
+        if not made:
+            return
+        self.made = None
+        edit.extrudeUndo(P, made)
+        if select_back:
+            select.store(context.scene.hairmesh, self.sel0)
+
+    def _unmoved(self, context):
+        return self._cancel(context)                                # (an anchor on the end it came from: a segment of length zero)
+
+    def _said(self, r):
+        """the INFO line of a lock of sections the extrude ended, once it is done"""
+        if 'FINISHED' in r:
+            for line in getattr(self, 'ends_sections', None) or ():
+                self.report({'INFO'}, line)
+        return r
+
+    def _finish(self, context):
+        return self._said(_Transform._finish(self, context))
+
+    def _reread(self, context, root):
+        _Transform._reread(self, context, root)
+        made = getattr(self, 'made', None) or []
+        self.made = None                                            # (the text's now, or gone with the model that had them)
+        P = session.get_project(root)
+        if any(n.id not in P.anchors for n in made):                # (the text was not written: the selection of before)
+            select.store(context.scene.hairmesh, self.sel0)
+
+    def _after_error(self, context):
+        live.update(context, self.view.root, commit=False)          # (the drawn curve loses the anchor the model lost)
+
+    def _gives_up(self):
+        return self.cancel_ or getattr(self, 'nothing', False)
+
+    def invoke(self, context, event):
+        from .ops_select import View
+        if View.of(context) is None and (region := view_region(context)) is not None:
+            with context.temp_override(region=region):              # (the button of a sheet: the modal in the area's own 3D View)
+                return self._begin(context, event)
+        return self._begin(context, event)
+
+    def _begin(self, context, event):
+        from .ops_select import View
+        v = View.of(context)
+        if v is None:
+            return self.execute(context)
+        sel = select.load(context.scene.hairmesh).prune(v.P)
+        picks, why = edit.extrudeTargets(v.P, sel.anchors)
+        if why is not None:
+            self.report({'INFO'}, why)                              # (no modal; the key stays ours)
+            return {'CANCELLED'}
+        self._grow(context, v.root, v.P, sel, picks)
+        try:
+            r = _Transform.invoke(self, context, event)
+        except Exception:
+            self._drop(context, v.P); live.update(context, v.root, commit=False)
+            raise
+        if 'RUNNING_MODAL' not in r:
+            self._drop(context, v.P); live.update(context, v.root, commit=False)
+        return r
+
+    def execute(self, context):
+        root, P, sel = select.current(context)
+        why = extrude_why(P, sel)
+        if why is not None:
+            self.report({'INFO'}, why)
+            return {'CANCELLED'}
+        picks = edit.extrudeTargets(P, sel.anchors)[0]
+        # (moved nothing: as the modal's click without a move. Of this run only — Adjust Last Operation runs the same
+        # instance again, and the hidden `cancel_` is the caller's)
+        self.nothing = (self.axis == 'NONE' and not any(self.delta)) or (self.axis != 'NONE' and self.value == 0.0)
+        self._grow(context, root, P, sel, picks)
+        try:
+            r = _Transform.execute(self, context)
+        except Exception:
+            if getattr(self, 'writing', False):
+                self._reread(context, root)                         # (the text was being written: the model is what it has)
+            else:
+                self._drop(context, P)
+            live.update(context, root, commit=False)
+            raise
+        if 'FINISHED' not in r and getattr(self, 'made', None):
+            self._drop(context, P); live.update(context, root, commit=False)
+        self._said(r)
+        return r
+
+
+_CLASSES = (HAIRMESH_OT_grab_anchors, HAIRMESH_OT_rotate_anchors, HAIRMESH_OT_scale_anchors, HAIRMESH_OT_extrude_anchor)
 
 
 def register():

@@ -30,6 +30,7 @@ The Action column is the name in the list of shortcuts in the preferences.
 | LMB | Draw | Draw HairMesh Curve | Draw a hair curve: in Anchors each click places an anchor on the head, Enter or right click finishes, Esc finishes and goes back to Select |
 | LMB | Scissors > Curve | HairMesh Scissors | Drag a line across the selected curves to cut them |
 | LMB | Scissors > Wall | HairMesh Wall Cut | Click a wall, then put the cut on it like a curve — from one of its curves, over the wall, to its other curve |
+| LMB | Scissors > Split Ends | Split Ends | Split the end of the curve under the cursor: from there to its tip it becomes two branches, a new curve sharing its trunk |
 | LMB | Guides > Line or NURBS Disc | HairMesh Guides | Drag a line across the selected curves, click on the hair or draw a loop |
 | LMB | Guides > Pencil | HairMesh Guide Pencil | Hold the left button and draw a loop around the hair |
 | LMB | Edges | HairMesh Pick Edge | Pick an edge of a converted mesh |
@@ -37,6 +38,7 @@ The Action column is the name in the list of shortcuts in the preferences.
 | LMB | Select | HairMesh Select | Select anchors and curves of the HairMesh project: click an anchor and drag it |
 | LMB | Crown | HairMesh Crown | Click on the head where the whorl should be to build a crown there |
 | RMB | On a curve | Insert HairMesh Anchor | Insert an anchor where the right button hits a curve and drag it |
+| RMB | Off a curve, not in Draw or the Scissors | Insert HairMesh Anchors Along a Line | Drag a line with the right button from empty space: an anchor goes in wherever it crosses a curve, the shape kept |
 | B | Anchors selected | HairMesh Anchor Smoothness | Set the smoothness of the selected anchors: hold B and drag with the left button, 200 px = 100 % |
 | Backspace | Something of HairMesh selected | Delete HairMesh Selection | Delete the selected anchors, else the selected curves |
 | X | Something of HairMesh selected | Delete HairMesh Selection (Ask) | Delete the HairMesh selection after a short question: the selected anchors, else the selected items |
@@ -48,7 +50,8 @@ The Action column is the name in the list of shortcuts in the preferences.
 | G | Select, something of HairMesh selected | HairMesh Move Selection | Move the HairMesh selection — anchors, or the curves, walls and groups selected: follows the mouse on the view plane |
 | R | Select, something of HairMesh selected | HairMesh Rotate Selection | Turn the HairMesh selection about the last anchor, or the center of the selected items: the angle about it on the screen |
 | S | Select, something of HairMesh selected | HairMesh Scale Selection | Scale the HairMesh selection about the last anchor, or the center of the selected items: the distance to it on the screen |
-| E | Something of HairMesh selected | HairMesh Move Gizmo | Show the Move gizmo on the selection — anchors, curves, walls or a group |
+| E | Select, an end anchor of a curve selected | HairMesh Extrude Curve | Extrude the curve from the selected end anchor: a new anchor on the first or the last anchor follows the mouse as with G |
+| W | Something of HairMesh selected | HairMesh Move Gizmo | Show the Move gizmo on the selection — anchors, curves, walls or a group |
 | No default key | Something of HairMesh selected | HairMesh Rotate Gizmo | Show the Rotate gizmo on the selection — anchors, curves, walls or a group |
 | No default key | Something of HairMesh selected | HairMesh Scale Gizmo | Show the Scale gizmo on the selection — anchors, curves, walls or a group |
 | Shift+D | Something of HairMesh selected | Duplicate HairMesh Selection | Duplicate the selected curves, walls and groups |
@@ -259,6 +262,31 @@ While a modal runs, the status bar shows its keys. These are the same lists.
 | Ctrl | Inflate |
 | Ctrl+Alt | Shrink |
 
+### Brush: painting: Extrude
+
+| Key | Action |
+|---|---|
+| LMB | Extrude |
+| Ctrl | Erase |
+| Shift | Smooth |
+
+### Brush: painting: Offset
+
+| Key | Action |
+|---|---|
+| LMB | Move the Edge In |
+| Ctrl | Out |
+| Ctrl+Alt | Erase |
+| Shift | Smooth |
+
+### Brush: painting: Glue
+
+| Key | Action |
+|---|---|
+| LMB | Glue the Top |
+| Ctrl | Erase |
+| Shift | Smooth |
+
 ### Brush: radius and hardness: Radius (F)
 
 | Key | Action |
@@ -287,6 +315,24 @@ While a modal runs, the status bar shows its keys. These are the same lists.
 | RMB | Release: Keep Them |
 | Esc | Put Them Back |
 
+### Brush: radius and hardness: Lock Width (F)
+
+| Key | Action |
+|---|---|
+| Move | Set the Width |
+| Ctrl | Snap |
+| Shift | Precision |
+| LMB / Enter | Keep It |
+| RMB / Esc | Put It Back |
+
+### Brush: radius and hardness: Lock Width (Ctrl + right drag)
+
+| Key | Action |
+|---|---|
+| Move | Set the Width |
+| RMB | Release: Keep It |
+| Esc | Put It Back |
+
 ### Edges: box
 
 | Key | Action |
@@ -298,12 +344,14 @@ While a modal runs, the status bar shows its keys. These are the same lists.
 
 | Key | Action |
 |---|---|
-| LMB Drag | Move a Point |
+| LMB | Select |
+| Shift+LMB | Extend |
+| LMB Drag | Move |
 | Shift | Snap |
 | Ctrl | Pull a Glued One Apart |
 | RMB | Add |
 | Double-Click | Delete |
-| X | Delete |
+| X | Delete Selected |
 | Ctrl+Z | Undo |
 | Ctrl+Shift+Z | Redo |
 | Enter / Esc | Exit |

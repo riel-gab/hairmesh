@@ -94,7 +94,7 @@ class TestOutliner(unittest.TestCase):
         self.assertEqual(self.sel().items, [self.g.id]); self.assertIs(self.select.selected_group(self.P(), self.sel()), self.P().items[self.g.id])
         self.assertTrue(self.rows()[0][1].selected)
         self.assertEqual(bpy.ops.hairmesh.select_item(item=self.g.id, contents=True), {'FINISHED'})
-        self.assertEqual(sorted(self.sel().items), sorted([self.A.id, self.B.id, self.s.id]), 'Ctrl on a group: everything inside (selectContents 8463)')
+        self.assertEqual(sorted(self.sel().items), sorted([self.A.id, self.B.id, self.s.id]), 'Ctrl on a group: everything inside (selectContents 12347)')
         self.assertEqual(bpy.ops.hairmesh.select_item(item=self.B.id, rename=True), {'FINISHED'}, 'a double click selects (the dialog needs a window)')
         self.assertEqual(self.sel().items, [self.B.id])
         with self.assertRaises(RuntimeError):

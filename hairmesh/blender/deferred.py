@@ -53,12 +53,18 @@ CONTINUE = frozenset({'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE', 'TIMER', 'TIMER0', 'TI
                       'WHEELOUTMOUSE', 'LEFT_CTRL', 'RIGHT_CTRL', 'LEFT_SHIFT', 'RIGHT_SHIFT', 'LEFT_ALT', 'RIGHT_ALT',
                       'OSKEY', 'NONE'})
 
-_S = {'roots': set(), 'last': 0.0, 'dirty': False, 'starting': False, 'running': False, 'gen': 0, 'win': 0, 'later': False}
+_S = {'roots': set(), 'last': 0.0, 'dirty': False, 'starting': False, 'running': False, 'gen': 0, 'win': 0, 'later': False, 'ends': 0}
 
 
 def pending():
     """True while a change waits for its rebuild and undo step (the tests, the simulations)"""
     return bool(_S['roots']) or _S['running'] or _S['starting']
+
+
+def ended():
+    """how many interactions have ended (a release, an Esc, an undo or a load, a commit in background mode): what lasts
+    one drag keys on it (ops_rib.reshape's costs)"""
+    return _S['ends']
 
 
 def decide(held, cancel, ev_type, ev_value, dirty, still, pending=False):
@@ -119,7 +125,7 @@ def _discard():
         live.hold(n, False)
     if _S['later']:
         _status(bpy.context, None)
-    _S['roots'].clear(); _S['dirty'] = False; _S['later'] = False
+    _S['roots'].clear(); _S['dirty'] = False; _S['later'] = False; _S['ends'] += 1
 
 
 def _release_holds():
@@ -145,6 +151,7 @@ def _roots():
 
 @slow.timed('a conversion slider committed')
 def _commit(context, root, rebuild=True):
+    _S['ends'] += 1
     session.save_project(root, session.get_project(root))
     if rebuild:
         live.update(context, root)
@@ -221,7 +228,7 @@ def _finish(context, op):
             session.save_project(root, session.get_project(root))
             changed_any = changed_any or txt is None or txt.as_string() != before
     finally:
-        _S['roots'].clear(); _S['dirty'] = False; _S['later'] = False
+        _S['roots'].clear(); _S['dirty'] = False; _S['later'] = False; _S['ends'] += 1
         select.redraw(context)
     return changed_any
 
@@ -238,7 +245,7 @@ def _restore(context, op=None):
         _S['dirty'] = True
         _rebuild(context, op)                                       # (4.2c: the text read back is the state the tables were built from — nothing rebuilt when the drag rebuilt nothing)
     finally:
-        _S['roots'].clear(); _S['dirty'] = False; _S['later'] = False
+        _S['roots'].clear(); _S['dirty'] = False; _S['later'] = False; _S['ends'] += 1
         select.redraw(context)
 
 

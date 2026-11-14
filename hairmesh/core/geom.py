@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Small geometric helpers of the original used across the surface / topology / conversion code."""
 import math
 
-from .js import clamp, js_pow, js_sign
+from .js import clamp, js_max, js_min, js_or, js_pow, js_sign, to_int32
 from .vec3 import V3, Vec3
 
 
@@ -108,6 +108,8 @@ def polyIndex(P):
 def nearestF(P, p, idx=None):
     # port of nearestF (hair-modeler.clean.html:2209): fractional index of the point of polyline P nearest to p
     #
+    # (1.0.3, 2523, writes it on scalars itself, with `s < 0 ? 0 : s > 1 ? 1 : s` for the clamp: the same values —
+    # a -0 it keeps where Math.max(0, ...) gave +0 changes no `i + s` and no d.)
     # The original's Vector3 chain, written out on scalars (the hottest function of the row tables: ~150 000 calls
     # of 160 segments on the example). Every expression keeps the exact IEEE operations and their order:
     #   ab = P[i+1].clone().sub(P[i])                 -> abx = bx - ax ...
@@ -172,6 +174,164 @@ def nearestF(P, p, idx=None):
 
 def _boxd(t):
     return t[0]
+
+
+def _cell(v):
+    """Math.floor of a cell coordinate; None for NaN (the original's loops over it never run, its products compare false)"""
+    return None if v != v else math.floor(v)
+
+
+def _grid_key(x, y, z):
+    # port of gridKey (hair-modeler.clean.html:2538): (x * 73856093) ^ (y * 19349663) ^ (z * 83492791), as 32 bits.
+    # Small cells: the products are exact integers and ToInt32 is their value mod 2^32 (kept unsigned here: the same
+    # keys are equal); large ones: the double's product, as the original's.
+    if -100000000 < x < 100000000 and -100000000 < y < 100000000 and -100000000 < z < 100000000:
+        return ((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) & 0xFFFFFFFF
+    return (to_int32(float(x) * 73856093.0) ^ to_int32(float(y) * 19349663.0) ^ to_int32(float(z) * 83492791.0)) & 0xFFFFFFFF
+
+
+KEY_LIM = 100000000                                                 # _grid_key's exact branch: every cell index within ±1e8
+
+
+def _pt_cell(v, s):
+    """floor(v / s) as an int when v / s is finite, else None (NaN or ±Infinity: the segments of such a point take
+    the literal path in _poly_grid)"""
+    c = v / s
+    return math.floor(c) if c - c == 0 else None
+
+
+def _poly_grid(P, plen=None):
+    """the grid nearestWithin builds once per polyline (2542-2550): [s, cells, box, big, stamp, q]
+
+    (Speed, lot 1.2 F2, the same grid bit for bit; judged against the first port, tests/helpers/detailref.py, by
+    tests/test_detail_speed.py.) floor(js_min(a, b) / s) is min(floor(a / s), floor(b / s)) — s > 0 (js_or's 1e-9 at
+    the least), and the division by it and floor are both monotonic, so the smaller end gives the smaller cell (±0 both
+    give cell 0) — hence each point's cell is computed once instead of twice per segment. A segment with a point whose
+    quotient is NaN or infinite takes the literal path (js_min / js_max / _cell: a NaN skips it; an infinity makes
+    math.floor raise here, where the original's Math.floor gives ±Infinity and goes on — a divergence on an infinite
+    coordinate only, which no real curve has). The key is gridKey inline (_grid_key's exact branch) when all the
+    segment's cell indices are within ±1e8; the XOR of the three products is the same in any grouping."""
+    n = len(P)
+    s = js_or((polyLen(P) if plen is None else plen) / (n - 1), 1e-9)
+    cells = {}; big = []
+    minx = miny = minz = math.inf; maxx = maxy = maxz = -math.inf   # new THREE.Box3().setFromPoints(P)
+    for q in P:
+        x = q.x; y = q.y; z = q.z
+        if x < minx: minx = x
+        if x > maxx: maxx = x
+        if y < miny: miny = y
+        if y > maxy: maxy = y
+        if z < minz: minz = z
+        if z > maxz: maxz = z
+    CX = [_pt_cell(q.x, s) for q in P]; CY = [_pt_cell(q.y, s) for q in P]; CZ = [_pt_cell(q.z, s) for q in P]
+    get = cells.get; lim = KEY_LIM
+    for i in range(n - 1):
+        ax = CX[i]; bx = CX[i + 1]; ay = CY[i]; by = CY[i + 1]; az = CZ[i]; bz = CZ[i + 1]
+        if ax is None or bx is None or ay is None or by is None or az is None or bz is None:
+            a = P[i]; b = P[i + 1]                                  # (the literal path, as the original)
+            x0 = _cell(js_min(a.x, b.x) / s); x1 = _cell(js_max(a.x, b.x) / s)
+            y0 = _cell(js_min(a.y, b.y) / s); y1 = _cell(js_max(a.y, b.y) / s)
+            z0 = _cell(js_min(a.z, b.z) / s); z1 = _cell(js_max(a.z, b.z) / s)
+            if x0 is None or x1 is None or y0 is None or y1 is None or z0 is None or z1 is None:
+                continue                                            # (NaN: not over 64, and no cell loop runs)
+        else:
+            x0, x1 = (ax, bx) if ax <= bx else (bx, ax)
+            y0, y1 = (ay, by) if ay <= by else (by, ay)
+            z0, z1 = (az, bz) if az <= bz else (bz, az)
+        if (x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > 64:
+            big.append(i); continue                                 # (a long one — a jump between stretches: tried every time)
+        if -lim < x0 and x1 < lim and -lim < y0 and y1 < lim and -lim < z0 and z1 < lim:
+            for x in range(x0, x1 + 1):
+                kx = x * 73856093
+                for y in range(y0, y1 + 1):
+                    kxy = kx ^ (y * 19349663)
+                    for z in range(z0, z1 + 1):
+                        k = (kxy ^ (z * 83492791)) & 0xFFFFFFFF; l = get(k)
+                        if l is None:
+                            cells[k] = [i]
+                        elif l[-1] != i:
+                            l.append(i)
+            continue
+        for x in range(x0, x1 + 1):
+            for y in range(y0, y1 + 1):
+                for z in range(z0, z1 + 1):
+                    k = _grid_key(x, y, z); l = cells.get(k)
+                    if l is None:
+                        l = cells[k] = []
+                    if not l or l[-1] != i:
+                        l.append(i)
+    return [s, cells, (minx, miny, minz, maxx, maxy, maxz), big, [0] * n, 0]
+
+
+def nearestWithin(P, p, r, grids, plen=None):
+    # port of nearestWithin (hair-modeler.clean.html:2539): the closest point on polyline P to p if it is within r —
+    # (f, d), f as in nearestF — else None. A grid of the polyline's segments (cell = the mean segment; a segment is
+    # listed in the cells its box touches), built once per polyline: a query tries the segments listed in the cells
+    # within r of p. `grids`: the original's POLY_GRID (a WeakMap by the array), a dict id(P) -> [P, grid, index] the caller
+    # keeps as long as its polylines (the entry holds P, so the id is never another list's); plen: polyLen(P) when
+    # the caller has it (speed only).
+    # The grid is kept literally (cells, their 32-bit keys with the clashes, the long segments apart, the fall to
+    # nearestBrute when r covers over 64 cells): which branch answers decides how d is rounded (sqrt of the squared
+    # distance here, atF(...).distanceTo there) and the comparison made (d2 < r * r here, d < r there).
+    n = len(P)
+    if n < 2:
+        return None
+    e = grids.get(id(P))
+    if e is None:
+        e = grids[id(P)] = [P, _poly_grid(P, plen), None]           # (P, its grid, its polyIndex once nearestBrute needs it)
+    g = e[1]
+    s = g[0]; cells = g[1]; bb = g[2]; big = g[3]; stamp = g[4]
+    px = p.x; py = p.y; pz = p.z
+    if px < bb[0] - r or px > bb[3] + r or py < bb[1] - r or py > bb[4] + r or pz < bb[2] - r or pz > bb[5] + r:
+        return None
+    q = g[5] = g[5] + 1; best = -1; bd = r * r
+    lists = [big] if big else []
+    if px == px and py == py and pz == pz and r == r:               # (a NaN: the product compares false and no cell loop runs)
+        x0 = math.floor((px - r) / s); x1 = math.floor((px + r) / s); y0 = math.floor((py - r) / s); y1 = math.floor((py + r) / s)
+        z0 = math.floor((pz - r) / s); z1 = math.floor((pz + r) / s)
+        if (x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > 64:      # (r far over the segments)
+            ix = e[2]
+            if ix is None:
+                ix = e[2] = polyIndex(P)                            # (nearestF with the stretch index: the same f, bit for bit)
+            return nearestBrute(P, p, r, ix)
+        if -KEY_LIM < x0 and x1 < KEY_LIM and -KEY_LIM < y0 and y1 < KEY_LIM and -KEY_LIM < z0 and z1 < KEY_LIM:
+            get = cells.get                                         # (gridKey inline, as in _poly_grid)
+            for x in range(x0, x1 + 1):
+                kx = x * 73856093
+                for y in range(y0, y1 + 1):
+                    kxy = kx ^ (y * 19349663)
+                    for z in range(z0, z1 + 1):
+                        l = get((kxy ^ (z * 83492791)) & 0xFFFFFFFF)
+                        if l:
+                            lists.append(l)
+        else:
+            for x in range(x0, x1 + 1):
+                for y in range(y0, y1 + 1):
+                    for z in range(z0, z1 + 1):
+                        l = cells.get(_grid_key(x, y, z))
+                        if l:
+                            lists.append(l)
+    for l in lists:
+        for i in l:
+            if stamp[i] == q:
+                continue
+            stamp[i] = q
+            a = P[i]; b = P[i + 1]; ax = a.x; ay = a.y; az = a.z
+            bx = b.x - ax; by = b.y - ay; bz = b.z - az
+            l2 = bx * bx + by * by + bz * bz
+            t = ((px - ax) * bx + (py - ay) * by + (pz - az) * bz) / l2 if l2 > 0 else 0
+            t = 0 if t < 0 else 1 if t > 1 else t
+            dx = ax + bx * t - px; dy = ay + by * t - py; dz = az + bz * t - pz
+            d = dx * dx + dy * dy + dz * dz
+            if d < bd or (d == bd and best >= 0 and i + t < best):   # (a tie: the first, as nearestF)
+                bd = d; best = i + t
+    return None if best < 0 else (best, math.sqrt(bd))
+
+
+def nearestBrute(P, p, r, idx=None):
+    # port of nearestBrute (hair-modeler.clean.html:2570); idx: polyIndex(P), speed only (see nearestF)
+    f = nearestF(P, p, idx); d = atF(P, f).distanceTo(p)
+    return (f, d) if d < r else None
 
 
 def polyBox(P, pad, exact=False):
@@ -254,4 +414,4 @@ def faceCenter(pos, f):
     return c.divideScalar(len(f))
 
 
-__all__ = ['resample', 'polyLen', 'atF', 'atF3', 'nearestF', 'polyIndex', 'polyBox', 'inBox', 'chunkBoxes', 'nearBoxes', 'ease', 'zoneWeight', 'pointOnCurve', 'faceNormal', 'faceCenter', 'js_sign']
+__all__ = ['resample', 'polyLen', 'atF', 'atF3', 'nearestF', 'nearestWithin', 'nearestBrute', 'polyIndex', 'polyBox', 'inBox', 'chunkBoxes', 'nearBoxes', 'ease', 'zoneWeight', 'pointOnCurve', 'faceNormal', 'faceCenter', 'js_sign']

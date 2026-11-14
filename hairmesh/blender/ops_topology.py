@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
 """Lot 4.4 (docs/fase-4-plano.md, step 4.4): the D's Modifiers tab (key 6) and its Topology page — Cap, Fill holes and
-Density, items of a group that shape the mesh of its locks (the original's modifierPanel 6915: capPanel 7244,
-fillPanel 9505, tipPanel 7298) — and the sheets of a selected Cap (capProps 7341), Fill holes (skinProps 9490) and
-Density (tipProps 7333). The core is core/topology.py; the previews (D4.5: the cap's fill and bevel rings, the
+Density, items of a group that shape the mesh of its locks (the original's modifierPanel 10259: capPanel 10594,
+fillPanel 13610, tipPanel 10648) — and the sheets of a selected Cap (capProps 7341), Fill holes (skinProps 13595) and
+Density (tipProps 10682). The core is core/topology.py; the previews (D4.5: the cap's fill and bevel rings, the
 Fill's walls to be) go into their group's live object (live.topo_previews).
 
 The settings for new items (the original's S.capDefaults, S.skinDefaults, S.tipDefaults) live on the Scene; the
@@ -18,6 +18,7 @@ from ..core.density import TIP_DEFAULTS
 from ..core.model import CAP_DEFAULTS
 from . import deferred, live, owner, select, session
 from .coords import f32, field_same
+from .props import add_unit_twins, measure
 
 CAP_MODES = (('QUAD', 'Quads', 'A grid of quads (+1 triangle on an odd loop)', 0),
              ('POINT', 'Collapse to a Point', 'A fan of triangles to the center', 1),
@@ -44,7 +45,7 @@ def _poll(context):
 
 
 def _last(P, sel, type_):
-    """the last selected item of this type (the sheet shows the last selected item, renderProps 8627)"""
+    """the last selected item of this type (the sheet shows the last selected item, renderProps 12548)"""
     for iid in reversed(sel.items):
         it = P.items.get(iid)
         if it is not None and it.type == type_:
@@ -59,6 +60,14 @@ def selected_topo(context, type_):
 
 # ---------------- the settings for new items (S.capDefaults, S.skinDefaults, S.tipDefaults) ----------------
 
+def _get_def_size(self):
+    return float(self.get('cap_def_size', 0.0))                     # (the Size's own value: its default until it is first set; its display twin's get)
+
+
+def _set_def_size(self, v):
+    self['cap_def_size'] = f32(v)
+
+
 class HairMeshTopoDefaults(PropertyGroup):
     """The Topology tab's settings for the items Add makes (the original keeps them for the session: S.capDefaults,
     7219; S.skinDefaults, 9508; S.tipDefaults, 7269), on the Scene; and the tab shown (S.modGroupTab)."""
@@ -66,7 +75,7 @@ class HairMeshTopoDefaults(PropertyGroup):
     cap_def_mode: EnumProperty(name='Fill', description='How the cap fills the hole: quads, a point or the fewest triangles', items=CAP_MODES, default='QUAD')
     cap_def_start: BoolProperty(name='Start (Root)', description="Close the start of every lock (the curves' first anchors)", default=True)
     cap_def_end: BoolProperty(name='End (If Open)', description='Close the end too when it is open (a pointed tip needs no cap)', default=True)
-    cap_def_size: FloatProperty(name='Size', description="How far the cap is pushed out of the lock's end and in towards its middle — new rings, the lock's own last row stays (0: a flat cap)", default=0.0, min=0.0, soft_max=10000.0)   # (a field: the soft_max only bounds a drag — 100 stopped it short on a big head)
+    cap_def_size: FloatProperty(name='Size', description="How far the cap is pushed out of the lock's end and in towards its middle — new rings, the lock's own last row stays (0: a flat cap)", default=0.0, min=0.0, soft_max=10000.0, precision=2)   # (a field: the soft_max only bounds a drag — 100 stopped it short on a big head)
     cap_def_segs: IntProperty(name='Segments', description='Rings across the bevel', default=2, min=1, max=8)
     cap_def_round: FloatProperty(name='Roundness', description='0%: a straight chamfer, 100%: a round arc', default=1.0, min=0.0, max=1.0, subtype='FACTOR')
     skin_def_open: BoolProperty(name='Also Between Open Curves', description='Edge curves of the group (used by at most one wall) get a wall to their nearest neighbor — as when two curves are picked to create a wall', default=False)
@@ -130,7 +139,7 @@ _IDX_MODE = {0: 'quad', 1: 'point', 2: 'tris'}
 
 
 class HairMeshTopoItem(PropertyGroup):
-    """The sheet of a selected Cap, Fill holes or Density (capProps 7341, skinProps 9490, tipProps 7333): on the
+    """The sheet of a selected Cap, Fill holes or Density (capProps 7341, skinProps 13595, tipProps 10682): on the
     WindowManager, views on the model; the rebuild and the undo step when the slider stops or is let go."""
     cap_mode: EnumProperty(name='Fill', description='How the cap fills the hole: quads, a point or the fewest triangles', items=CAP_MODES,
                            get=_getter(_cap, 'mode', 'quad', lambda v: _MODE_IDX.get(v, 0)), set=_setter(_cap, 'mode', lambda v: _IDX_MODE[v]))
@@ -138,7 +147,7 @@ class HairMeshTopoItem(PropertyGroup):
                             get=_getter(_cap, 'start', True, lambda v: v is not False), set=_setter(_cap, 'start', bool))
     cap_end: BoolProperty(name='End (If Open)', description='Close the end too when it is open (a pointed tip needs no cap)',
                           get=_getter(_cap, 'end', True, lambda v: v is not False), set=_setter(_cap, 'end', bool))
-    cap_size: FloatProperty(name='Size', description="How far the cap is pushed out of the lock's end and in towards its middle (0: a flat cap)", min=0.0, soft_max=10000.0,
+    cap_size: FloatProperty(name='Size', description="How far the cap is pushed out of the lock's end and in towards its middle (0: a flat cap)", min=0.0, soft_max=10000.0, precision=2,
                             get=_getter(_cap, 'size', 0, float), set=_setter(_cap, 'size', f32))
     cap_segs: IntProperty(name='Segments', description='Rings across the bevel', min=1, max=8,
                           get=_getter(_cap, 'segs', 2, int), set=_setter(_cap, 'segs', int))
@@ -152,6 +161,8 @@ class HairMeshTopoItem(PropertyGroup):
                             get=_getter(_tip, 'dens', 1.5, float), set=_setter(_tip, 'dens', f32, touch=True))
 
 
+add_unit_twins(HairMeshTopoItem, 'cap_size')
+add_unit_twins(HairMeshTopoDefaults, 'cap_def_size', accessors={'cap_def_size': (_get_def_size, _set_def_size)})
 TOPO_ITEM_ATTRS = frozenset(HairMeshTopoItem.__annotations__)
 TOPO_DEF_ATTRS = frozenset(HairMeshTopoDefaults.__annotations__)
 
@@ -298,14 +309,15 @@ class HAIRMESH_OT_clear_tip_mask(bpy.types.Operator):
 
 
 def tip_brush_rows(context, ks):
-    """tipBrushControls (7280): the Density brush on / off and Clear mask(s); with it on, its Strength, Radius,
+    """tipBrushControls (10630): the Density brush on / off and Clear mask(s); with it on, its Strength, Radius,
     Hardness (ours: the original's hardness is the anchor brush's slider)"""
     from . import brush as BRU
+    from .tool import GAP, buttons, field
     on = BRU.running('TIP') is not None
-    rows = [[('op', 'hairmesh.brush', 'Density Brush', 'BRUSH_DATA', {'kind': 'TIP'}, {'depress': on}),
-             ('op', 'hairmesh.clear_tip_mask', 'Clear Mask' if len(ks) == 1 else 'Clear All Masks', 'X', {})]]
+    rows = [[buttons(context, [('op', 'hairmesh.brush', 'Density Brush', 'BRUSH_DATA', {'kind': 'TIP'}, {'depress': on}),   # (a brush and its Clear: a family, joined)
+                               ('op', 'hairmesh.clear_tip_mask', 'Clear Mask' if len(ks) == 1 else 'Clear All Masks', 'X', {})])]]
     if on:
-        rows += [[('prop', 'brush_tip_strength', 'Strength')], [('prop', 'brush_radius', 'Radius'), ('prop', 'brush_hardness', 'Hardness')]]
+        rows += [[GAP], [field('Strength', ('prop', 'brush_tip_strength', ''))], [field('Radius', ('prop', 'brush_radius', ''))], [field('Hardness', ('prop', 'brush_hardness', ''))]]
     return rows
 
 
@@ -369,7 +381,7 @@ class HAIRMESH_OT_set_topo_tab(bpy.types.Operator):
 # ---------------- the D and the N: rows ----------------
 
 def _add_label(what, gs, room=None):
-    """the Add button's text (capPanel 7247): the target groups — the group's name only while it fits the row whole"""
+    """the Add button's text (capPanel 10594): the target groups — the group's name only while it fits the row whole"""
     from . import fit
     from .tool import ROOM
     label = f'Add {what} to {len(gs)} Groups' if len(gs) > 1 else f'Add {what} to {gs[0].name}' if gs else f'Add {what}'
@@ -377,35 +389,40 @@ def _add_label(what, gs, room=None):
 
 
 def modifier_tool_rows(context, room, sheet=False, label=True):
-    """The Topology page of the Modifiers tab (modifierPanel 6915: Cap, Fill, Density), each part with its settings for
+    """The Topology page of the Modifiers tab (modifierPanel 10259: Cap, Fill, Density), each part with its settings for
     new items and its Add button — in a closed block while the selected item's sheet follows (the D within 18 rows); its
     text (CAP_TEXT, FILL_TEXT, DENSITY_TEXT) is the "?" of the D's tab column (item 9 of the lot after 4.8:
     tool.how_to). `label`: the tab's title row (4.6 draws the tabs above instead)."""
-    from .tool import block, text, why_item
+    from .props import measure
+    from .tool import GAP, align_fields, block, buttons, field, text, why_or_slot
     d = context.scene.hairmesh_topo
     _r, P, sel = select.current(context)
     gs = TP.capTargets(P, sel.items) if P is not None else []
+    from .ops_profile import pages_row
+    # (the parts: a family, joined, in the same three columns as Profile / Extra / Topology above them, a gap from that
+    # row and a gap before their own settings: two rows of pages, not one block of six buttons with a field stuck under it)
     rows = [[('label', 'Topology', 'MESH_GRID')]] if label else []
-    rows.append([('op', 'hairmesh.set_topo_tab', lab, icon, {'tab': k}, {'depress': d.topo_tab == k}) for k, lab, _t, icon, _n in TOPO_TABS])
+    rows += [[GAP], [pages_row(context, [('op', 'hairmesh.set_topo_tab', lab, icon, {'tab': k}, {'depress': d.topo_tab == k}) for k, lab, _t, icon, _n in TOPO_TABS])], [GAP]]
     if d.topo_tab == 'CAP':
         what = 'Cap'
-        new = [[('prop', 'cap_def_mode', 'Fill')], [('prop', 'cap_def_start', 'Start (Root)'), ('prop', 'cap_def_end', 'End (If Open)')],
-               [('prop', 'cap_def_size', 'Size'), ('prop', 'cap_def_segs', 'Segments', {'active': d.cap_def_size > 0}), *([why_item(FLAT_CAP)] if d.cap_def_size <= 0 else [])],
-               [('prop', 'cap_def_round', 'Roundness', {'active': d.cap_def_size > 0})]]
-        new.append([('op', 'hairmesh.add_caps', _add_label('Cap', gs), 'ADD', {})])
+        bevel = {'active': d.cap_def_size > 0}
+        new = [[field('Fill', ('prop', 'cap_def_mode', ''))], [('prop', 'cap_def_start', 'Start (Root)'), ('prop', 'cap_def_end', 'End (If Open)')],
+               [field('Size', ('prop', measure(P, 'cap_def_size'), ''), (1.0, [why_or_slot(FLAT_CAP if d.cap_def_size <= 0 else None)]))],
+               [field('Segments', ('prop', 'cap_def_segs', '', bevel))], [field('Roundness', ('prop', 'cap_def_round', '', bevel))],
+               [GAP], [buttons(context, ('op', 'hairmesh.add_caps', _add_label('Cap', gs), 'ADD', {}))]]
     elif d.topo_tab == 'FILL':
         what = 'Fill Holes'
-        new = [[('prop', 'skin_def_open', 'Also Between Open Curves')], [('op', 'hairmesh.add_skin', _add_label('Fill Holes', gs), 'ADD', {})]]
+        new = [[('prop', 'skin_def_open', 'Also Between Open Curves')], [GAP], [buttons(context, ('op', 'hairmesh.add_skin', _add_label('Fill Holes', gs), 'ADD', {}))]]
     else:
         what = 'Density'
-        new = [[('prop', 'tip_def_dens', 'Density')], [('op', 'hairmesh.add_tips', _add_label('Density', gs), 'ADD', {})]]
+        new = [[field('Density', ('prop', 'tip_def_dens', ''))], [GAP], [buttons(context, ('op', 'hairmesh.add_tips', _add_label('Density', gs), 'ADD', {}))]]
         if P is not None and P.of_type('tip') and not sheet:        # (tipPanel 7302-7305: the mask's colours, the brush)
-            new += [[text(TIP_VIZ, 'BLANK1')], *tip_brush_rows(context, _tip_targets(context))]
+            new += [[GAP], [text(TIP_VIZ, 'BLANK1')], *tip_brush_rows(context, _tip_targets(context))]
     if sheet:
         rows.append(block(f'topo_new_{d.topo_tab.lower()}', f'New {what}', 'ADD', new, False))
     else:
         rows += new
-    return rows
+    return align_fields(rows)
 
 
 FLAT_CAP = 'Size 0: a flat cap. Segments and Roundness shape the bevel only.'
@@ -414,62 +431,105 @@ FLAT_CAP = 'Size 0: a flat cap. Segments and Roundness shape the bevel only.'
 def cap_rows(context, P, k, room):
     """the sheet of a Cap (capProps 7341): what it closes, its controls (dimmed when it closes nothing, or without a
     bevel for Segments / Roundness), the rule"""
-    from .tool import group_label, label_and, text, why_item
+    from .props import measure
+    from .tool import buttons, align_fields, field, group_label, text, why_or_slot
     from ..core import effects as EF
     root = session.find_root(context)
     state = EF.capState(k, live.topo_found(root, k) if root is not None else None)
     acts = state == 'ok'; ends = state in ('ok', 'no_ends')
     bevel = acts and EF.capBevelActs(k.p)
-    rows = [[('label', k.name, 'MESH_CAPSULE')], *label_and(group_label(P, k), ('op', 'hairmesh.delete_selected', 'Delete Cap', 'X', {'keep_shape': False}), room)]
+    rows = [[('label', k.name, 'MESH_CAPSULE')], [buttons(context, group_label(P, k), ('op', 'hairmesh.delete_selected', 'Delete Cap', 'X', {'keep_shape': False}))]]
     why = {'hidden': 'Hidden (its eye in the Outliner, O): it closes nothing until shown.',
            'no_ends': 'Start and End both off: it closes nothing — tick one.',
            'no_lock': 'It closes nothing now: no closed lock in its group (a ring of walls — Volume Lock, or two curves with a second surface).'}.get(state)
     if why:
         rows.append([text(why, 'ERROR')])
     on = {'active': acts}
-    bevel_row = [('prop', 'cap_size', 'Size', on), ('prop', 'cap_segs', 'Segments', {'active': bevel})]
-    rows += [[('prop', 'cap_mode', 'Fill', on)], [('prop', 'cap_start', 'Start (Root)', {'active': ends}), ('prop', 'cap_end', 'End (If Open)', {'active': ends})],
-             bevel_row + ([why_item(FLAT_CAP)] if acts and not bevel else []), [('prop', 'cap_round', 'Roundness', {'active': bevel})]]
-    return rows
+    rows += [[field('Fill', ('prop', 'cap_mode', '', on))], [('prop', 'cap_start', 'Start (Root)', {'active': ends}), ('prop', 'cap_end', 'End (If Open)', {'active': ends})],
+             [field('Size', ('prop', measure(P, 'cap_size'), '', on), (1.0, [why_or_slot(FLAT_CAP if acts and not bevel else None)]))],
+             [field('Segments', ('prop', 'cap_segs', '', {'active': bevel}))], [field('Roundness', ('prop', 'cap_round', '', {'active': bevel}))]]
+    return align_fields(rows)
 
 
 def skin_rows(context, P, k, room):
-    """the sheet of a Fill holes (skinProps 9490): Also Between Open Curves, Bulge, what it found, Convert"""
-    from .tool import group_label, label_and, text
+    """the sheet of a Fill holes (skinProps 13595): Also Between Open Curves, Bulge, what it found, Convert"""
+    from .tool import GAP, align_fields, buttons, field, group_label, text
     root = session.find_root(context)
     holes, pairs = live.topo_counts(root, k) if root is not None else (None, None)
     found = 'not computed yet' if holes is None else f'{holes} hole(s), {pairs} gap(s) between open curves'
-    return [[('label', k.name, 'MOD_SKIN')], *label_and(group_label(P, k), ('op', 'hairmesh.delete_selected', 'Delete Fill Holes', 'X', {'keep_shape': False}), room),
-            [('prop', 'skin_open', 'Also Between Open Curves')], [('prop', 'skin_bulge', 'Bulge')],
-            [text(f'Found: {found}.', 'BLANK1')],
-            [('op', 'hairmesh.convert_skin', 'Convert to Walls', 'OUTLINER_OB_SURFACE', {})]]
+    return align_fields([[('label', k.name, 'MOD_SKIN')], [buttons(context, group_label(P, k), ('op', 'hairmesh.delete_selected', 'Delete Fill Holes', 'X', {'keep_shape': False}))],
+                         [('prop', 'skin_open', 'Also Between Open Curves')], [field('Bulge', ('prop', 'skin_bulge', ''))],
+                         [text(f'Found: {found}.', 'BLANK1')],
+                         [GAP], [buttons(context, ('op', 'hairmesh.convert_skin', 'Convert to Walls', 'OUTLINER_OB_SURFACE', {}))]])
 
 
 def tip_rows(context, P, k, room):
-    """the sheet of a Density (tipProps 7333): what it shapes, the density (dimmed while nothing is painted)"""
-    from .tool import group_label, label_and, text
+    """the sheet of a Density (tipProps 10682): what it shapes, the density (dimmed while nothing is painted)"""
+    from .tool import GAP, align_fields, buttons, field, group_label, text
     from ..core import effects as EF
     painted = EF.tipActs(k)
-    rows = [[('label', k.name, 'MOD_DECIM')], *label_and(group_label(P, k), ('op', 'hairmesh.delete_selected', 'Delete Density', 'X', {'keep_shape': False}), room),
-            [('prop', 'tip_dens', 'Density', {'active': painted})]]
+    rows = [[('label', k.name, 'MOD_DECIM')], [buttons(context, group_label(P, k), ('op', 'hairmesh.delete_selected', 'Delete Density', 'X', {'keep_shape': False}))],
+            [field('Density', ('prop', 'tip_dens', '', {'active': painted}))]]
     if not painted:
         rows.append([text(NOT_PAINTED if k.visible else 'Hidden (its eye in the Outliner, O): it shapes no loop until shown.', 'ERROR')])
-    rows += tip_brush_rows(context, [k])                            # (tipProps 7338)
-    return rows
+    rows += [[GAP], *tip_brush_rows(context, [k])]                  # (tipProps 7338)
+    return align_fields(rows)
+
+
+# an Even loops / Proxy shell item (1.0.3): applied to the loops as the file holds it; its brush, Convert to shell and
+# its sliders are not in this version, so the sheet says its values in words (nothing that looks editable) and why it
+# does nothing when it does nothing (effects.esState; the texts of shellControls 10786 and evenProps 10746)
+ES_NAMES = {'shell': 'Proxy Shell', 'even': 'Even Loops'}
+ES_NOT_EDITABLE = 'Comes from the file and is applied as saved; there is no brush or slider for it. Delete and its eye in the Outliner (O) work.'
+ES_WHY = {'no_group': 'Not in a group — it works on nothing.',
+          'hidden': 'Hidden (its eye in the Outliner, O): it shapes no loop until shown.',
+          'not_converted': 'Not converted to a shell yet — until then it does nothing.',
+          'weak': 'Painted too weakly — it covers only where the mask is 50% or more: it does nothing.',
+          'not_painted': 'Nothing painted — it does nothing.'}
+# the state in a few words, on the sheet's state line (the whole reason, ES_WHY, is the tooltip of its "i")
+ES_SHORT = {'no_group': 'Not in a group', 'hidden': 'Hidden', 'not_converted': 'Not converted', 'weak': 'Painted too weakly',
+            'not_painted': 'Nothing painted'}
+
+
+def es_rows(context, P, k, room):
+    """the sheet of an Even loops / Proxy shell (shellProps 10779, evenProps 10746 of 1.0.3): its name, group and
+    Delete, one state line (its values as words and, when it does nothing, why in a few words with the warning icon);
+    the whole reason and what can be done with it are the tooltip of the line's "i" """
+    from .tool import align_fields, buttons, cols, group_label, text, why_item
+    from ..core import effects as EF
+    from ..core import outliner as OL
+    from ..core.model import SHELL_DEFAULTS
+    name = ES_NAMES[k.type]
+    rows = [[('label', k.name, OL.ICONS[k.type])],
+            [buttons(context, group_label(P, k), ('op', 'hairmesh.delete_selected', f'Delete {name}', 'X', {'keep_shape': False}))]]
+    if k.type == 'shell':
+        p = {**SHELL_DEFAULTS, **(k.p or {})}
+        say = f'Equal Spacing {round(p["eq"] * 100)}%, Edge Falloff {round(p["fall"] * 100)}%' + (', with a brush deformation' if k.def_ is not None else '')
+    else:
+        say = f'Strength {round((k.p or {}).get("str", 1) * 100)}%'
+    state = EF.esState(P, k)
+    off = state != 'ok'
+    line = say + (f' · {ES_SHORT[state]}' if off else '')
+    why = f'{ES_WHY[state]} {ES_NOT_EDITABLE}' if off else ES_NOT_EDITABLE
+    rows.append([cols((None, [text(line, 'ERROR' if off else 'BLANK1')]), (1.0, [why_item(why)]))])   # (a paragraph: a shell's values may wrap)
+    return align_fields(rows)
 
 
 def topo_pie_items(context, P, k):
     """the Shift+RMB pie with a Cap, a Fill holes or a Density the last selected item: Delete, its sliders in the N box,
-    the Fill's Convert, the Density's brush and Clear Mask, the HairMesh Menu"""
+    the Fill's Convert, the Density's brush and Clear Mask, the HairMesh Menu; an Even loops / Proxy shell: Delete alone
+    (no controls in this version)"""
     from .tool import MENU_OP, gizmo_slot, pie_box
     E = ('empty',)
     from ..core import effects as EF
     east = west = E
+    if k.type in ES_NAMES:
+        return [E, E, ('op', 'hairmesh.delete_selected', f'Delete {ES_NAMES[k.type]}', 'X', {'keep_shape': False}), E, E, MENU_OP, E, gizmo_slot(context, P)]
     if k.type == 'cap':
         root = session.find_root(context)
         acts = EF.capState(k, live.topo_found(root, k) if root is not None else None) == 'ok'
         bevel = acts and EF.capBevelActs(k.p)
-        box = pie_box(('prop', 'cap_size', 'Size', {'active': acts}), ('prop', 'cap_segs', 'Segments', {'active': bevel}), ('prop', 'cap_round', 'Roundness', {'active': bevel}))
+        box = pie_box(('prop', measure(P, 'cap_size'), 'Size', {'active': acts}), ('prop', 'cap_segs', 'Segments', {'active': bevel}), ('prop', 'cap_round', 'Roundness', {'active': bevel}))
         what = 'Delete Cap'
     elif k.type == 'skin':
         box = pie_box(('prop', 'skin_bulge', 'Bulge'))
@@ -484,8 +544,8 @@ def topo_pie_items(context, P, k):
 
 
 def topo_sheet(context, P, it, room):
-    """the sheet of a Cap / Fill holes / Density, or None for another item"""
-    return {'cap': cap_rows, 'skin': skin_rows, 'tip': tip_rows}.get(getattr(it, 'type', None), lambda *_a: None)(context, P, it, room)
+    """the sheet of a Cap / Fill holes / Density / Even loops / Proxy shell, or None for another item"""
+    return {'cap': cap_rows, 'skin': skin_rows, 'tip': tip_rows, 'shell': es_rows, 'even': es_rows}.get(getattr(it, 'type', None), lambda *_a: None)(context, P, it, room)
 
 
 CLASSES = (HairMeshTopoDefaults, HairMeshTopoItem, HAIRMESH_OT_add_caps, HAIRMESH_OT_add_skin, HAIRMESH_OT_add_tips, HAIRMESH_OT_clear_tip_mask, HAIRMESH_OT_convert_skin,

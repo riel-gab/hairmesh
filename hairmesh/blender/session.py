@@ -23,6 +23,7 @@ character at a time into the current line, reallocating it each time, so a 300 K
 cost 2.6 s per operator on the example; a line's `body` is set in one memcpy, so the text is cleared and its one line
 set (_set_text). The cache key is Python's hash of the text (0.1 ms) instead of SHA-1 (1 ms): the getters of the
 panels call get_project dozens of times per redraw."""
+import copy
 import json
 
 import bpy
@@ -36,6 +37,7 @@ TEXT_PREFIX = 'hairmesh/'
 TEXT_REFS = (('hairmesh_text', 'hairmesh_text_ref'), ('hairmesh_head_text', 'hairmesh_head_text_ref'), ('hairmesh_meshes_text', 'hairmesh_meshes_text_ref'))
 _cache = {}                                                         # root object name -> (text name, sha1 of its content, Project)
 _uid = {}                                                           # project text name -> the highest UID a model of it reached in this session (the review of 4.2 ∥ 4.5)
+_frame = {}                                                         # project text name -> the frame (S) of its last model in this session, for a model read again whose cache entry was dropped
 
 
 def _uid_key(root):
@@ -98,13 +100,16 @@ def _split(d):
     return project_json_text(d), payload, key, (meta or {}).get('ext')
 
 
+B64_EXTS = ('glb', 'fbx')                                           # (the head files the original keeps as base64, srcOfFile 5184)
+
+
 def _rejoin(src, stored):
     """the head's file back into src from its datablock's text (see _split)"""
     nul = src.pop('nul', None)
     if nul:
         for i in nul:                                               # ascending original positions: each insert lands right
             stored = stored[:i] + '\x00' + stored[i:]
-    src['b64' if src.get('ext') == 'glb' else 'text'] = stored      # importHead (3236): glb -> b64, else text
+    src['b64' if src.get('ext') in B64_EXTS else 'text'] = stored   # port of srcOfFile (5184): glb and fbx -> b64, else text
 
 
 def _new_text(name, content):
@@ -313,8 +318,8 @@ def _parse(root, txt, text, h):
     if P.get('head') and P['head'].get('src') and head_txt is not None:
         _rejoin(P['head']['src'], head_txt.as_string())
     proj = project_from_dict(P, root.get('hairmesh_source') or f'{root.get("hairmesh_project", root.name)}.hairmesh', strip=(), load=False)   # our own text: back as written (restore, not loadProject)
-    # the original's UID belongs to the session and never goes back: its restore (1220) even moves it on, one per
-    # anchor it makes again (new Anchor, 713). Ours never goes back either (an intentional difference: it does not
+    # the original's UID belongs to the session and never goes back: its restore (1358) even moves it on, one per
+    # anchor it makes again (new Anchor, 816). Ours never goes back either (an intentional difference: it does not
     # move on by the anchors — ids made after an undo differ from the original's, no file or table depends on them):
     # an undo must not hand out again the ids of items it took away, which the incremental tables of the state before
     # still name (the review of 4.2 ∥ 4.5: a curve id of before became a wall's after Ctrl+Z, and the row build failed)
@@ -322,6 +327,13 @@ def _parse(root, txt, text, h):
     if prev is not None:
         keep_uid(root, prev[2])
     proj.uid = max(proj.uid, _uid.get(_uid_key(root), 0))
+    # the frame (S.scale, headH, yRef, center) belongs to the session too: project_from_dict fits one to the curves of
+    # a model without a head, as loadProject (14394) does at an open, but restore (1358) fits one again only when the
+    # head changed (1414-1415) and to a head only — a model read again without a head (an undo, a redo) keeps the
+    # frame it had (lot 1.2, seed 1205: a pencil disc's rings drawn outside the box changed headH at the next undo)
+    kept = prev[2].S if prev is not None and prev[0] == txt.name else _frame.get(_uid_key(root))   # (the same project's text: a root of another project with this name inherits nothing)
+    if proj.head is None and kept is not None:
+        proj.S = copy.deepcopy(kept)
     _rejoin_meshes(root, proj)
     try:
         proj.conv = json.loads(root.get('hairmesh_conv') or 'null')
@@ -339,9 +351,17 @@ _sync_said = {}                                                     # root name 
 def sync(root, proj):
     """D4.8 (4.3): the crown part of the original's frame (crownSymSync, updateAttachments, 12060-12063) at the end
     of every operator that changes the model: a symmetric crown's pairs follow, attached anchors sit on their
-    connector, one moved away comes off (its toast waits for live.update). Inside an operator only."""
+    connector, one moved away comes off (its toast waits for live.update). 1.1f: the root of a flat lock started from
+    anchors follows their centre (rebuildRib, 6003-6006). Inside an operator only."""
     from ..core.crowntool import frameSync
-    moved, toasts = frameSync(proj)
+    from ..core.rib import followFrames
+    edges = []                                                      # (1.0.2: the edge curves syncPathCurves moved onto their curves, 16623)
+    moved, toasts = frameSync(proj, edges)
+    m, t = followFrames(proj, edges)                                # (the ribbons come last in the frame, 14823: a root that moved waits for the next frame, whose crown part runs first)
+    moved = list(moved) + m; toasts = list(toasts) + t
+    if edges:
+        from . import live
+        live.touch(root, [c.id for c in edges])                     # (S.surfDirty there)
     if moved:
         from . import live
         ids = {id(a) for a in moved}
@@ -354,7 +374,7 @@ def sync(root, proj):
 def forget(root_name=None):
     """Drops the cache (all of it, or one root's): tests and file reloads."""
     if root_name is None:
-        _cache.clear(); _state.clear(); _current.clear(); _saved.clear(); _mesh_written.clear(); _uid.clear()
+        _cache.clear(); _state.clear(); _current.clear(); _saved.clear(); _mesh_written.clear(); _uid.clear(); _frame.clear()
     else:
         _cache.pop(root_name, None); _state.pop(root_name, None); _saved.pop(root_name, None); _mesh_written.pop(root_name, None)
         for k in [k for k, v in _current.items() if v == root_name]:
@@ -369,6 +389,7 @@ def forget_model(root_name):
     if c is not None:
         k = c[0]                                                    # (the text's name: _uid_key of that root)
         _uid[k] = max(_uid.get(k, 0), c[2].uid)                     # (ids spent in memory only stay spent: a refused cut, a Convert stopped)
+        _frame[k] = copy.deepcopy(c[2].S)                       # (and the frame stays the session's: _parse)
 
 
 _saved = {}                                                         # root name -> (the .hairmesh path, the cache key of the text as last saved / opened, or None: changed)
@@ -381,7 +402,7 @@ def _text_of(root):
 
 def mark_saved(root, path):
     """1c of the manual test of the lot ux5 (ours: the original keeps a file handle, proj.handle 10096, and marks the
-    project saved, markSaved 10088): the .hairmesh this project is saved to / was opened from, and its text as
+    project saved, markSaved 14322): the .hairmesh this project is saved to / was opened from, and its text as
     written. Kept twice: on the root (the .blend remembers it) and here, outside the undo — an undo must not forget
     the path, nor make a project look saved that differs from the file on disk."""
     import hashlib

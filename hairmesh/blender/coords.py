@@ -47,6 +47,50 @@ def field_same(stored, v):
     return f32(float(field_text(stored))) == f32(v)
 
 
+def root_scale(root):
+    """Blender units per project unit: the mean of the root Empty's scale (absolute values). 1.0 without a root, or
+    with a scale of zero or not finite. It runs inside draw(): it never raises (a removed object, no matrix)."""
+    try:
+        s = sum(abs(x) for x in root.matrix_world.to_scale()) / 3.0
+    except Exception:
+        return 1.0
+    return s if s > 0.0 and math.isfinite(s) else 1.0
+
+
+# a fixed length unit of Scene > Units (length_unit): its size in metres, its short name and whether a space comes
+# before it (Blender's own tables, unit.cc: the feet and the inches stick to the number)
+LENGTH_UNITS = {'KILOMETERS': (1000.0, 'km', True), 'METERS': (1.0, 'm', True), 'CENTIMETERS': (0.01, 'cm', True),
+                'MILLIMETERS': (0.001, 'mm', True), 'MICROMETERS': (1e-6, 'µm', True), 'MILES': (1609.344, 'mi', True),
+                'FEET': (0.3048, "'", False), 'INCHES': (0.0254, '"', False), 'THOU': (0.0000254, 'thou', True)}
+LENGTH_PRECISION = 3                                                # the measures' fields (props.unit_twin): 3 significant digits
+
+
+def _significant(value, prec):
+    """the number as Blender's unit_as_string writes it: `prec` significant digits (never fewer decimals than 0 nor
+    more than 6), the trailing zeros cut"""
+    digits = math.floor(math.log10(abs(value))) + 1 if value else 0
+    t = f'{value:.{min(max(prec - digits, 0), 6)}f}'
+    if '.' in t:
+        t = t.rstrip('0').rstrip('.')
+    return '0' if t in ('-0', '') else t
+
+
+def length_text(v, system, length_unit='ADAPTIVE', scale_length=1.0, separate=False, prec=LENGTH_PRECISION):
+    """a length of `v` Blender units as a field with unit='LENGTH' writes it (Scene > Units: the unit system, the
+    length unit, the unit scale, separate units): 3 significant digits in the unit Blender picks (Adaptive) or in the
+    fixed one; with the unit system None, 3 fixed decimals (unit='LENGTH' has no unit to show there)"""
+    v = struct.unpack('f', struct.pack('f', v))[0]                  # (the float32 the field holds)
+    if system == 'NONE':
+        return f'{v:.{prec}f}'
+    v *= scale_length
+    fixed = LENGTH_UNITS.get(length_unit)
+    if fixed is None or separate:                                   # Adaptive, or split units: Blender's own text (its main unit is the adaptive one)
+        from bpy.utils import units
+        return units.to_string(system, 'LENGTH', v, precision=prec, split_unit=bool(separate))
+    size, name, space = fixed
+    return _significant(v / size, prec) + (' ' if space else '') + name
+
+
 def auto_scale(head_height):
     """The power of ten that puts the head's bounding-box height into [0.1 m, 1 m).
 

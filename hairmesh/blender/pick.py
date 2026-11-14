@@ -19,14 +19,14 @@ from .coords import to_blender
 
 
 def blender_xray(context):
-    """Blender's own X-ray in the 3D View being drawn / clicked (Alt+Z): solid shading's show_xray, wireframe's
+    """Blender's own X-Ray in the 3D View being drawn / clicked (Alt+Z): solid shading's show_xray, wireframe's
     show_xray_wireframe (3.8c). The overlay then draws without depth test; anchors are picked behind the head anyway
     (pickAnchor, 5190, never tests depth), and a Shift slide no longer counts the head as hiding a curve."""
     sp = getattr(context, 'space_data', None)
     if sp is None or sp.type != 'VIEW_3D':
         return False
     sh = sp.shading
-    # as Blender's SHADING_XRAY_ENABLED: on, and see-through (an alpha of 1 hides as without X-ray)
+    # as Blender's SHADING_XRAY_ENABLED: on, and see-through (an alpha of 1 hides as without X-Ray)
     if sh.type == 'WIREFRAME':
         return bool(sh.show_xray_wireframe) and sh.xray_alpha_wireframe < 1.0
     return bool(sh.show_xray) and sh.xray_alpha < 1.0 if sh.type == 'SOLID' else False
@@ -45,7 +45,7 @@ def pick_anchor(anchors, project, x, y, radius=10):
     return best
 
 
-def pick_curve(curves, project, x, y, radius=7):
+def pick_curve(curves, project, x, y, radius: float = 7):
     # port of pickCurve (5196): the nearest sample segment of any curve within `radius` px.
     # Returns {curve, i, t, point, seg} or None. Callers pass only the visible curves (c.obj.visible).
     best = None; bd = radius
@@ -512,8 +512,9 @@ def topo_hits(root, P, o, d):
     """4.4: the shown Caps' and Fill holes' previews (live.topo_previews) the ray o + t d meets: (item id, t) of the
     nearest, or None (pickables 5661 holds their objects)"""
     from ..core import edit
+    from ..core.rib import hasRibs
     from .live import shown_previews, topo_shown
-    if not (P.caps() or P.of_type('skin') or P.tubes()):
+    if not (P.caps() or P.of_type('skin') or P.tubes() or hasRibs(P)):
         return None
     prev = shown_previews(root, P)                                  # (4.6: a Profile modifier's surface too)
     for kid in [i for i in _topo_tris if i not in prev]:
@@ -633,7 +634,7 @@ def item_on_ray(context, root, P, ray, coord=None):
     if h['mesh'] is not None and (best is None or h['mesh'][1] < best[1]):
         best = h['mesh']
     if h['crown'] is not None and (best is None or h['crown'][1] < best[1]):
-        best = h['crown']                                           # (4.3: a crown's surface, as pickables() holds its mesh, 5661)
+        best = h['crown']                                           # (4.3: a crown's surface, as pickables() holds its mesh, 8419)
     if h.get('topo') is not None and (best is None or h['topo'][1] < best[1]):
         best = h['topo']                                            # (4.4: a Cap's rings, a Fill's walls to be)
     if best is not None and h['head'] is not None and h['head'] < best[1]:
@@ -668,14 +669,14 @@ def _first_t(context, root, P, ray):
 def surface_hit(context, root, P, ray):
     """the point the ray meets first among pickables() but the discs (the head, the shown walls, the shown converted
     meshes, the crowns, the Caps' / Fills' / Profile modifiers' previews: tube / cap / skin are pickables, 5661), in
-    the model's space, or None: surfacePoint's and pencilAdd's pickObjects (6272, 6306)"""
+    the model's space, or None: surfacePoint's and pencilAdd's pickObjects (9494, 6306)"""
     t = _first_t(context, root, P, ray)
     return ray.origin.clone().addScaledVector(ray.direction, t) if t is not None else None
 
 
 def brush_hit(context, root, P, ray, discs=()):
     """4.9: the point the ray meets first among pickables() but the reference objects, with the discs' surfaces of `discs`
-    (the shown ones) too: brushCenter3D's pickObjects (6090), in the model's space, or None"""
+    (the shown ones) too: brushCenter3D's pickObjects (8932), in the model's space, or None"""
     t = _first_t(context, root, P, ray)
     o = (ray.origin.x, ray.origin.y, ray.origin.z); d = (ray.direction.x, ray.direction.y, ray.direction.z)
     for g in discs:
@@ -708,7 +709,7 @@ def meshes_hit(context, root, P, ray):
 
 
 def surface_point(context, root, P, ray, x, y, curves, radius):
-    """port of surfacePoint (6271) in the viewport: what the click hits (surface_hit), else the point of the hair
+    """port of surfacePoint (9493) in the viewport: what the click hits (surface_hit), else the point of the hair
     curve under it (pickCurve over `curves`, the shown hair curves, `radius` px), else the plane through the orbit
     pivot facing the camera (planeHit). In the model's space; None when the plane is behind."""
     from ..core.guidetool import surfacePointChoice
@@ -815,8 +816,8 @@ class Occluder:
             from .live import shown_previews, topo_shown
             for kid, (key, data, _info) in shown_previews(root, P).items():
                 k = P.items.get(kid)
-                if data is None or not data['faces'] or k is None or not edit.isVisible(P, k) or not topo_shown(P, k):
-                    continue
+                if data is None or not data['faces'] or k is None or k.type == 'curve' or not edit.isVisible(P, k) or not topo_shown(P, k):
+                    continue                                        # (1.1f: a flat lock's ribbon is see-through and its own anchors lie on it — it hides nothing)
                 c = _topo_tris.get(kid)
                 if c is None or c[0] != key:
                     c = (key, tri_arrays([(p.x, p.y, p.z) for p in data['pos']], data['faces'])); _topo_tris[kid] = c
@@ -942,7 +943,7 @@ def curves_in_circle(curves, project, x, y, r):
 
 
 def snap_drag_to_curve(P, a, project, x, y, snap=None, occluded=None):
-    """port of snapDragToCurve (5720) over a projector. Shift while dragging one anchor: it sits on the curve nearest
+    """port of snapDragToCurve (8479) over a projector. Shift while dragging one anchor: it sits on the curve nearest
     to the CURSOR (any group; hidden only by its eye; its own curves don't count) and slides along it. Picked again on
     every move: the cursor brought to another curve takes the anchor over to it (when that one is nearer by more than
     6 px, no flicker between two close curves); among curves almost equally near on screen (within 4 px) the one

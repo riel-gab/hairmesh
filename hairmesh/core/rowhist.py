@@ -12,7 +12,8 @@ order is part of it), of the walls on those curves, of the groups above them (co
 scene.conv_seen), every guide as lockGuideRows reads it for these curves (its signature, normal, ⏻ with the groups
 above it, and its hits ON THESE CURVES only — a disc's hits move with every curve that pierces it), and the
 project-wide part: the settings and the head height, the default step (usedStep reads the groups), every density
-and crown (a cap, a Fill holes, a Profile modifier and its Extras: read by no table). Two states with the same fingerprint for a component build the same entries for it: the
+and crown, every Even loops and Proxy shell item and, while one is in effect, the shapes of the locks its sets read
+(_evenshell_geometry; a cap, a Fill holes, a Profile modifier and its Extras: read by no table). Two states with the same fingerprint for a component build the same entries for it: the
 entries of one are the entries of the other, bit for bit (tests/test_rowhist.py; the stress test compares the meshes
 with a conversion from scratch). A build that filled a group's conv (groupConv) in a project without a step of its
 own keeps nothing: the default step (usedStep) may have changed in the middle of it (rows.buildRowTables).
@@ -40,16 +41,88 @@ def _sample_digest(cache, c):
     return d
 
 
-def global_part(P, sig):
-    """(project-wide part, guides list): the guides go into each component's part, with their hits on its curves"""
+def _reach(P, curves):
+    """the ids of the curves reached from `curves` through shared anchors (the curves themselves included)"""
+    byA = P.anchor_curves()
+    seen = {c.id for c in curves}
+    stack = list(curves)
+    while stack:
+        c = stack.pop()
+        for a in c.anchors:
+            for h in byA.get(a.id, ()):
+                if h.id not in seen:
+                    seen.add(h.id); stack.append(h)
+    return seen
+
+
+def _shapes(P, items, seen, cache):
+    """the curves `seen` (in curves() order: extendAlongHost's first host) as the tables read them — their signatures,
+    exact shapes and anchors' positions (repr keeps a signed zero) —, the walls on them and the groups above them
+    (convOf; the Density items are in the project-wide part)"""
+    order = [c for c in P.curves() if c.id in seen]
+    apos = [[(a.id, repr(a.pos.x), repr(a.pos.y), repr(a.pos.z)) for a in c.anchors] for c in order]
+    groups = set()
+    for c in order:
+        p = P.parentOf(c)
+        while p:
+            groups.add(p.id); p = P.parentOf(p)
+    walls = [items.get(s.id) for s in P.surfaces() if s.a in seen or s.b in seen]   # (the locks they make: which curves are one lock)
+    return [[(c.id, items.get(c.id), _sample_digest(cache, c)) for c in order], apos, walls, [(g, items.get(g)) for g in sorted(groups)]]
+
+
+# (1.2) What a lock's tables read through the Even loops / Proxy shell sets (shell.shellSetsBuild) besides its own
+# component: a set is made from the locks its item covers (its group and sub-groups, shellsOf) and the ones welded to
+# them (a shared segment: reached through anchors), with its carrier's group settings (convOf). A Proxy shell's rings
+# are then taken by every lock running through three of them, of any group (ringIn, 3315), and each ring's gap gw is
+# the longest over ALL the locks taking it: with a shell in effect every lock reads every shell and every other lock
+# (global_part). An Even loops item's take is cut to its own group (3332): a component reads the Even loops items over
+# its curves and the locks of their groups only (component_fp). An item no table reads (hidden, not painted, a shell
+# not converted — 3058-3060) is in neither: nothing more than before.
+def _evenshell_in_effect(items, k):
+    from .scene import _evenshell_on
+    s = items.get(k.id)
+    return s is not None and _evenshell_on(json.loads(s))
+
+
+def _evens_part(P, items, order, cache):
+    """the Even loops items in effect over the curves `order` (up their groups, as shellsOf) with the shapes of the
+    locks of their groups (and the ones welded to them); None when there are none"""
+    from .groups import curvesIn
+    evs = []
+    for c in order:
+        g = P.parentOf(c)
+        while g:
+            if g.type == 'group':
+                for i in g.children:
+                    x = P.items.get(i)
+                    if x is not None and x.type == 'even' and x not in evs and _evenshell_in_effect(items, x):
+                        evs.append(x)
+            g = P.parentOf(g)
+    if not evs:
+        return None
+    evs.sort(key=lambda x: x.id)
+    seen = set()
+    for k in evs:
+        # (and the curves of its mask: evenParts reads their samples, also of one moved out of the group after it was
+        # painted — the review of phase 2, finding e)
+        painted = [c for c in (P.items.get(i) for i in (k.mask or {})) if c is not None and c.type == 'curve']
+        seen |= _reach(P, list(curvesIn(P, P.items[k.parent])) + painted)
+    return [[items[k.id] for k in evs], _shapes(P, items, seen, cache)]
+
+
+def global_part(P, sig, cache=None):
+    """(project-wide part, guides list): the guides go into each component's part, with their hits on its curves.
+    `cache`: the sample digests (ctx.HIST_SAMPLES), for the Proxy shell part"""
     from .guides import guideOn
     from .hairmesh_io import defaultStep
     items = sig['items']
     rest = []; guides = []
     for it in P.items.values():
         t = it.type
-        if t in ('curve', 'surface', 'group', 'mesh', 'cap', 'skin', 'tube', 'xmod'):
-            continue                                                # (4.4 / 4.6: read by no row table — never in a component's fingerprint)
+        if t in ('curve', 'surface', 'group', 'mesh', 'cap', 'skin', 'tube', 'xmod', 'even'):
+            continue                                                # (4.4 / 4.6: read by no row table — never in a component's fingerprint; 1.2: an Even loops item in the part of the components it is over)
+        if t == 'shell' and not _evenshell_in_effect(items, it):
+            continue                                                # (1.2: a shell no table reads)
         if t == 'guide':
             chain = []
             p = P.parentOf(it)
@@ -63,7 +136,9 @@ def global_part(P, sig):
                                           default=str, separators=(',', ':'))))
         elif it.id in items:
             rest.append(items[it.id])
-    return (json.dumps([sig['global'], repr(defaultStep(P)), rest], default=str, separators=(',', ':')), guides)
+    # (1.2: a Proxy shell in effect — its item is in `rest` — makes every lock read every other)
+    geo = _shapes(P, items, {c.id for c in P.curves()}, {} if cache is None else cache) if any(_evenshell_in_effect(items, k) for k in P.shells()) else None
+    return (json.dumps([sig['global'], repr(defaultStep(P)), rest, geo], default=str, separators=(',', ':')), guides)
 
 
 def component_fp(P, curves, sig, gpart, cache):
@@ -93,6 +168,9 @@ def component_fp(P, curves, sig, gpart, cache):
              [(c.id, items.get(c.id), _sample_digest(cache, c)) for c in order], apos,
              [items.get(w) for w in walls],
              [(g, items.get(g)) for g in sorted(groups)]]
+    ev = _evens_part(P, items, order, cache)                        # (1.2: the Even loops items over these locks, with the locks of their groups)
+    if ev is not None:
+        parts.append(ev)
     return hashlib.blake2b(json.dumps(parts, default=str, separators=(',', ':')).encode(), digest_size=20).hexdigest()
 
 

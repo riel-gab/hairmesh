@@ -66,7 +66,7 @@ Press **D** and open the **Conversion** tab.
 
 1. **Tick** the groups to convert in the list. **Tick Top Groups** makes one mesh per top group; **Tick Every Group**
    makes one mesh per group; **Uncheck All** clears the ticks. A new group starts ticked.
-2. Set the sliders: **Loop Step**, **Deviation**, **Fix Sharp Angles**, **Loops Horiz ↔ Perp**, **Tips**, **Relax**,
+2. Set the sliders: **Loop Step**, **Deviation**, **Fix Sharp Angles**, **Loop Direction**, **Tips**, **Relax**,
    **Merge Shared Trunks**. They edit the ticked groups. The line above them says what Convert makes and which groups
    the sliders edit.
 3. Click **Convert**. The new meshes appear in orange. This is a preview: change the sliders and it follows. Press
@@ -195,8 +195,11 @@ The surface follows the curve as you edit it. Select the modifier to edit it:
 - **Copy Modifier** / **Paste Modifier**;
 - **Convert to Curves & Walls**, which turns it into ordinary curves and walls.
 
-On the Profile page, the icons next to the preset menu open the profile editor (**Edit Profile**), **Save Preset...**
-and **Delete Preset**. Saved presets live in the add-on's preferences.
+On the Profile page, the icons next to the preset menu open the profile editor (**Edit Profile**), save the profile as
+a preset of your own (**Save Preset...**, the new-preset icon; it does not apply anything) and **Delete Preset**. Saved
+presets live in the add-on's preferences. The check mark, **Apply**, sweeps the page's profile along the selected
+curves: each gets a Profile modifier, and only then does its sheet show its own **Start**, **Middle** and **End**
+profiles. Until a modifier is selected, a line on the page reminds you: "Apply, then edit Start, Middle, End".
 
 ### Extra: mask, thickness, twist, noise, curls
 

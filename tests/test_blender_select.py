@@ -3,6 +3,7 @@ viewport), the selection state on the scene, the panel sliders, the drawing colo
 import json
 import os
 import unittest
+from tests.helpers.dlist import d_items                            # noqa: E402  (the D as a list: Object > HairMesh lists actions only since lot 1.2a)
 
 try:
     import bpy
@@ -143,7 +144,7 @@ class TestSelectOperators(unittest.TestCase):
         # the curve sliders and buttons
         bpy.ops.hairmesh.select(curve=A.id)
         bpy.ops.hairmesh.select(curve=B.id, extend=True)
-        self.assertEqual(bpy.context.window_manager.hairmesh_slide.curve_round, 0.0)
+        self.assertAlmostEqual(bpy.context.window_manager.hairmesh_slide.curve_round, 0.6, places=6, msg='a new curve starts at Roundness 0.6 (1.0.2 NEW_CURVE, 6788)')
         bpy.context.window_manager.hairmesh_slide.curve_round = 0.5
         self.assertEqual((A.round, B.round), (0.5, 0.5)); self.assertEqual(bpy.context.window_manager.hairmesh_slide.curve_round, 0.5)
         bpy.context.window_manager.hairmesh_slide.curve_fair = 0.25
@@ -249,6 +250,8 @@ class TestContextMenus(unittest.TestCase):
                 out.extend(TestContextMenus.ops(it[1]))
             elif it[0] == 'block':
                 out.extend(TestContextMenus.ops([x for row in it[4] for x in row]))
+            elif it[0] == 'cols':                                   # (lot 1.2b: a row of columns, the form of every sheet)
+                out.extend(TestContextMenus.ops([x for c in it[1] for x in c[1]]))
             elif it[0] == 'op':
                 out.append((it[1], it[4]))
             elif it[0] == 'subtool':
@@ -272,7 +275,7 @@ class TestContextMenus(unittest.TestCase):
         self.assertEqual([o for o in ops if o[0] == 'hairmesh.set_subtool'], [], 'the sub-tools are in the Q pie')
         self.assertIn(('hairmesh.new_project', {}), ops); self.assertIn(self.MENU, ops)
         self.assertNotIn(('menu', 'HAIRMESH_MT_walls'), ops)
-        menu = self.ops(self.tool.menu_items(bpy.context))
+        menu = self.ops(d_items(self.tool, bpy.context))
         self.assertIn(('hairmesh.new_project', {}), menu); self.assertIn(('hairmesh.import_project', {}), menu)
         self.assertNotIn(('prop', 'anchor_smooth'), menu); self.assertNotIn(('menu', 'HAIRMESH_MT_walls'), menu, 'Walls / Lock lives with the curves (U6)')
         # the pop-up (U5): the top row and the four tabs; without a project only Project has buttons
@@ -282,7 +285,7 @@ class TestContextMenus(unittest.TestCase):
         self.assertEqual(sections[0][2][0][7], self.tool.OUTLINER_OP_S, 'and the outliner')
         popup = self.popup(bpy.context)
         self.assertIn(('hairmesh.new_project', {}), popup); self.assertIn(('hairmesh.import_project', {}), popup)
-        self.assertNotIn(('toggle', 'drag_on_head'), popup)
+        self.assertNotIn(('prop', 'drag_on_head'), popup)   # (a checkbox since lot 1.2b)
         self.assertEqual(self.tool.popup_tabs(bpy.context)['SELECTION'], [[('label', 'No HairMesh project', 'INFO')]])
         self.assertEqual(self.tool.popup_tabs(bpy.context)['MODIFIERS'], [[('label', 'No HairMesh project', 'INFO')]])
         self.assertEqual(self.tool.active_tab(bpy.context), 'SELECTION', 'registered by hand: no preferences, the default tab')
@@ -298,7 +301,7 @@ class TestContextMenus(unittest.TestCase):
         bpy.ops.hairmesh.draw_curve(points_json=json.dumps([[0, 0, 0], [1, 2, 0], [2, 4, 0]]))
         P = self.session.get_project(root); A = P.curves()[0]
         # the drawn curve is selected: the curve pie and menu
-        pie = self.ops(self.tool.pie_items(bpy.context)); menu = self.ops(self.tool.menu_items(bpy.context))
+        pie = self.ops(self.tool.pie_items(bpy.context)); menu = self.ops(d_items(self.tool, bpy.context))
         popup = self.popup(bpy.context)
         for where in (pie, menu, popup):
             self.assertIn(('hairmesh.reverse_curves', {}), where)
@@ -308,18 +311,18 @@ class TestContextMenus(unittest.TestCase):
             self.assertNotIn(('prop', 'anchor_smooth'), where); self.assertNotIn(('hairmesh.select', {'deselect_all': True}), where)   # (4.3, item 1)
         self.assertIn(('menu', 'HAIRMESH_MT_walls'), pie)
         self.assertIn(('hairmesh.set_head', {}), menu); self.assertIn(('hairmesh.export_project', {}), menu); self.assertIn(('prop', 'live_preview'), menu)
-        self.assertIn(('toggle', 'live_preview'), popup); self.assertIn(('toggle', 'drag_on_head'), popup); self.assertIn(('hairmesh.live_rebuild', {}), popup)
+        self.assertIn(('prop', 'live_preview'), popup); self.assertIn(('prop', 'drag_on_head'), popup); self.assertIn(('hairmesh.live_rebuild', {}), popup)   # (checkboxes since lot 1.2b)
         self.assertEqual([s[0] for s in self.tool.popup_sections(bpy.context)], ['Sub-tool', 'Selection', 'Modifiers', 'Conversion', 'Viewport', 'Project'])
         tabs = self.tool.popup_tabs(bpy.context)
-        self.assertEqual(tabs['SELECTION'][0][0], ('label', A.name, 'CURVE_DATA'), 'the Selection tab: the curve'); self.assertEqual(tabs['SELECTION'][1][0][1], 'Group: (root level)')
-        self.assertEqual(self.ops(tabs['OPTIONS'][0])[:2], [('toggle', 'live_preview'), ('hairmesh.live_rebuild', {})])
-        self.assertEqual(self.ops(tabs['PROJECT'][-3]), [('hairmesh.save_project', {}), ('hairmesh.export_project', {})])
-        self.assertEqual(self.ops(tabs['PROJECT'][-2]), [('hairmesh.import_project', {}), ('hairmesh.new_project', {})])
-        self.assertEqual(self.ops(tabs['PROJECT'][-1]), [('hairmesh.migrate_project', {})], '3.7b: Migrate Hair, a row of its own')
+        self.assertEqual(tabs['SELECTION'][0][0], ('label', A.name, 'CURVE_DATA'), 'the Selection tab: the curve'); self.assertEqual(self.tool.flat_items([tabs['SELECTION'][1]])[0][1], 'Group: (root level)')
+        self.assertEqual(self.ops(tabs['OPTIONS'][0])[:2], [('prop', 'live_preview'), ('hairmesh.live_rebuild', {})])
+        proj = [self.ops(r) for r in tabs['PROJECT'] if r and r[0][0] == 'cols']   # (lot 1.2b: the buttons at the width of their texts, as many to a row as it holds)
+        self.assertEqual([o for r in proj[1:] for o in r], [('hairmesh.save_project', {}), ('hairmesh.export_project', {}), ('hairmesh.import_project', {}), ('hairmesh.new_project', {}), ('hairmesh.migrate_project', {})])
+        self.assertEqual(proj[-1], [('hairmesh.migrate_project', {})], '3.7b: Migrate Hair, a row of its own')
         self.assertEqual(len(self.tool.pie_items(bpy.context)), 8)
         # anchors selected: the anchor pie and menu
         bpy.ops.hairmesh.select(anchor=A.anchors[1].id)
-        pie = self.ops(self.tool.pie_items(bpy.context)); menu = self.ops(self.tool.menu_items(bpy.context)); popup = self.popup(bpy.context)
+        pie = self.ops(self.tool.pie_items(bpy.context)); menu = self.ops(d_items(self.tool, bpy.context)); popup = self.popup(bpy.context)
         for where in (pie, menu, popup):
             self.assertIn(('hairmesh.delete_selected', {'keep_shape': False}), where); self.assertIn(('hairmesh.delete_selected', {'keep_shape': True}), where)
             self.assertIn(('prop', 'anchor_smooth'), where)
@@ -330,13 +333,14 @@ class TestContextMenus(unittest.TestCase):
         self.assertEqual(items[3][0], 'box', 'the N slot: a box with the label and the Smoothness slider')
         self.assertEqual(items[6], ('menu', 'HAIRMESH_MT_anchor_more', 'Weld / Split / Curves', 'DECORATE_KEYFRAME'), "SW: the rest of the original's anchor pie (3.4)")
         self.assertIn('No walls yet: the live preview shows them as they are made.', self.tool.texts(self.tool.popup_tabs(bpy.context)['OPTIONS']), 'part 1 of the lot ux7: the Viewport tab says why Live Preview is dimmed, in the "i" of its row (G2)')
-        labels = [it[1] for it in self.tool.menu_items(bpy.context) if it[0] == 'label' and it[2] != 'BLANK1']   # (BLANK1: the next lines of a wrapped text)
+        labels = [it[1] for it in d_items(self.tool, bpy.context) if it[0] == 'label' and it[2] != 'BLANK1']   # (BLANK1: the next lines of a wrapped text)
         self.maxDiff = None
-        self.assertEqual([l for l in labels if not l.startswith(('Sliders edit', '0 groups · 1 curve', 'Nothing ticked', 'Project defaults', 'No walls yet', 'Drag on Head needs', 'X-ray: no curves', 'in ', 'Recalculate: nothing'))],
-                         ['Sub-tool', 'Selection', 'Anchors Selected: 1', 'Shape', 'Weld / Split / Curves', 'Transform', 'Modifiers', 'Conversion', 'No groups', 'Convert makes no mesh · Sliders edit the project defaults', 'Viewport', 'Project', 'menus', 'Not saved to a .hairmesh yet (Save asks where)', 'Visibility'],
-                         'the tabs of the pop-up in order (U5), the project name in Project, the blocks of the anchors sheet as titles (part 2 of 16/10/2026; the Transform block without its "Gizmo" label since item 8 of the lot after 4.8)')
-        self.assertEqual([it for it in self.tool.menu_items(bpy.context) if it[0] == 'op' and not it[2]], [], 'icon-only buttons of the pop-up get a text in the list')
-        self.assertEqual([it[0] for it in self.tool.menu_items(bpy.context) if it[0] in ('subtool', 'toggle')], [], 'buttons and toggles become operators and checkboxes')
+        self.assertEqual([l for l in labels if not l.startswith(('Sliders edit', '0 groups · 1 curve', 'Nothing ticked', 'Project defaults', 'No walls yet', 'Drag on Head needs', 'X-ray: no curves', 'in ', 'Recalculate: nothing', 'Apply, then edit'))],
+                         ['Sub-tool', 'Selection', 'Anchors Selected: 1', 'Shape', 'Smoothness:', 'Weld / Split / Curves', 'Transform', 'Modifiers', 'Profile:', 'Conversion', 'No groups', 'Convert makes no mesh · Sliders edit the project defaults',
+                          'Loop Step:', 'Deviation:', 'Fix Sharp Angles:', 'Loop Direction:', 'Tips:', 'Relax:', 'Merge Distance:', 'Viewport', 'X-Ray:', 'Guide Opacity:', 'Project', 'menus', 'Not saved to a .hairmesh yet (Save asks where)', 'Visibility'],
+                         'the tabs of the pop-up in order (U5), the project name in Project, the blocks of the anchors sheet as titles (part 2 of 16/10/2026; the Transform block without its "Gizmo" label since item 8 of the lot after 4.8; the "Tips:" label of the Conversion tab on its own split since lot 1.1d; every value named outside its field, in the column of names, since lot 1.2b)')
+        self.assertEqual([it for it in d_items(self.tool, bpy.context) if it[0] == 'op' and not it[2]], [], 'icon-only buttons of the pop-up get a text in the list')
+        self.assertEqual([it[0] for it in d_items(self.tool, bpy.context) if it[0] in ('subtool', 'toggle')], [], 'buttons and toggles become operators and checkboxes')
         # the sub-tool key operators and the Object menu
         self.assertEqual(bpy.ops.hairmesh.subtool_draw(), {'FINISHED'}); self.assertEqual(bpy.context.scene.hairmesh.subtool, 'DRAW')
         self.assertEqual(bpy.ops.hairmesh.subtool_select(), {'FINISHED'}); self.assertEqual(bpy.context.scene.hairmesh.subtool, 'SELECT')

@@ -35,7 +35,7 @@ from . import deferred, draw as drawmod, live, modal_keys, owner, pick, select, 
 from .coords import f32, field_same
 from .ops_draw import NAV_EVENTS
 from .ops_select import PICK_CURVE_PX, View
-from .props import GUIDE_MODES
+from .props import GUIDE_MODES, add_unit_twins
 
 CLICK_PX = 5                                                        # a stroke this short is a click (6026)
 PICK_GUIDE_PX = 7                                                   # pickCurve's 7 px (5674)
@@ -45,10 +45,12 @@ HELP_PICK = '\n'.join(('Click a green guide line (between two curves) or a disc\
                        'Alt + A: clear the selection (in Select a click in the empty space too).',
                        'Shift + right click (the pie): the curves a guide line crosses, the disc of a ring.',
                        'X (it asks first) or Delete: delete the selected guide (the curves stay).'))
+DISC_CTRL_CLICK = "With a disc selected, Ctrl + click a curve or a wall in Select (1), or a row in the HairMesh Outliner (O): its group goes into the disc's Groups list; again: out. (Here in NURBS Disc, Ctrl + click places a disc.)"   # (1.0.2, 7637-7640 / 10040: in Guides the Ctrl + click places a disc first, 7601)
 HELP = {
     'LINE': '\n'.join(('Select curves (1, Select), come back here (4).', 'Drag a line across them: the guide is made where it crosses them (nothing selected: every visible curve).', HELP_PICK)),
     'DISC': '\n'.join(('Click on the hair: a disc goes around the head at that height; the curves through it get a guide loop (green).',
-                       '"Create NURBS Disc": one around the selected curves (or all the hair).', HELP_PICK)),
+                       '"Create NURBS Disc": one around the selected curves (or all the hair).',
+                       DISC_CTRL_CLICK, HELP_PICK)),
     'PENCIL': '\n'.join(('Hold the left button and draw a loop around the hair.', 'Back at the start, or Enter: it closes by itself. Esc cancels.', HELP_PICK)),
 }
 NO_GUIDE_HIT = 'Click on the hair (a wall, the head or a curve) to place the disc'
@@ -86,7 +88,7 @@ def ring_under(P, guides, x, y, project, radius):
 
 def select_ring(sel, ring, add):
     """4.2c, item 5 (ours: the original picks a disc's surface only): a click on a ring selects that ring and its anchors
-    — S.sel = the ring, S.asel = its anchors, as the disc's "Select outer ring" (8936) —, one at a time; Shift adds it
+    — S.sel = the ring, S.asel = its anchors, as the disc's "Select outer ring" (12900) —, one at a time; Shift adds it
     (again: takes it off). Then G / R / S and the gizmo move just that ring."""
     ids = list(dict.fromkeys(a.id for a in ring.anchors))
     if not add:
@@ -133,7 +135,7 @@ def touch_guide(root, P, g, before=()):
 
 def _finish(context, root, P, sel, report, msg, touch=None):
     select.store(context.scene.hairmesh, sel)
-    G.panelsRendered(P, sel.items[len(sel.items) - 1] if sel.items else None)   # onSelChange (7850): the outliner re-rendered
+    G.panelsRendered(P, sel.items[len(sel.items) - 1] if sel.items else None)   # onSelChange (11491): the outliner re-rendered
     session.save_project(root, P)
     if touch is not None:
         live.touch(root, touch)
@@ -142,6 +144,23 @@ def _finish(context, root, P, sel, report, msg, touch=None):
     if msg:
         report({'INFO'}, msg)
     return {'FINISHED'}
+
+
+def disc_excl_click(context, root, P, sel, iid, report):
+    """a NURBS disc selected + Ctrl + click (1.0.2: discExclClick 11458, from the viewport 7637-7640 and the outliner's
+    selectItem 11472) on item iid: its group goes into the disc's Groups list, again out; the selection stays on the
+    disc, the locks it shaped and shapes now are rebuilt, one undo step. False when it does not apply (the click does
+    what it does without a disc)."""
+    d = GT.selectedDisc(P, sel.items)
+    if d is None or iid is None:
+        return False
+    before = guideCurves(P, d)
+    res = GT.discExclClick(P, sel.items, iid, True)
+    if res is None:
+        return False
+    touch_guide(root, P, res['disc'], before)                       # S.surfDirty (10033)
+    _finish(context, root, P, sel, report, res['toast'])
+    return True
 
 
 def created(context, root, P, sel, g, report, msg):
@@ -285,7 +304,7 @@ class HAIRMESH_OT_guide_stroke(bpy.types.Operator):
         from .ops_scissors import matrix_projector
         root, P, sel = select.current(context)
         CM.rebuild_dirty(P)
-        shown = {c.id for c in G.shownCurves(P, sel.items, sel.anchors)[0]}
+        shown = {c.id for c in G.visibleCurves(G.shownCurves(P, sel.items, sel.anchors)[0], sel.items)}   # (createGuide 9559: c.obj.visible)
         x0, y0, x1, y1 = self.stroke
         g, msg = GT.createGuide(P, sel, (x0, y0), (x1, y1), matrix_projector(list(self.view_matrix), tuple(self.region_size), root.matrix_world), lambda c: c.id in shown)
         if g is None:
@@ -333,7 +352,7 @@ class HAIRMESH_OT_disc_create(bpy.types.Operator):
 # ---------------- the pencil ----------------
 
 def cancel_pencil():
-    """cancelPencil (6317): the loop drawn so far goes, and the header and keys that stay between its strokes, which no
+    """cancelPencil (9539): the loop drawn so far goes, and the header and keys that stay between its strokes, which no
     modal ends"""
     global pencil
     was = pencil is not None
@@ -363,7 +382,7 @@ def _pencil_ok(context):
 
 
 def finish_pencil(context, report):
-    """finishPencil (6318) with the loop drawn so far, in the 3D View of `context`: a disc (one undo step) or the toast"""
+    """finishPencil (9540) with the loop drawn so far, in the 3D View of `context`: a disc (one undo step) or the toast"""
     v = View.of(context)
     pc = pencil['pc'] if pencil else None
     cancel_pencil()
@@ -529,7 +548,7 @@ class HAIRMESH_OT_pencil_disc(bpy.types.Operator):
         return created(context, root, P, sel, g, self.report, msg)
 
 
-# ---------------- the guide's panel (guideControls 8843) ----------------
+# ---------------- the guide's panel (guideControls 12807) ----------------
 
 def _guide():
     root, P, sel = select.current(bpy.context)
@@ -722,7 +741,7 @@ class HAIRMESH_OT_guide_excl(bpy.types.Operator):
         ex = [i for i in (g.p.get('excl') or []) if (it := P.items.get(i)) is not None and it.type == 'group']
         if self.remove:
             lst = [i for i in ex if i != self.group]
-        elif self.group in P.items and self.group not in ex:
+        elif GT.canListGroup(P, g, self.group):                    # only what the list's choice offers (11286-11297)
             lst = ex + [self.group]
         else:
             return {'CANCELLED'}
@@ -751,7 +770,7 @@ class HAIRMESH_MT_guide_excl(bpy.types.Menu):
 # ---- the sliders: views on the guide's p (or on S.guideDefaults without a guide), set through deferred.py ----
 
 DEFAULTS = {'radius': None, 'blend': 1.0, 'density': 1.0, 'priority': 0.0}
-ZONE_KEYS = ('radius', 'blend', 'priority')                         # the sliders that flash the zone (showZone 6210)
+ZONE_KEYS = ('radius', 'blend', 'priority')                         # the sliders that flash the zone (showZone 9430)
 
 
 def _target():
@@ -859,6 +878,7 @@ def _radius(which):
 class HairMeshGuideProps(PropertyGroup):
     """The guide's panel (guideControls 8843-8939): on the WindowManager, so the rebuild and the undo step follow the
     slider when it stops or is let go (deferred.py). Views on the model, nothing is stored here."""
+    # (3 decimals on purpose: a share of the head height in steps of 0.005, which 2 decimals would hide)
     guide_radius: FloatProperty(name='Influence Radius', description='Zone along the lock around the guide where the loops become parallel to it, as a share of the head height (green while the guide is selected and for a moment after a change). 0: only the loop on the guide', min=0.0, max=0.5, step=0.5, precision=3, get=_float('radius')[0], set=_float('radius')[1])
     guide_blend: FloatProperty(name='Blend', description='0: every loop in the radius is parallel to the guide (the whole zone light green); higher: from the edge of the radius inwards the loops mix back to their own positions (the zone darkens from its edges). Loop Density and Priority fade the same way', min=0.0, max=1.0, subtype='FACTOR', get=_float('blend')[0], set=_float('blend')[1])
     guide_density: FloatProperty(name='Loop Density', description='More (or fewer) loops inside the zone. ×1: no extra loops, the guide only aligns them. Fades like the guide: Blend 0, the whole zone gets the density; Blend 50 %, mainly round the center, weaker towards the edge', min=0.25, max=5.0, step=5, precision=2, get=_float('density')[0], set=_float('density')[1])
@@ -867,11 +887,20 @@ class HairMeshGuideProps(PropertyGroup):
     guide_excl_mode: EnumProperty(name='Groups', description='Exclude: the guide shapes every lock it crosses except those in the listed groups. Only: it shapes only the locks in the listed groups (an empty list: every lock)',
                             items=(('EXCLUDE', 'Exclude Listed', 'The guide leaves the listed groups alone', 0), ('ONLY', 'Only Listed', 'The guide works only on the listed groups (an empty list: every lock)', 1)),
                             get=_get_excl_mode, set=_set_excl_mode)
-    guide_r_out: FloatProperty(name='Outer Radius', description="The disc's outer ring: every point moves radially by the change, so hand deformations are kept (in the project's units; it stays outside the inner ring)", min=0.0, precision=3, get=_radius('out')[0], set=_radius('out')[1])
-    guide_r_in: FloatProperty(name='Inner Radius', description="The disc's inner ring (the hole): every point moves radially by the change (in the project's units; it stays inside the outer ring)", min=0.0, precision=3, get=_radius('in')[0], set=_radius('in')[1])
+    # (the radii in the project's units: the API of the scripts and the tests; the sheet and the pie draw their display
+    # twins in Blender's unit, props.measure)
+    guide_r_out: FloatProperty(name='Outer Radius', description="Set the disc's outer ring, in the scene's length unit: every point moves radially by the change, so hand deformations are kept (it stays outside the inner ring)", min=0.0, precision=3, get=_radius('out')[0], set=_radius('out')[1])
+    guide_r_in: FloatProperty(name='Inner Radius', description="Set the disc's inner ring (the hole), in the scene's length unit: every point moves radially by the change (it stays inside the outer ring)", min=0.0, precision=3, get=_radius('in')[0], set=_radius('in')[1])
 
 
+add_unit_twins(HairMeshGuideProps, 'guide_r_out', 'guide_r_in')
 GUIDE_ATTRS = frozenset(HairMeshGuideProps.__annotations__)
+
+
+def radius_attr(P, attr):
+    """a disc's radius as its sheet and its pie draw it: the display twin in Blender's unit (props.measure)"""
+    from .props import measure
+    return measure(P, attr)
 
 
 # ---------------- the D and the N: rows (pure lists of items, tool.draw_item draws them) ----------------
@@ -883,7 +912,9 @@ def gprop(attr, text, **opts):
 
 def guide_settings_rows(context, P, g):
     """the sliders of guideControls (8856-8877): Influence Radius, Blend, Loop Density, Priority, Only Its Own Locks"""
-    return [[gprop('radius', 'Influence Radius'), gprop('blend', 'Blend')], [gprop('density', 'Loop Density'), gprop('priority', 'Priority')], [gprop('local', 'Only Its Own Locks')]]
+    from .tool import GAP, field
+    return [[field('Influence Radius', gprop('radius', ''))], [field('Blend', gprop('blend', ''))], [field('Loop Density', gprop('density', ''))],
+            [field('Priority', gprop('priority', ''))], [GAP], [gprop('local', 'Only Its Own Locks')]]
 
 
 def guide_rows(context, P, g, room):
@@ -891,26 +922,27 @@ def guide_rows(context, P, g, room):
     then the disc's radii and Reset, Influence (the sliders) and Groups (Exclude / Only and the list), closed. No
     selection buttons: the original's "Select outer / inner ring" (8936-8937) is a click on the ring, its "Select crossed
     curves" (8941) is in the pie (Shift + RMB)."""
-    from .tool import block, enum, group_label, label_and, text
+    from .tool import GAP, align_fields, block, buttons, enum, field, fitted, group_label, text
     n = len(g.hits) if g.hits else 0
     rows = [[('label', f'{g.name} ({n} curve{"s" if n != 1 else ""})', 'MESH_CIRCLE' if g.kind == 'disc' else 'IPO_LINEAR')],
-            *label_and(group_label(P, g), ('op', 'hairmesh.guide_delete', 'Delete Guide', 'X', {'item': g.id}), room)]
+            [buttons(context, group_label(P, g), ('op', 'hairmesh.guide_delete', 'Delete Guide', 'X', {'item': g.id}))]]
     if g.kind == 'disc':
         # (8923-8939: the radii, Reset deformations; a ring is selected by a click on it — then G / R / S or the gizmo
         # move just that ring)
-        rows.append(block('guide_disc', 'Disc', 'MESH_CIRCLE', [[gprop('r_out', 'Outer Radius'), gprop('r_in', 'Inner Radius')],
-                                                                [('op', 'hairmesh.disc_reset', 'Reset Deformations', 'LOOP_BACK', {})]]))
+        rows.append(block('guide_disc', 'Disc', 'MESH_CIRCLE', [[field('Outer Radius', ('prop', radius_attr(P, 'guide_r_out'), '', {}))],
+                                                                [field('Inner Radius', ('prop', radius_attr(P, 'guide_r_in'), '', {}))],
+                                                                [GAP], [buttons(context, ('op', 'hairmesh.disc_reset', 'Reset Deformations', 'LOOP_BACK', {}))]]))
     rows.append(block('guide_influence', 'Influence', 'PROP_ON', guide_settings_rows(context, P, g)))
     ex = [it for it in (P.items.get(i) for i in (g.p.get('excl') or [])) if it is not None and it.type == 'group']
-    lst = [[enum('guide_excl_mode', 'Mode')]]
+    lst = [[fitted(context, 'Mode', enum('guide_excl_mode', ''))]]
     if not ex:
         lst.append([text('None: the guide shapes every lock it crosses.' if g.p.get('exclMode') != 'only' else 'None: an empty Only list shapes every lock.', 'BLANK1')])
     for it in ex:
         lst.append([('label', it.name, 'OUTLINER_COLLECTION'), ('op', 'hairmesh.guide_excl', '', 'X', {'group': it.id, 'remove': True}, {'list_text': f'Remove {it.name}'})])
     cand = GT.exclusionCandidates(P, g)
-    lst.append([('menu', 'HAIRMESH_MT_guide_excl', 'Add a Group (Only)' if g.p.get('exclMode') == 'only' else 'Exclude a Group', 'ADD', {'active': bool(cand)})])   # (dimmed with the reason in the block's "i" when no group crosses it)
+    lst.append([buttons(context, ('menu', 'HAIRMESH_MT_guide_excl', 'Add a Group (Only)' if g.p.get('exclMode') == 'only' else 'Exclude a Group', 'ADD', {'active': bool(cand)}))])   # (dimmed with the reason in the block's "i" when no group crosses it)
     rows.append(block('guide_groups', 'Groups', 'OUTLINER_COLLECTION', lst, False, None if cand else 'No other group holds curves the guide crosses.'))
-    return rows
+    return align_fields(rows)
 
 
 def ring_rows(context, P, ring, room):
@@ -934,7 +966,7 @@ def guide_pie_items(context, P, g):
     delete = ('op', 'hairmesh.guide_delete', 'Delete Guide', 'X', {'item': g.id})
     if g.kind == 'disc':
         reset = ('op', 'hairmesh.disc_reset', 'Reset Deformations', 'LOOP_BACK', {}) if bpy.ops.hairmesh.disc_reset.poll() else E
-        return [E, E, delete, pie_box(gprop('r_out', 'Outer Radius'), gprop('r_in', 'Inner Radius')), reset, MENU_OP, E, gizmo_slot(context, P)]
+        return [E, E, delete, pie_box(('prop', radius_attr(P, 'guide_r_out'), 'Outer Radius', {}), ('prop', radius_attr(P, 'guide_r_in'), 'Inner Radius', {})), reset, MENU_OP, E, gizmo_slot(context, P)]
     return [E, ('op', 'hairmesh.guide_select_crossed', 'Select Crossed Curves', 'RESTRICT_SELECT_OFF', {}), delete,
             pie_box(gprop('radius', 'Influence Radius'), gprop('density', 'Loop Density')), E, MENU_OP, E, gizmo_slot(context, P)]
 
@@ -954,11 +986,11 @@ def guides_rows(context, room):
     """the Guides' tool panel (renderToolPanel 9015-9025) as rows: the three modes, + Create (NURBS Disc), then the
     selected guide's sheet, or the settings for new guides; the help of the mode (HELP) is the "?" of the D's tab column
     (item 9 of the lot after 4.8: tool.how_to)"""
-    from .tool import BOX_PAD, block, text
+    from .tool import align_fields, block, buttons, text
     hm = context.scene.hairmesh
-    rows = [[('op', 'hairmesh.set_guide_mode', label, icon, {'mode': key}, {'depress': hm.guide_mode == key}) for key, label, _d, icon, _n in GUIDE_MODES]]
+    rows = [[buttons(context, [('op', 'hairmesh.set_guide_mode', label, icon, {'mode': key}, {'depress': hm.guide_mode == key}) for key, label, _d, icon, _n in GUIDE_MODES])]]   # (the modes: a family, joined)
     if hm.guide_mode == 'DISC':
-        rows.append([('op', 'hairmesh.disc_create', 'Create NURBS Disc', 'ADD', {})])
+        rows.append([buttons(context, ('op', 'hairmesh.disc_create', 'Create NURBS Disc', 'ADD', {}))])
     root, P, sel = select.current(context)
     if P is None:
         return rows
@@ -966,7 +998,7 @@ def guides_rows(context, room):
     if g is None:
         rows.append(block('guide_defaults', 'Settings for New Guides', 'PREFERENCES',
                           [[text('Select a guide to edit it; these apply to the guides made next.', 'BLANK1')]] + guide_settings_rows(context, P, None)))
-    return rows
+    return align_fields(rows)
 
 
 def register():

@@ -1,0 +1,35 @@
+{
+  "version": "v1",
+  "blocklist": [],
+  "data": [
+    {
+      "schema_version": "1.0.0",
+      "id": "hairmesh",
+      "name": "HairMesh",
+      "tagline": "Port of Stylized HairMesh Creator by catarackta",
+      "version": "1.1.0",
+      "type": "add-on",
+      "maintainer": "Riel",
+      "license": [
+        "SPDX:GPL-3.0-or-later"
+      ],
+      "blender_version_min": "5.1.0",
+      "website": "https://github.com/riel-gab/hairmesh",
+      "copyright": [
+        "2026 Riel",
+        "2026 catarackta"
+      ],
+      "permissions": {
+        "files": "Import .hairmesh project files"
+      },
+      "tags": [
+        "Modeling",
+        "Object",
+        "Import-Export"
+      ],
+      "archive_url": "./hairmesh-1.1.0.zip",
+      "archive_size": 870032,
+      "archive_hash": "sha256:b4406525c5a3f6d28773e733377c37159bab6d1c61e1733a68d5b37bf3fc2100"
+    }
+  ]
+}

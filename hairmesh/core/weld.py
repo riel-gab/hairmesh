@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Phase 3.4: welding anchors, Y junctions and the anchor pie of the original (hair-modeler.clean.html:4829-5107,
 5487-5625, 7891-7902), the data part. Pure Python, no bpy.
 
@@ -25,32 +25,36 @@ import math
 
 from . import model as M
 from .curves import bez, curveHandles, markAnchorsDirty, sampleCurve
-from .edit import addItem, curvesWith, deleteItem, isRingAnchor, makeCurve, newAnchor, pickHead, removeAnchorFromCurve
+from .edit import addItem, curvesWith, deleteItem, isRingAnchor, makeCurve, newAnchor, newCurveLook, pickHead, removeAnchorFromCurve
 from .geom import polyLen
 from .hairmesh_io import defaultStep
-from .js import at, clamp, index_of, js_hypot, js_max
+from .js import at, clamp, index_of, js_hypot, js_max, truthy
 from .raycast import Ray
 from .rowbase import convOf
 from .vec3 import V3
 
-WELD_PX = 14                                                        # findWeldCandidate (4862): another anchor this close on screen
+WELD_PX = 14                                                        # findWeldCandidate (6349): another anchor this close on screen
 
 
 # ======================= welding (4829-4871) =======================
 
 def sharesCurve(P, a, b):
-    # port of sharesCurve (hair-modeler.clean.html:4860)
+    # port of sharesCurve (hair-modeler.clean.html:7320)
     return any(a in c.anchors and b in c.anchors for c in P.curves())
 
 
 def findWeldCandidate(P, a, anchor_list, screen):
-    """port of findWeldCandidate (hair-modeler.clean.html:4861). `anchor_list` is S.anchorList (edit.anchorList),
+    """port of findWeldCandidate (hair-modeler.clean.html:7321). `anchor_list` is S.anchorList (edit.anchorList),
     `screen(pos)` the projector (toScreen: (x, y[, z]) or None when the point is behind the camera, where the
     original's toScreen would still give a number; such anchors cannot be candidates here). The nearest other anchor
-    within 14 px that shares no curve with `a`, or None. (The two filters run only for an anchor near enough to win —
+    within 14 px that shares no curve with `a`, or None. (The filters run only for an anchor near enough to win —
     the same best, they only skip — lot 4.7b item 5: sharesCurve walks every curve, for every shown anchor, on every
-    move of a drag.)"""
+    move of a drag.) 1.0.2: a flat lock's anchors never weld, nor do others onto them (6346-6351; `rib = {}` counts)."""
     if isRingAnchor(P, a):
+        return None
+    # a flat lock's anchors never weld (nor do others onto them) — attaching to the crown's connector still works (checkAttach)
+    rib_set = {x.id for c in P.curves() if truthy(c.rib) for x in c.anchors}
+    if a.id in rib_set:
         return None
     sa = screen(a.pos)
     if sa is None:
@@ -63,7 +67,7 @@ def findWeldCandidate(P, a, anchor_list, screen):
         if sb is None:
             continue
         d = js_hypot(sa[0] - sb[0], sa[1] - sb[1])
-        if d < bd and not sharesCurve(P, a, b) and not isRingAnchor(P, b):
+        if d < bd and not sharesCurve(P, a, b) and not isRingAnchor(P, b) and b.id not in rib_set:
             bd = d; best = b
     return best
 
@@ -116,7 +120,7 @@ def weldInto(P, a, b):
 
 
 def extendYBranches(P, J):
-    """port of extendYBranches (hair-modeler.clean.html:4936). Y: when the END of a curve is welded to the MIDDLE of
+    """port of extendYBranches (hair-modeler.clean.html:7398). Y: when the END of a curve is welded to the MIDDLE of
     a longer curve, the short one is extended along the long one back to its start: both then share the trunk
     (common anchors) up to the fork, so the Y converts as one merged trunk. The trunk side is the one leading away
     from the short curve's free end. Returns the names of the curves extended."""
@@ -152,7 +156,7 @@ def extendYBranches(P, J):
 
 
 def recalcSilent(P, cs):
-    # port of recalcSilent (hair-modeler.clean.html:4813): handles recalculated without the undo step / toast
+    # port of recalcSilent (hair-modeler.clean.html:7273): handles recalculated without the undo step / toast
     lst = list(dict.fromkeys(a for c in cs if c is not None for a in c.anchors)); ids = {a.id for a in lst}
     for c in P.curves():
         for iid in list(c.ovr.keys()):
@@ -164,7 +168,7 @@ def recalcSilent(P, cs):
 
 
 def weld(P, a, b, before=None):
-    """port of weld (hair-modeler.clean.html:4900): anchor a goes into b everywhere, Y branches ending at b are
+    """port of weld (hair-modeler.clean.html:7364): anchor a goes into b everywhere, Y branches ending at b are
     extended, `before` runs after the weld (recalcSilent of the start + end case), every curve is dirty. Returns the
     names of the extended curves (the toast: "Anchors welded — X extended along the longer curve (Y)"). The caller
     selects b (S.asel = [b]) and commits."""
@@ -276,7 +280,7 @@ def unweldAnchor(P, a, sel_items):
 
 
 def mergeCoincident(P, cs, tol):
-    """port of mergeCoincident (hair-modeler.clean.html:4829): anchors of the given curves that sit at the same
+    """port of mergeCoincident (hair-modeler.clean.html:7290): anchors of the given curves that sit at the same
     place (within tol) welded into one shared anchor; anchors of one curve are never welded to each other. Returns
     how many were merged (0: "No anchors at identical places")."""
     lst = list(dict.fromkeys(a for c in cs for a in c.anchors))
@@ -303,7 +307,7 @@ def junctionNeighbours(P, a):
 
 
 def junctionChoices(P, a):
-    """port of junctionChoices (hair-modeler.clean.html:4987), the list part: the pie items "<curve> — smooth
+    """port of junctionChoices (hair-modeler.clean.html:7450), the list part: the pie items "<curve> — smooth
     through" as (label, pair) for every curve using the anchor, and ('↺ Automatic', None) when a.pass is set; empty
     with fewer than 3 directions. setPass applies a choice."""
     nb = junctionNeighbours(P, a)
@@ -407,6 +411,7 @@ def splitAtAnchor(P, J, silent=False):
             for t in P.tubes():
                 if t.src == b.id:
                     t.src = a.id
+            P.merged_into[b.id] = a.id                              # 6537: (cutCurves finds the piece that stays)
             deleteItem(P, b.id)
     _dropDuplicateWalls(P)
     out = [i for i in ids if i in P.items]
@@ -421,13 +426,13 @@ def splitAtAnchor(P, J, silent=False):
 # ======================= new curves from anchors (5487-5531) =======================
 
 def curveThroughAnchors(P, lst):
-    """port of curveThroughAnchors (hair-modeler.clean.html:5487): a new free curve through the selected anchors in
+    """port of curveThroughAnchors (hair-modeler.clean.html:8245): a new free curve through the selected anchors in
     the order they were picked: new anchors at their places, welded to nothing, at the top level. Returns the curve,
     or None with fewer than two distinct places ("Pick at least two anchors in different places")."""
     pts = [a for i, a in enumerate(lst) if i == 0 or a.pos.distanceToSquared(lst[i - 1].pos) > 1e-12]
     if len(pts) < 2:
         return None
-    c = makeCurve(P, None)
+    c = newCurveLook(makeCurve(P, None))                            # 1.0.2 (curveThroughAnchors, 8245)
     for a in pts:
         n = newAnchor(P, a.pos.clone()); n.smooth = a.smooth; c.anchors.append(n)
     c.dirty = True
@@ -436,7 +441,7 @@ def curveThroughAnchors(P, lst):
 
 
 def nearestT(c, p):
-    # port of nearestT (hair-modeler.clean.html:7370): arc fraction of the point of curve c nearest to p
+    # port of nearestT (hair-modeler.clean.html:10980): arc fraction of the point of curve c nearest to p
     s = c.samples; L = c.arc
     if not L or len(s) < 2:
         return 0
@@ -451,7 +456,7 @@ def nearestT(c, p):
 
 
 def curveBetween(P, a, b, target_group=None, head_visible=True):
-    """port of curveBetween (hair-modeler.clean.html:5496): a new curve between two anchors, welded to both (a middle
+    """port of curveBetween (hair-modeler.clean.html:8253): a new curve between two anchors, welded to both (a middle
     anchor keeps it off the head). As long as the curves it joins, with common trunks: it starts at the root of the
     curve whose anchor lies nearer its root, runs along it to that anchor, across to the other anchor and on along
     the other curve to its end. `target_group` is the original's targetGroup() (the group of the selection), used
@@ -460,7 +465,7 @@ def curveBetween(P, a, b, target_group=None, head_visible=True):
     if a is b:
         return None
     host = next((c for c in curvesWith(P, a) if not c.ring), None) or next((c for c in curvesWith(P, b) if not c.ring), None)
-    c = makeCurve(P, host.parent if host else target_group)
+    c = newCurveLook(makeCurve(P, host.parent if host else target_group))   # 1.0.2 (curveBetween, 8253)
     mid = a.pos.clone().add(b.pos).multiplyScalar(0.5)
     if P.head is not None and P.head.visible and head_visible:
         d = mid.clone().sub(P.S.center)
@@ -507,7 +512,7 @@ def curveBetween(P, a, b, target_group=None, head_visible=True):
 # ======================= optimize anchors (5532-5625) =======================
 
 def distToSeg(p, a, b):
-    # port of distToSeg (hair-modeler.clean.html:5532)
+    # port of distToSeg (hair-modeler.clean.html:8290)
     ab = b.clone().sub(a); l2 = ab.lengthSq()
     t = clamp(p.clone().sub(a).dot(ab) / l2, 0, 1) if l2 > 0 else 0
     return a.clone().addScaledVector(ab, t).distanceTo(p)
@@ -518,7 +523,7 @@ def _cloneOvr(m):
 
 
 def optimizeAnchors(P, cs, only=None):
-    """port of optimizeAnchors (hair-modeler.clean.html:5546), run to the end (the original slices it with
+    """port of optimizeAnchors (hair-modeler.clean.html:8304), run to the end (the original slices it with
     longTask so Esc can stop it; here it is synchronous). Removes anchors one by one (the one changing the shape
     least first) while the curve stays within a small tolerance of its original shape (the larger of 0.3 % of its
     length and 3 % of its loop step). Attached anchors, curve ends and junctions stay. An anchor inside a common

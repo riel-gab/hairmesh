@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
-"""Step 4.6b (D4.6): the profile editor's rules — a port of profileEditor (hair-modeler.clean.html:6824) without the
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+"""Step 4.6b (D4.6): the profile editor's rules — a port of profileEditor (hair-modeler.clean.html:10167) without the
 canvas: the frame's scale and the screen <-> profile mapping, the point under the pointer, the snap of Shift, the
 glued points that move together (Ctrl: one alone), the glue to a neighbour within 8 px, a point added on the nearest
 edge (RMB) and one deleted (double click). Screen coordinates are the frame's own: x to the right, y DOWN, in pixels
@@ -27,7 +27,7 @@ def scale(W=FRAME_W, H=FRAME_H):
 
 
 def to_screen(q, W=FRAME_W, H=FRAME_H):
-    """toS (6830): a profile point -> frame pixels (y down)"""
+    """toS (10173): a profile point -> frame pixels (y down)"""
     sc = scale(W, H)
     return (W / 2 + q[0] * sc, H / 2 - q[1] * sc)
 
@@ -59,15 +59,16 @@ def press(pts, i, ctrl, glue=True):
     return gluedRun(pts, i) if glue and not ctrl else [i]
 
 
-def move(pts, group, sx, sy, shift, ctrl, glue=True, W=FRAME_W, H=FRAME_H):
+def move(pts, group, sx, sy, shift, ctrl, glue=True, W=FRAME_W, H=FRAME_H, skip=()):
     """a drag step (6880-6891): the moved run's points go to the pointer (snapped with Shift); without Ctrl, the
-    neighbour before its first point or after its last within GLUE_PX takes it over (the points glue)"""
+    neighbour before its first point or after its last within GLUE_PX takes it over (the points glue). `skip` (ours,
+    lot 1.0.3): points that move along with the run (move_many), never a neighbour to glue to"""
     n = len(pts)
     q = snap(to_profile(sx, sy, W, H), shift)
     if glue and not ctrl:
         x, y = to_screen(q, W, H)
         for k in ((group[0] - 1 + n) % n, (group[len(group) - 1] + 1) % n):
-            if k in group:
+            if k in group or k in skip:
                 continue
             kx, ky = to_screen(pts[k], W, H)
             if js_hypot(kx - x, ky - y) < GLUE_PX:
@@ -104,3 +105,88 @@ def insert_three(P, k, bi, s, q):
 def can_delete(pts):
     """a double click deletes a point only while the profile keeps at least 3 (6903)"""
     return len(pts) > 3
+
+
+# ---- the selection (lot 1.0.2, ours: the original's click only drags, 6853-6897; docs/features-adicionadas.md) ----
+# A point is (frame k, index i); a modifier's three profiles share their indices (insert_three, a delete from all three).
+
+def select_press(sel, p, shift):
+    """a press on point p -> (selection, what the release does): an unselected point is selected at once (alone, or
+    added with Shift) so a drag moves the point shown selected; on a selected one the release decides (select_release)"""
+    if p not in sel:
+        return ([*sel, p] if shift else [p]), None
+    return list(sel), ('toggle' if shift else 'only', p)
+
+
+def select_release(sel, pending):
+    """a release without a drag: Shift+click on a selected point takes it out (Blender's toggle); a click alone keeps
+    only it"""
+    if pending is None:
+        return list(sel)
+    how, p = pending
+    return [q for q in sel if q != p] if how == 'toggle' else [p]
+
+
+def delete_points(Ps, idx, sel):
+    """X / Delete on the selected points (and the double click, one index): the indices go from every profile of Ps;
+    None (nothing done) when a profile would keep fewer than 3 (6903); else the selection left, its indices moved down"""
+    idx = sorted(set(idx))
+    if not idx or any(len(A) - len(idx) < 3 for A in Ps):
+        return None
+    for A in Ps:
+        for i in reversed(idx):
+            A.pop(i)
+    gone = set(idx)
+    return [(k, i - sum(1 for d in idx if d < i)) for k, i in sel if i not in gone]
+
+
+def insert_selection(sel, bi, k):
+    """a point inserted at bi + 1 of frame k (RMB): the new point is the selection"""
+    return [(k, bi + 1)]
+
+
+# ---- the drag of the selection (lot 1.0.3, ours: the original drags one point, 6863-6891) ----
+
+def drag_group(pts, sel, k, i, ctrl, glue=True):
+    """the press on point i of frame k that may become a drag, after select_press: (group, others). `group` is the run
+    press() moves to the pointer, as the original's drag of one point; `others`, the other selected points of frame k
+    (with their glued runs; Ctrl: each alone, as press()), which move by the same offset. Selected points of the other
+    frames stay. Empty when point i is not selected or is the only selected point of frame k: the drag of one point"""
+    group = press(pts, i, ctrl, glue)
+    if (k, i) not in sel:
+        return group, []
+    others = []
+    for kk, j in sel:
+        if kk != k or j in group or j in others or not 0 <= j < len(pts):
+            continue
+        for m in press(pts, j, ctrl, glue):
+            if m not in group and m not in others:
+                others.append(m)
+    return group, others
+
+
+def drag_start(pts, i, others):
+    """where the dragged point and the others were at the press (move_many measures the offset from them)"""
+    return {j: list(pts[j]) for j in (i, *others)}
+
+
+def move_many(pts, i, group, others, start, sx, sy, shift, ctrl, glue=True, W=FRAME_W, H=FRAME_H):
+    """a drag step of the selection: `group` (point i's run) as move() does — to the pointer, snapped with Shift, glued
+    to a neighbour that does not move —; each of `others` from where it was at the press by the offset point i made.
+    The frame's bounds (to_profile's) hold for every point: the offset is cut so that none leaves it, and the whole
+    selection stops at the edge, its shape kept (a point clamped alone would land on a neighbour clamped to the same
+    edge, and the two would stay glued). Without others, move() itself (bit for bit)"""
+    q = move(pts, group, sx, sy, shift, ctrl, glue, W, H, skip=others)
+    if others:
+        a = start[i]
+        dx = q[0] - a[0]; dy = q[1] - a[1]
+        cx = clamp(dx, min(0, max(-1.2 - start[j][0] for j in others)), max(0, min(1.2 - start[j][0] for j in others)))   # (min / max with 0: a point already outside, from a file, never turns the bounds round)
+        cy = clamp(dy, min(0, max(-1.1 - start[j][1] for j in others)), max(0, min(1.1 - start[j][1] for j in others)))
+        if cx != dx or cy != dy:                                    # (an offset in [dx, 0] keeps point i inside too)
+            q = [clamp(a[0] + cx, -1.2, 1.2), clamp(a[1] + cy, -1.1, 1.1)]   # (the clamp: a rounding past the edge)
+            for g in group:
+                pts[g] = list(q)
+        for j in others:
+            b = start[j]
+            pts[j] = [clamp(b[0] + cx, -1.2, 1.2), clamp(b[1] + cy, -1.1, 1.1)]   # (the clamp: a rounding past the edge)
+    return q

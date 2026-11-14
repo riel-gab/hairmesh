@@ -52,13 +52,16 @@ For picking and moving anchors, curves, walls, guides, crowns and converted mesh
 - **C** is Circle Select.
 - **G**, **R**, **S** move, rotate and scale the selection (anchors, curves, walls or groups). Converted meshes in the
   selection move with it. X, Y and Z lock an axis; type a value; **Esc** cancels.
+- **E** extrudes a curve from its selected first or last anchor: a new anchor follows the mouse as with **G**. Click
+  confirms; **Esc** or right-click takes it away. An end shared with another curve does not extrude: the status bar
+  says why.
 - **F** frames the selection.
 
 **Drag on Head** (Viewport tab) makes dragged anchors follow the head surface all the time.
 
 ### The gizmo
 
-Press **E** for the Move gizmo on the selection. The **Gizmo** menu (bottom right of the Shift+RMB pie, when the
+Press **W** for the Move gizmo on the selection. The **Gizmo** menu (bottom right of the Shift+RMB pie, when the
 selection can move) and the **Transform** block of the sheets also have the Rotate and Scale gizmos, **World** or
 **Local** axes, **Lock X / Y / Z**, and **Duplicate**. While dragging a handle, **Ctrl** scales uniformly and **Shift**
 gives finer steps.
@@ -99,8 +102,8 @@ To join two strokes with a wall, select both, then **Walls / Lock** in the Shift
 For cutting. Press **3** or **K**. The header and the page have two modes.
 
 - **Curve:** pick curves (click, or select them before), then drag a line across them. A pie asks how: **Split into Two
-  Curves**, **Split, Delete the Upper Part**, or **Split, Delete the Lower Part**. The shape is kept. The walls of the
-  cut curves are deleted; make new ones from the pieces.
+  Curves**, **Split, Delete the Upper Part**, or **Split, Delete the Lower Part**. The shape is kept. A wall between
+  two cut curves is cut too (cut the whole lock and it stays a lock); a wall with only one of its curves cut is deleted.
 - **Wall:** click the wall to cut. Click one of its curves where the cut starts, click on the wall to add anchors, and
   click its other curve to end the cut. Press **Enter** (or Shift+RMB > **Cut**) to split the wall in two along a new
   curve. **Backspace** removes the last anchor; **Esc** cancels.
@@ -163,10 +166,13 @@ Press **6** to open the HairMesh Menu on the **Modifiers** tab, with any sub-too
 Open it with the **Edit Profile** icon on the Profile page, or **Edit Profiles** on the sheet of a Profile modifier. It
 draws one frame over the viewport for the page's profile, or three (Start, Middle, End) for a modifier.
 
-- Drag a point to move it. **Shift** snaps to a grid.
+- Click a point to select it: it turns orange and gets a white ring. **Shift+click** adds it to the selection or takes
+  it out, and a click on nothing inside a frame deselects. Drag a point to move it (**Shift** snaps to a grid).
 - Points that come close stick together; **Ctrl+drag** pulls them apart.
-- Right-click an edge to add a point. Double-click a point, or press **X**, to delete it.
-- **Ctrl+Z** and **Ctrl+Shift+Z** undo and redo inside the editor.
+- Right-click an edge to add a point; the new point becomes the selection. Double-click a point to delete it, or press
+  **X** or **Delete** to delete the selected points (with none selected, the point under the pointer). A profile keeps
+  at least 3 points.
+- **Ctrl+Z** and **Ctrl+Shift+Z** undo and redo inside the editor, with the selection each edit had.
 - **Enter**, **Esc** or a click outside closes it.
 
 ### Extras and the weight brush
@@ -198,7 +204,7 @@ Blender while a pop-up is open). The tabs on the left:
   is selected: anchors, curves, a wall, a group, a guide, a crown, a mesh. With nothing selected: **New Group**.
 - **Modifiers:** Profile, Extra and Topology.
 - **Conversion:** the ticked groups, the sliders, **Convert**, **Confirm**, **Cancel**, **Live**, **Baked**.
-- **Viewport:** **Live Preview**, **Drag on Head**, **X-ray** and **Guide Opacity**.
+- **Viewport:** **Live Preview**, **Drag on Head**, **X-Ray** and **Guide Opacity**.
 - **Project:** the project's file, **Set Head**, **Save** / **Save As...**, **Import...**, **New...**, **Migrate Hair
   from .hairmesh...**.
 

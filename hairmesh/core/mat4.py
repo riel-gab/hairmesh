@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
-"""three.js r160 Matrix4 / Matrix3 / Quaternion, the parts the anchor gizmo uses (gizmoMatrix, 4592; the drag's
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+"""three.js r160 Matrix4 / Matrix3 / Quaternion, the parts the anchor gizmo uses (gizmoMatrix, 6605; the drag's
 objectChange, 4660), in the same operation order, so a drag gives the same bits as the original.
 
 Elements are column-major lists, as three's `elements`. Pure Python, no bpy."""
@@ -36,7 +36,7 @@ class Quat:
         return self
 
     def setFromUnitVectors(self, vFrom, vTo):
-        # port of Quaternion.setFromUnitVectors (three/src/math/Quaternion.js r160; the tube's framesAlong, 6385):
+        # port of Quaternion.setFromUnitVectors (three/src/math/Quaternion.js r160; the tube's framesAlong, 9607):
         # assumes direction vectors vFrom and vTo are normalized. The zeros are float (+0): JS has no int zero
         r = vFrom.dot(vTo) + 1
         if r < EPSILON:

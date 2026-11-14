@@ -6,23 +6,23 @@ kept in step by sync_collections after every group operator, where the converted
 the group land. The SELECTED group is part of the selection (S.sel), as the original selects a group in its
 outliner (since 15/10/2026, U1 of docs/fase-3-ux-revisao.md; from 3.2 to 3.6 the active collection stood for it):
 the Group section of the pies, the HairMesh Menu and the N panel shows the last selected item when it is a group
-(renderProps 8645), new curves are drawn into the group of the selection (targetGroup 4729, ops_draw), and the
-curves of a group in 'auto' mode show while something inside it is selected (activeGroups, 11905). The active
+(renderProps 8645), new curves are drawn into the group of the selection (targetGroup 6748, ops_draw), and the
+curves of a group in 'auto' mode show while something inside it is selected (activeGroups, 16431). The active
 collection means nothing to the add-on any more.
 
   hairmesh.add_group (name, parent)      "Create empty group" (the pie, 7919): a group under the selected one (or at the
                                         root), ticked for conversion, selected
-  hairmesh.select_group (group, extend)  selects a group (the outliner click of the original: selectItem 7844; -1 clears
+  hairmesh.select_group (group, extend)  selects a group (the outliner click of the original: selectItem 11472; -1 clears
                                         the selection: the root level)
   (rename: hairmesh.rename_item of ops_outliner, the one rename of every item — U6, 16/10/2026)
   hairmesh.delete_group                  deleteSelected (8106) on the selected group: it and everything inside; its
                                         parent group is selected afterwards
-  hairmesh.move_to_group (group)         moveItems (8568, 'into' / 'root') of the selected curves and walls; the
+  hairmesh.move_to_group (group)         moveItems (12476, 'into' / 'root') of the selected curves and walls; the
                                         HAIRMESH_MT_move_to_group submenu lists the root and every group; since
                                         16/10/2026 (U3) the curves and the walls between them go together
                                         (with_walls, groups.itemsToMoveTogether), unless switched off
-  hairmesh.match_project_step            "Match project loop step" (matchProjectStep, 1661) of the selected group
-  hairmesh.detach_group                  "Detach from neighboring groups" (detachGroup, 3001) of the selected group
+  hairmesh.match_project_step            "Match project loop step" (matchProjectStep, 1833) of the selected group
+  hairmesh.detach_group                  "Detach from neighboring groups" (detachGroup, 4272) of the selected group
   hairmesh.tick_group (group, on)        the Conversion list's checkbox (9036): S.convChecked
   hairmesh.tick_all (on) / tick_top      ours: Tick Every Group / Uncheck All, Tick Top Groups (U7 C)
   hairmesh.clear_group_color (group)     "Reset color" of the group panel (8649; the RMB on the outliner's swatch, 8503:
@@ -190,7 +190,7 @@ class HAIRMESH_OT_add_group(bpy.types.Operator):
 
     def execute(self, context):
         root, P, sel = select.current(context)
-        parent = None if self.parent == -2 else self.parent if self.parent >= 0 else select.target_group(P, sel)   # targetGroup (4729)
+        parent = None if self.parent == -2 else self.parent if self.parent >= 0 else select.target_group(P, sel)   # targetGroup (6748)
         if parent is not None and (parent not in P.items or P.items[parent].type != 'group'):
             self.report({'ERROR'}, f'No group {parent} in the project')
             return {'CANCELLED'}
@@ -228,7 +228,7 @@ class HAIRMESH_OT_select_group(bpy.types.Operator):
         if gid is None:
             sel.box([], False)                                      # a click in the void: nothing selected
         else:
-            sel.select_item(gid, self.extend)                       # selectItem (7844)
+            sel.select_item(gid, self.extend)                       # selectItem (11472)
         G.panelsRendered(P, select.selected_group(P, sel).id if select.selected_group(P, sel) is not None else None)   # the group's panel fills its conv (8668)
         select.store(context.scene.hairmesh, sel)
         session.save_project(root, P)
@@ -259,7 +259,7 @@ class HAIRMESH_OT_delete_group(bpy.types.Operator):
             self.report({'INFO'}, NO_GROUP)
             return {'CANCELLED'}
         name = g.name; parent = g.parent
-        edit.deleteItem(P, g.id); G.panelsRendered(P, parent)
+        edit.deleteItem(P, g.id); edit.dropOrphanServiceCurves(P); G.panelsRendered(P, parent)   # (deleteSelected 10408-10414)
         return _finish(context, root, P, Selection([parent] if parent is not None else [], []), self.report, f'Group "{name}" deleted')   # (S.surfDirty: the locks that lost walls are rebuilt by themselves)
 
 
@@ -436,7 +436,7 @@ class HAIRMESH_OT_match_project_step(bpy.types.Operator):
             self.report({'INFO'}, match_done(P, g))
             return {'CANCELLED'}
         st = G.matchProjectStep(P, g); G.panelsRendered(P, g.id)
-        return _finish(context, root, P, None, self.report, f'"{g.name}": loop step {st:.3g} (project)', touch=[c.id for c in G.curvesIn(P, g)])
+        return _finish(context, root, P, None, self.report, f'"{g.name}": loop step {step_text(st, root)} (project)', touch=[c.id for c in G.curvesIn(P, g)])
 
 
 class HAIRMESH_OT_detach_group(bpy.types.Operator):
@@ -560,7 +560,7 @@ class HAIRMESH_OT_tick_group(bpy.types.Operator):
             G.tickGroup(P, g, (g.id not in P.settings.convChecked) if self.toggle else self.on)
         t = G.convTargets(P)
         if t:
-            G.groupConv(P, t[0])                                    # syncConvUI (9097)
+            G.groupConv(P, t[0])                                    # syncConvUI (13177)
         session.save_project(root, P)
         select.redraw(context)
         return {'FINISHED'}
@@ -600,7 +600,7 @@ class HAIRMESH_OT_tick_all(bpy.types.Operator):
         G.tickAll(P, self.on)
         t = G.convTargets(P)
         if t:
-            G.groupConv(P, t[0])                                    # syncConvUI (9097)
+            G.groupConv(P, t[0])                                    # syncConvUI (13177)
         session.save_project(root, P)
         select.redraw(context)
         return {'FINISHED'}
@@ -634,7 +634,7 @@ class HAIRMESH_OT_tick_top(bpy.types.Operator):
         G.tickTop(P)
         t = G.convTargets(P)
         if t:
-            G.groupConv(P, t[0])                                    # syncConvUI (9097)
+            G.groupConv(P, t[0])                                    # syncConvUI (13177)
         session.save_project(root, P)
         select.redraw(context)
         return {'FINISHED'}
@@ -715,8 +715,56 @@ class HAIRMESH_OT_step_from_object(bpy.types.Operator):
         from .coords import f32
         h = f32(h)
         t = G.setConv(P, 'step', h)
-        return _finish(context, root, P, None, self.report, f'Loop step = {h:.3g}' + (f' ({len(t)} ticked group{"s" if len(t) != 1 else ""})' if t else ' (project default)'),
+        return _finish(context, root, P, None, self.report, f'Loop step = {step_text(h, root)}' + (f' ({len(t)} ticked group{"s" if len(t) != 1 else ""})' if t else ' (project default)'),
                        touch=[c.id for c in P.curves()])            # the project loop step: every lock without a step of its own reads it
+
+
+class HAIRMESH_OT_merge_dist_auto(bpy.types.Operator):
+    """Set the merge distance back to Auto: a quarter of the loop step"""
+    bl_idname = 'hairmesh.merge_dist_auto'
+    bl_label = 'Merge Distance Auto'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if not _poll(context):
+            return False
+        from . import tool
+        P = session.get_project(session.find_root(context))
+        if P is not None and G.convUnchanged(P, 'mergeDist', None):
+            cls.poll_message_set(tool.MERGE_AUTO_ALREADY)               # (nothing to set back: the button is disabled)
+            return False
+        return True
+
+    @classmethod
+    def description(cls, context, properties):
+        try:
+            from . import tool
+            P = session.get_project(session.find_root(context))
+            why = tool.merge_auto_why(P) if P is not None else None
+            if why:
+                return why                                          # (dimmed: why, tool.merge_auto_why)
+        except Exception:                                           # (a tooltip must never raise)
+            pass
+        return cls.__doc__
+
+    def invoke(self, context, event):
+        from . import tool
+        P = session.get_project(session.find_root(context))
+        why = tool.merge_dist_why(P) if P is not None else None
+        if why:                                                     # (dimmed: the click only says why, lot 1.2c, item 6)
+            self.report({'INFO'}, why)
+            return {'CANCELLED'}
+        return self.execute(context)
+
+    def execute(self, context):
+        # port of btnMergeAuto (hair-modeler.clean.html:11579): setConv('mergeDist', null)
+        from . import tool
+        root = session.find_root(context); P = session.get_project(root)
+        G.setConv(P, 'mergeDist', None)
+        why = tool.merge_dist_why(P)                                # (a script's call sets it, as the field: and says why it changes nothing now)
+        _finish(context, root, P, None, self.report, 'Merge distance: Auto (a quarter of the loop step)' + (f'. {why}' if why else ''))
+        return {'FINISHED'}
 
 
 def object_height(root, ob):
@@ -752,7 +800,7 @@ def move_to_group_items(P, current=None):
 
 
 def where_in(P, g, via):
-    """U7 A: where the walls lying directly in g go inside the mesh of `via` (groups.convUnit, mergeUnits 9987):
+    """U7 A: where the walls lying directly in g go inside the mesh of `via` (groups.convUnit, mergeUnits 14220):
     ('merged', None) with the rest, ('apart', None) a piece of its own, ('with', X) in the piece of the sub-group X"""
     unit = G.convUnit(P, g, via)
     return ('merged', None) if unit is None else ('apart', None) if unit is g else ('with', unit)
@@ -795,12 +843,12 @@ def pieces_text(P, g):
 
 
 def tick_item(P, g, state='ticked', via=None, inside=0, makes=True):
-    """one group's checkbox of the Conversion list (renderConvList, 9030): its name, its wall count and, since U4
+    """one group's checkbox of the Conversion list (renderConvList, 13032): its name, its wall count and, since U4
     (15/10/2026), its own loop step — "≠" when it differs from the project's. Part 2 of the second manual test of
     21/10/2026 (ours): a group included through a ticked group above (convTree 'via': the sliders edit it, Convert
     puts it in that group's mesh) shows its box ticked and dimmed with "(via <group>)" — it cannot be left out while
     that group is ticked; a ticked group under a ticked one says "(own mesh)", as the original converts it on its
-    own (collect, 9133). `inside`: the groups ticked inside it while it is drawn closed (the row says so).
+    own (collect, 13214). `inside`: the groups ticked inside it while it is drawn closed (the row says so).
     U7 A (ours), short enough for a row (Blender cuts the end of a long one): the group that makes a mesh says once
     what happens to the sub-groups that come with it (pieces_text: "· sub-groups merged", "· sub-groups apart" for a
     Container, "· N pieces" when a Container further down splits them), an included Container says its sub-groups
@@ -813,10 +861,12 @@ def tick_item(P, g, state='ticked', via=None, inside=0, makes=True):
     return (op[0], op[1], text, *op[3:])
 
 
-def step_text(st):
-    """a loop step as the lists show it: three significant digits, a whole number from 1000 on (never 1.55e+03:
-    the review of part 2 of the lot ux7)"""
-    return f'{st:.0f}' if abs(st) >= 1000 else f'{st:.3g}'
+def step_text(st, root=None):
+    """a loop step (in the project's units) as the lists and Match Project show it: as its field writes it, in
+    Blender's unit (props.length_text: the root Empty's scale, Scene > Units; `root`: the project's, else the current
+    one)"""
+    from .props import length_text
+    return length_text(st, root)
 
 
 def wall_counts(P):
@@ -864,7 +914,7 @@ class HAIRMESH_OT_apply_symmetry(bpy.types.Operator):
     bl_label = 'Apply Symmetry'
     bl_options = {'REGISTER', 'UNDO'}
 
-    # 4.10 (D4.10): applySymmetry (9858), the group panel's "Apply symmetry" (8689: disabled while the symmetry is off)
+    # 4.10 (D4.10): applySymmetry (14074), the group panel's "Apply symmetry" (8689: disabled while the symmetry is off)
     @classmethod
     def poll(cls, context):
         if not (owner.visible(context) and session.find_root(context) is not None):
@@ -897,7 +947,7 @@ class HAIRMESH_OT_apply_symmetry(bpy.types.Operator):
 
 _CLASSES = (HAIRMESH_OT_apply_symmetry, HAIRMESH_OT_add_group, HAIRMESH_OT_select_group, HAIRMESH_OT_delete_group, HAIRMESH_OT_move_to_group, HAIRMESH_OT_parent_to_last, HAIRMESH_OT_unparent,
             HAIRMESH_OT_match_project_step, HAIRMESH_OT_detach_group, HAIRMESH_OT_tick_group, HAIRMESH_OT_tick_all, HAIRMESH_OT_tick_top, HAIRMESH_OT_clear_group_color,
-            HAIRMESH_OT_step_from_object)
+            HAIRMESH_OT_step_from_object, HAIRMESH_OT_merge_dist_auto)
 
 
 def register():

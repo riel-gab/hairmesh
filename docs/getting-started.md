@@ -8,12 +8,22 @@ author's permission. It needs Blender 5.1 or later.
 
 ## 1. Install
 
-Pick one:
+1. Download `hairmesh-<version>.zip` from the [Releases](https://github.com/riel-gab/hairmesh/releases) page.
+2. In Blender, open Edit > Preferences > Get Extensions, open the drop-down menu at the top right, choose
+   **Install from Disk** and pick the zip. You can also drag the zip into the Blender window and confirm.
 
-- **From extensions.blender.org.** Open Edit > Preferences > Get Extensions, search for **HairMesh** and click
-  Install. Blender then keeps it up to date.
-- **From the zip.** Download `hairmesh-<version>.zip` from the
-  [Releases](https://github.com/riel-gab/hairmesh/releases) page, drag it into the Blender window and confirm.
+Blender does not update a zip installed from disk: to update it, download the new zip and install it the same way.
+
+To have Blender look for new versions instead:
+
+1. In Edit > Preferences > System, turn on **Allow Online Access**.
+2. In Edit > Preferences > Add-ons > HairMesh, click **Enable Updates** (in the Updates box). The HairMesh repository
+   is added to Get Extensions and Blender checks it at every start-up. To check it now, open Get Extensions, the
+   drop-down menu at the top right, and choose **Refresh Remote**. When it lists a newer version, the Updates box says
+   so, with a button to Get Extensions.
+3. Blender updates an extension only from the repository it was installed from. If you installed the zip, uninstall
+   HairMesh once in Get Extensions and install it again from the HairMesh repository listed there; from then on,
+   Get Extensions updates it.
 
 ## 2. Turn the tool on
 

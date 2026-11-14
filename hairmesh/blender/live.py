@@ -3,7 +3,7 @@
 """The live preview of the walls (D4): one regenerable, unselectable Mesh object per group, "<group> live", holding
 the grids of the group's walls (surfaceData), rebuilt from the row tables after every edit. The row tables are
 kept per root (session.state) so a rebuild after an edit is incremental (buildRowTables(changed, ctx)), like the
-original's frame loop; and, as the original's rebuildSurfaces (2950), only the walls whose lock was rebuilt
+original's frame loop; and, as the original's rebuildSurfaces (4221), only the walls whose lock was rebuilt
 (LOCKS_REBUILT) or that are dirty themselves (a setting changed) get their grid computed again: the others keep
 theirs (session.state['grids']). Every grid carries a revision (state['grid_rev']) and every live mesh remembers the
 revisions it was built from — on the mesh datablock itself (SHOWN_KEY), so an undo that restores the mesh restores
@@ -47,7 +47,7 @@ leave the preview standing.
 
 With the preview off (Scene.hairmesh.live_preview, the original's "NURBS" toggle, S.showSurfaces 11327) the
 "<group> live" objects are hidden and not refilled, but the grids are still computed after every edit, as the
-original's frame loop rebuilds the surfaces whether they are shown or not (rebuildSurfaces, 12073): the selected
+original's frame loop rebuilds the surfaces whether they are shown or not (rebuildSurfaces, 16639): the selected
 wall's outline (draw.py) and the wall picking (pick.wall_under) read the same cache, so both work without the mesh
 (1a of the manual test of 15/10/2026; the toggle's "no object" side is ours: docs/features-adicionadas.md).
 
@@ -56,6 +56,7 @@ modifiers' own vertices), only while the weight brush runs: nothing is drawn ove
 the mesh has (a surface on top of it fought it where the twist and the mask moved the rings) and the wire stays on top.
 
 In background mode timers never fire: update() is synchronous there as everywhere else."""
+import hashlib
 import itertools
 import json
 import time
@@ -148,6 +149,7 @@ def estimate(root, P):
     ids = set(SC.changed_since(P, st['built'], st.get('built_walls') or {}, st.get('built_guides') or {}, st.get('touched') or (), st.get('built_crowns') or {}))
     ids.update(c.id for c in P.curves() if c.dirty)
     bg = st.get('built_guides') or {}
+    ids = {i for i in ids if not SC.offRing(P, i)}                  # (a ring of a switched-off disc shapes nothing: offRing, 1.0.2)
     for g in P.guides():
         if g.kind == 'disc' and any(r in ids for r in (g.rings or [])):
             ids.update((bg.get(g.id) or (None, []))[1]); ids.update(guideCurves(P, g))
@@ -384,8 +386,15 @@ def _drag_sync(root_name):
         return
     try:
         from ..core.crowntool import frameSync
+        from ..core.rib import followFrames, hasRibs
         P = session.get_project(root)
-        moved, toasts = frameSync(P)
+        edges = []                                                  # (1.0.2: the edge curves syncPathCurves put back on their curves, 16623)
+        moved, toasts = frameSync(P, edges)
+        if hasRibs(P):                                              # (1.1f: the root of a flat lock follows the anchors it started from while they move, as session.sync at the end)
+            m, t = followFrames(P, edges)
+            moved = list(moved) + m; toasts = list(toasts) + t
+        if edges:
+            touch(root, [c.id for c in edges])                      # (S.surfDirty there; as session.sync)
         if moved:
             ids = {id(a) for a in moved}
             touch(root, [c.id for c in P.curves() if any(id(a) in ids for a in c.anchors)])
@@ -462,6 +471,36 @@ def cancel(root_name=None):
             bpy.app.timers.unregister(fn)
 
 
+def _left_by_a_delete(ob):
+    if ob.get('hairmesh_type') != 'live' or ob.library is not None or ob.override_library is not None or ob.parent is not None:
+        return False
+    name = ob.get('hairmesh_root')
+    return not name or bpy.data.objects.get(name) is None
+
+
+def drop_orphans():
+    """the previews whose root is gone: Blender's own delete over a project (A, X) takes the root and leaves them (they
+    are not selectable), with no parent and outside the root's scale. Removed by the next operator that updates a
+    preview, inside its undo step (the owner's call, lot 1.2c, item 7: never in a handler, which writes outside one).
+    A mesh made by Convert is the user's: never touched. Left by a delete means: of this file (a linked or overridden
+    project's are its library's), with no parent, and no object of its root's name any more — a preview set free with
+    Alt+P while its root is there stays (naming.held_by_others counts it as the project's; the review of lot 1.2c)"""
+    gone = [ob for ob in bpy.data.objects if _left_by_a_delete(ob)]
+    for ob in gone:
+        try:
+            me = ob.data
+            bpy.data.objects.remove(ob, do_unlink=True)
+            if me is not None and me.users == 0:
+                bpy.data.meshes.remove(me)
+        except Exception:
+            errorlog.record('live: a preview left by its root')
+    if gone:
+        try:
+            bpy.context.view_layer.update()                         # (the view layer's list of objects in step with the removal: else it hands None to the caller's loop)
+        except Exception:
+            errorlog.record('live: the view layer after the previews left')
+
+
 def update(context, root, commit=True):
     """The preview follows the model NOW, inside the operator (before Blender pushes its undo step). Never raises:
     the operator's own result must not depend on the preview. A rebuild from scratch (no tables yet, or everything
@@ -469,6 +508,8 @@ def update(context, root, commit=True):
     (the pause of a slider's drag, the Esc of a drag): the pending meshes are rebuilt in memory and shown, but nothing
     is written into the project's texts — the next save_project carries them."""
     cancel(root.name)
+    if commit:
+        drop_orphans()                                              # (lot 1.2c, item 7: inside this operator's undo step)
     _ui[root.name] = context                                        # (4.2c, item 4: a heavy row build below says so first: _announce)
     st = session.runtime(root)
     full = st is None or (st.get('rows') is None and not (st.get('prev') or {}).get('rows'))
@@ -545,6 +586,7 @@ def invalidate_rows(root):
     st = _current_state(root)
     if st is not None:
         st['rows'] = None; st['built'] = None; st['sig'] = None; st['built_walls'] = None; st['built_guides'] = None; st['built_crowns'] = None; st['touched'] = set(); st['grids'] = {}; st['grid_rev'] = {}; st['wall_sig'] = {}
+        st['grid_fp'] = {}; st['mesh_fp'] = {}; st['baked_fp'] = {}   # (lot 1.1e: nor any signature by content — what changed has no name here)
         st.pop('prev', None)
 
 
@@ -575,6 +617,13 @@ def _inherit(st, P):
     prev = st.pop('prev', None)
     if prev and prev.get('rows') is not None and prev['rows'].HISTORY is not None:
         st['history'] = prev['rows'].HISTORY                         # (kept even when the tables cannot be: the undo of a setting)
+    if prev:
+        # 3.7 / 4.0: what each converted mesh was built from and what each baked mesh was baked against (meshes.py), by
+        # the data's token — kept whether or not the tables are (lot 1.1e, issue #4: their content part, the locks'
+        # fingerprints, holds in any state; the revision part matches only grids that were never computed again). A
+        # release right after an undo marked this very state already
+        for k in ('mesh_sig', 'mesh_fp', 'baked', 'baked_fp'):
+            st[k] = {**(prev.get(k) or {}), **(st.get(k) or {})}
     if not prev or prev.get('rows') is None or prev.get('built') is None:
         return None
     old = prev['P']; ctx = prev['rows']
@@ -598,10 +647,9 @@ def _inherit(st, P):
     # the grids of the walls that are the same (a, b, p) stay; their lock, if rebuilt, renews them anyway
     sigs = prev.get('wall_sig') or {}
     st['grids'] = dict(prev.get('grids') or {}); st['grid_rev'] = dict(prev.get('grid_rev') or {})
+    st['grid_fp'] = dict(prev.get('grid_fp') or {})                # (lot 1.1e: a grid kept is the grid of the same fingerprint)
     st['wall_sig'] = dict(sigs); st['grids_rev'] = prev.get('grids_rev', 0); st['pick_meshes'] = dict(prev.get('pick_meshes') or {})
     st['wall_soup_parts'] = dict(prev.get('wall_soup_parts') or {})   # 4.2 ∥ 4.5, item 1: the click's arrays per wall (by grid revision, never reused)
-    st['mesh_sig'] = dict(prev.get('mesh_sig') or {})              # 3.7: what each converted mesh was built from (meshes.py)
-    st['baked'] = {**(prev.get('baked') or {}), **(st.get('baked') or {})}   # 4.0: what each baked mesh was baked against (meshes.baking / baked; a release right after an undo marked this very state already)
     for sf in P.surfaces():
         if sf.id in st['grids'] and sigs.get(sf.id) == _wall_sig(sf):
             sf.dirty = False
@@ -633,6 +681,10 @@ def row_tables(root, P):
         changed = SC.settle(P, extra)['changed']
     if built is not None:
         changed = SC.disc_moved(P, changed, st.get('built_guides') or {})   # (4.2: a disc's ring moved: the locks it pierced and pierces)
+        # (1.2: a change reaching a lock of an Even loops / Proxy shell set rebuilds every lock of the set — the rebuild
+        # floods through shared anchors only; every path that marks curves comes here: a drag, G / R / S, the group's and
+        # the project's sliders, Duplicate, Density, the scissors, Unite, a curve deleted, symmetry, a flat lock)
+        changed = SC.spread_changed(P, changed)
     if built is not None and not changed and not extra and st.get('fresh') and ctx.T is not None:
         # 4.2c, item 1: nothing changed since the last build of this very model (a click's picking, a redraw): the tables
         # stand as they are — buildRowTables with an empty `changed` would take every lock back from its cache and run
@@ -659,7 +711,7 @@ def row_tables(root, P):
         # original's Convert builds from scratch, 10001; ours reads these: meshes.tables)
         rebuilt, restored = ctx.LOCKS_REBUILT, set(ctx.LOCKS_RESTORED)
         with slow.part('row tables of the locks of an old Tip item converted', f'{len(ctx.STALE_CURVES)} curves'):
-            ctx = RW.buildRowTables(P, changed=sorted(ctx.STALE_CURVES), ctx=ctx)
+            ctx = RW.buildRowTables(P, changed=sorted(SC.spread_changed(P, sorted(ctx.STALE_CURVES))), ctx=ctx)
         model_changed = model_changed or ctx.MODEL_CHANGED
         ctx.LOCKS_REBUILT = None if rebuilt is None else rebuilt | ctx.LOCKS_REBUILT   # (the grids follow both builds)
         ctx.LOCKS_RESTORED |= restored
@@ -682,7 +734,7 @@ def row_tables(root, P):
 
 
 def save_model_changes(root, commit=True):
-    """4.1 (D4.9): the row build changes the model itself — tipConvert (2728) paints an old Tip item into a Density
+    """4.1 (D4.9): the row build changes the model itself — tipConvert (3843) paints an old Tip item into a Density
     mask, a converted modifier's lock from a file without sections gets them written down (2604). Whoever built the
     tables (the draw handler, the drag's timer, an operator) only changed the Project in memory and flagged it
     (state['model_changed']); here, called by update() inside an operator, the model goes to the project text
@@ -725,14 +777,45 @@ def grids(root, P):
     g = st.setdefault('grids', {}); rev = st.setdefault('grid_rev', {}); sigs = st.setdefault('wall_sig', {})
     alive = set(); changed = set()
     with slow.part('wall grids') as what:
-        _grids_into(P, T, only, g, rev, sigs, alive, changed, root)
+        _grids_into(P, T, only, g, rev, sigs, alive, changed, root, st.setdefault('grid_fp', {}), _lock_fps(ctx))
         what[0] = f'{len(changed)} walls'
     if changed:
         st['grids_rev'] = st.get('grids_rev', 0) + 1
     return g, changed
 
 
-def _grids_into(P, T, only, g, rev, sigs, alive, changed, root):
+def _lock_fps(ctx):
+    """lot 1.1e (issue #4): curve id -> the fingerprint its lock's tables were built or taken back under
+    (rows.buildRowTables: RowBuild.LOCK_FP, rowhist.component_fp — everything that build read), for the locks that have
+    one. Two builds under the same fingerprint give the same tables, so a wall with the same curves and settings on
+    them has the same grid — with what surfaceData reads besides the tables and the wall (_grid_content): what
+    meshes.py compares when the revisions, counters of this session, have moved on"""
+    fps = getattr(ctx, 'LOCK_FP', None) or {}
+    out = {}
+    for L in ctx.locks:
+        fp = fps.get(L.key)
+        if fp is not None:
+            for c in L.cs:
+                out[c.id] = fp
+    return out
+
+
+def _grid_content(P, sf, fp, sig, crowns, digests):
+    """what the grid of wall `sf` was computed from, by content: the fingerprint of its lock's tables, the wall
+    (_wall_sig) and what surfaceData (2740) reads besides them — the head's center and scale (which side of a lock of
+    two curves is outward: the review of lot 1.1e, a head moved and set again left two pending meshes stale) and, for a
+    wall rooted on a crown's lower connector (wallCrownRoot 2718), that connector's shape and where the wall's two
+    curves sit on it"""
+    from ..core.rowhist import _sample_digest
+    cr = SF.wallCrownRoot(P, sf, crowns)
+    root_part = [cr['low'].id, _sample_digest(digests, cr['low']), repr(cr['ua']), repr(cr['ub'])] if cr else None
+    return [fp, list(sig), P.S.center.toArray(), P.S.scale, root_part]
+
+
+def _grids_into(P, T, only, g, rev, sigs, alive, changed, root, fps=None, lock_fp=None):
+    if fps is None:
+        fps = {}
+    crowns = None; digests = {}
     for sf in P.surfaces():
         alive.add(sf.id)
         if only is not None and not sf.dirty and sf.id in g and sf.a not in only and sf.b not in only:
@@ -747,8 +830,15 @@ def _grids_into(P, T, only, g, rev, sigs, alive, changed, root):
                 _reported.add((root.name, sf.id))
                 print(f'HairMesh live preview: the grid of {sf.name} ({sf.id}) failed: {e!r}')
         g[sf.id] = d; rev[sf.id] = next(_revs); changed.add(sf.id); sigs[sf.id] = _wall_sig(sf)
+        fp = (lock_fp or {}).get(sf.a)
+        if fp is not None and fp == (lock_fp or {}).get(sf.b):
+            if crowns is None:
+                crowns = P.crowns()
+            fps[sf.id] = _grid_content(P, sf, fp, sigs[sf.id], crowns, digests)
+        else:
+            fps.pop(sf.id, None)
     for k in [k for k in g if k not in alive]:
-        del g[k]; rev.pop(k, None); sigs.pop(k, None); changed.add(k)
+        del g[k]; rev.pop(k, None); sigs.pop(k, None); fps.pop(k, None); changed.add(k)
 
 
 def grid_of(root, P, sf_id):
@@ -766,7 +856,9 @@ def grid_of(root, P, sf_id):
 
 def _fill(me, verts, faces, owners):
     """The mesh's geometry replaced in place by the cleaned grid; the per-face wall ids after validate, only while
-    they still line up with the polygons (validate may drop what clean_mesh let through, never the other way)."""
+    they still line up with the polygons (validate may drop what clean_mesh let through, never the other way).
+    Lot 1.2a, item 6: a mesh of a file saved before held the flat locks' ribbons, with their material in the second
+    slot: that slot goes (the ribbons are the overlay's now, draw.py; purge_rib_material removes the material)."""
     verts, faces, kept = clean_mesh(verts, faces)
     owners = [owners[i] for i in kept]
     me.clear_geometry()
@@ -775,7 +867,97 @@ def _fill(me, verts, faces, owners):
     if faces and len(me.polygons) == len(owners):
         attr = me.attributes.get(FACE_ATTR) or me.attributes.new(FACE_ATTR, 'INT', 'FACE')
         attr.data.foreach_set('value', owners)
+    if len(me.materials) >= 2 and me.materials[1] is not None and me.materials[1].get(RIB_MAT_KEY):
+        me.materials.pop(index=1)                                   # (a file saved before 1.2a: the ribbons' slot)
     me.update()
+
+
+# ---------------- lot 1.1f: the flat locks' ribbons (rebuildRib 6977, ribObj) ----------------
+# The ribbon is a display in the original (never read by buildGroupMesh). Lot 1.2a, item 6: draw.py draws it, the
+# overlay alone (the fill, lit the same on both sides, and the outline); the live object holds none of it. Here: what
+# a click on it hits (rib_pick_data: its curve is selected, pickables holds ribObj, 8422), the brush's colours
+# (rib_colors) and, for a file saved before, the material its faces had (purge_rib_material).
+
+
+def _lin(c):
+    """an sRGB channel 0…1 into the linear space (three.js's Color.setHex with its colour management, r160)"""
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def hex_linear(h):
+    return (_lin(((h >> 16) & 255) / 255.0), _lin(((h >> 8) & 255) / 255.0), _lin((h & 255) / 255.0))
+
+
+RIB_MAT_KEY = 'hairmesh_rib_material'                               # the ribbons' material of a file saved before 1.2a (found by this mark, never by its name)
+
+
+def purge_rib_material():
+    """the ribbons' material of a file saved before 1.2a once no live mesh holds it (the first update took the
+    ribbons' faces and slot out of the live meshes): the add-on leaves no material without users"""
+    for m in [m for m in bpy.data.materials if m.get(RIB_MAT_KEY) and m.users == 0 and m.library is None]:
+        bpy.data.materials.remove(m)
+
+
+def rib_pick_data(root, P):
+    """{curve id: (key, {pos, faces}, the core's ribbon)} of every flat lock with a ribbon — c.rib_geom, made by the
+    frame (scene.settle in row_tables: core/rib.frameRibs): its points (V3, the model space) and its triangles, what
+    pick.topo_hits casts a click's ray on. Made again only when that ribbon is another object (cheap, by identity)"""
+    from ..core.js import truthy
+    from ..core.rib import ribStamp
+    from ..core.vec3 import V3
+    st = session.state(root, P)
+    cache = st.get('rib_pick') or {}
+    out = {}
+    for c in P.curves():
+        g = c.rib_geom if truthy(c.rib) else None
+        if g is None:
+            continue
+        e = cache.get(c.id)
+        if e is None or e[2] is not g:
+            pos = g['pos']; idx = g['index']
+            d = {'pos': [V3(pos[i], pos[i + 1], pos[i + 2]) for i in range(0, len(pos), 3)],
+                 'faces': [list(idx[k:k + 3]) for k in range(0, len(idx), 3)]}
+            e = (ribStamp(g), d, g)
+        out[c.id] = e
+    st['rib_pick'] = out
+    return out
+
+
+def rib_colors(root, P):
+    """ribCols (6936) while the ribbons' brush runs: per ring of every ribbon its colour (linear), the lock's purple
+    blended to the brush's colour by the active kind's weight on the selected flat locks it paints, the purple
+    elsewhere. {curve id: [[r, g, b] per ring]} — the overlay's fill (draw.rib_fill) reads it at every draw while the
+    brush runs on this root"""
+    from ..core import rib as RB
+    from ..core.js import truthy
+    from . import brush, select
+    op = brush.running('RIB')
+    on = set()
+    kind = None
+    if op is not None and getattr(op, 'root_name', None) == root.name:   # (the brush paints one project: another one's ids are not these)
+        kind = brush.RIB_KIND_OF[brush.props().brush_rib_kind]
+        sel = select.load(bpy.context.scene.hairmesh).prune(P)
+        on = {c.id for c in RB.ribCurvesSel(P, sel.items, sel.anchors)}
+    base = hex_linear(RB.RIB_COL)
+    out = {}
+    for c in P.curves():
+        if not truthy(c.rib) or c.rib_geom is None or c.ribF is None:
+            continue
+        if c.id in on:
+            cols = []
+            for h, t in RB.ribColWeights(c, c.ribF, kind):
+                to = hex_linear(h)
+                cols.append([base[i] + (to[i] - base[i]) * t for i in range(3)])
+            out[c.id] = cols
+        else:
+            out[c.id] = [list(base)] * len(c.ribF)
+    return out
+
+
+def _stamp(whole):
+    """a preview's key as a short stamp of its content: the shown key goes into the .blend, so the stamp is the same
+    in every Blender (Python's hash() of a str changes per process: a file opened again refilled its live meshes)"""
+    return hashlib.blake2b(repr(whole).encode(), digest_size=16).hexdigest()
 
 
 def _crown_key(P, k):
@@ -799,14 +981,11 @@ def _crown_key(P, k):
     curves = tuple(fp(c) for c in P.curves() if c.id in on)
     walls = tuple((s.id, s.a, s.b, json.dumps(s.p, sort_keys=True, default=str)) for s in P.surfaces() if s.a in on or s.b in on)   # (crownData's walls on the lower connector: their segs and segPos)
     whole = (json.dumps(k.p, sort_keys=True, default=str), crownStep(P, k), k.visible, curves, walls)
-    try:
-        return str(hash(whole))                                     # (a short stamp: the shown key goes into the .blend)
-    except TypeError:
-        return str(hash(repr(whole)))
+    return _stamp(whole)
 
 
 def crown_previews(root, P):
-    """4.3 (D4.5): every crown's surface (crownData, the original's rebuildCrowns 7638) for the live objects and the
+    """4.3 (D4.5): every crown's surface (crownData, the original's rebuildCrowns 11248) for the live objects and the
     click, kept per crown while what it reads stays the same. {crown id: (key, MeshData or None, k.info)}"""
     from ..core.crown import crownData
     st = session.state(root, P)
@@ -827,8 +1006,8 @@ def crown_previews(root, P):
 
 
 def _topo_key(P, k, rev):
-    """what a Cap's preview (rebuildCaps 9526: capGrid on the closed locks of its group's walls, the cap that applies to
-    each: capOf) or a Fill holes' candidates (skinCandidates 9347: its group's curves and walls, every wall for
+    """what a Cap's preview (rebuildCaps 13631: capGrid on the closed locks of its group's walls, the cap that applies to
+    each: capOf) or a Fill holes' candidates (skinCandidates 13452: its group's curves and walls, every wall for
     hasSurface, the project step) read, as a short stamp — the walls by their grid's revision (the tables they read)"""
     from ..core.convert import collect
     from ..core.hairmesh_io import defaultStep
@@ -846,10 +1025,7 @@ def _topo_key(P, k, rev):
         walls = tuple((s.id, s.a, s.b, rev.get(s.id, 0), json.dumps(s.p, sort_keys=True, default=str)) for s in kids if s.type == 'surface')
         whole = (json.dumps({x: v for x, v in k.p.items() if x != 'bulge'}, sort_keys=True, default=str), k.visible, curves, walls, tuple((s.a, s.b) for s in P.surfaces()),
                  P.settings.step, float(defaultStep(P)))
-    try:
-        return str(hash(whole))
-    except TypeError:
-        return str(hash(repr(whole)))
+    return _stamp(whole)
 
 
 def topo_previews(root, P):
@@ -909,10 +1085,7 @@ def _tube_key(P, t):
              json.dumps(TB.tubeConv(P, t), sort_keys=True, default=str),   # (4.7b item 4: the loops follow the group's settings and the project's step)
              (c.sample_key if c.sample_key is not None else tuple((s.p.x, s.p.y, s.p.z) for s in c.samples)) if c is not None else None,
              len(c.samples) if c is not None else 0, P.S.center.x, P.S.center.y, P.S.center.z, P.S.scale)
-    try:
-        return str(hash(whole))
-    except TypeError:
-        return str(hash(repr(whole)))
+    return _stamp(whole)
 
 
 def _tube_rows_mesh(P, t, m):
@@ -941,7 +1114,7 @@ def colors_at(colors, fs):
 
 
 def tube_previews(root, P):
-    """4.6 (D4.5): every Profile modifier's surface (rebuildTube, 6673), kept per modifier while what it reads stays
+    """4.6 (D4.5): every Profile modifier's surface (rebuildTube, 9997), kept per modifier while what it reads stays
     the same. {tube id: (key, {pos, faces} or None, None)}"""
     from ..core import tube as TB
     st = session.state(root, P)
@@ -1086,7 +1259,7 @@ def shown_previews(root, P):
     """{item id: (key, data, info)} of the Caps', Fills' and Profile modifiers' previews, as the last update left them:
     what a click and the Density brush's occlusion hit. A model parsed again (Ctrl+Z) has none until the next update:
     built here, once (no data written: they live in the session's state). With the preview off nothing shows, nothing
-    is hit (it.obj.visible = vis && S.showSurfaces, 11982, 11990; pickables 5658): the walls' cache alone stays pickable"""
+    is hit (it.obj.visible = vis && S.showSurfaces, 11982, 11990; pickables 8415): the walls' cache alone stays pickable"""
     if not bpy.context.scene.hairmesh.live_preview:
         return {}
     st = session.state(root, P)
@@ -1094,7 +1267,8 @@ def shown_previews(root, P):
         topo_previews(root, P)
     if 'tube_prev' not in st:
         tube_previews(root, P)
-    return {**st['topo_prev'], **st['tube_prev']}
+    ribs = rib_pick_data(root, P)                                   # (1.1f: a flat lock's ribbon, its curve's — the original's pickables hold ribObj, 8422; drawn by the overlay alone, 1.2a)
+    return {**st['topo_prev'], **st['tube_prev'], **ribs}
 
 
 def topo_shown(P, k):
@@ -1143,7 +1317,7 @@ def rebuild(context, root, P=None):
     tubes = tube_previews(root, P)                                  # (4.6, D4.5: a Profile modifier's surface in its group's live object)
     for t in P.tubes():
         by_topo.setdefault(t.parent, []).append(t); by_group.setdefault(t.parent, [])
-    topo = {**topo, **tubes}
+    topo = {**topo, **tubes}                                        # (1.2a: a flat lock's ribbon is the overlay's, draw.py: never here)
     root_col = next((c for c in bpy.data.collections if c.get('hairmesh_root') == root.name), None) or context.scene.collection
     from .convert_op import collection_of_group
     existing = live_objects(root)
@@ -1240,6 +1414,7 @@ def rebuild(context, root, P=None):
         bpy.data.objects.remove(ob, do_unlink=True)
         if me is not None and me.users == 0:
             bpy.data.meshes.remove(me)
+    purge_rib_material()                                            # (a file saved before 1.2a: the ribbons' material, its slots gone)
     for gid, ob in out.items():                                     # a name another object still held above (gone, or renamed since): taken now
         name = f'{group_name(P, gid, names)} live'
         if ob.name != name and bpy.data.objects.get(name) is None:   # (held by something not ours: left, no rename at every update)
@@ -1365,6 +1540,32 @@ def _on_load(*_args):
     ops_edges._arrays.clear()
     ops_outliner.LAST_INVOKE.clear()
     modal_keys.clear(bpy.context)                                   # (a modal the load ended: the status bar is the whole app's)
+    settle_ribs_on_load()
+
+
+def ribs_in_text(text):
+    """pure: may this project text hold a flat lock — the key "rib" anywhere in it (hairmesh_io writes it on a flat
+    lock's curve alone). Never wrong on the side of a lock: a "rib" elsewhere (a name) only makes the load read it."""
+    return bool(text) and '"rib"' in text
+
+
+def settle_ribs_on_load():
+    """1.1f: a file just opened shows its flat locks' ribbons at once (the overlay's outline, Convert's shape): their
+    frames settled here in memory, as the original's first frame after its load would (14823) — the text and the
+    objects untouched (a handler writes nothing into bpy.data); the next operator's update finds them made. A project
+    is parsed only when its text names a `rib` (ribs_in_text): opening a file reads nothing it does not need."""
+    from ..core import rib as RB, scene as SC
+    for root in [o for o in bpy.data.objects if session.is_root(o)]:
+        try:
+            if not ribs_in_text(session._text_of(root)):
+                continue
+            P = session.get_project(root)
+            if RB.hasRibs(P):
+                with slow.part('the flat locks settled after the load'):
+                    SC.settle(P)
+        except Exception as e:                                      # a handler must never raise
+            errorlog.record('handler: the flat locks after the load')
+            print('HairMesh live preview:', repr(e))
 
 
 @persistent

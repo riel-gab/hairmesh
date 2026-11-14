@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Riel
-# Ported from Stylized HairMesh Creator 1.0.1 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
+# Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Conversion of locks into meshes (hair-modeler.clean.html:8466-9152, 9153-9190, 9312-9360): the lock grid,
 gradual tips, caps, seams, Merge shared trunks, the mesh of one group and the Convert button."""
 import math
@@ -11,8 +11,10 @@ from .curves import juncLine, rebuildCurve
 from .fdlibm import cos as _cos, sin as _sin
 from .geom import faceCenter, faceNormal
 from .hairmesh_io import defaultStep
-from .js import at, clamp, includes, js_hypot, js_max, js_min, js_or, js_sign, nullish, to_int32, truthy
+from .js import at, clamp, includes, index_of, js_hypot, js_max, js_min, js_or, js_sign, nullish, to_int32, truthy
+from .raycast import Box3
 from .rowbase import convOf, settings_conv
+from .rows import tailMates
 from .surfaces import concatMeshes, mergeWeld, surfaceData, wallsOf, WeldInfo
 from .trace import br as _br, dec as _dec, dec_near
 from .vec3 import V3
@@ -39,9 +41,9 @@ def collect(P, gid, checked, types):
     return out
 
 
-# walls connected through shared curves = one lock
-def lockGroups(surfs):
-    # port of lockGroups (hair-modeler.clean.html:8479)
+# walls connected through shared curves (and junction curves through the curves they run down along) = one lock
+def lockGroups(P, surfs):
+    # port of lockGroups (hair-modeler.clean.html:13250)
     par = {}
 
     def find(x):
@@ -53,6 +55,10 @@ def lockGroups(surfs):
             if cid not in par:
                 par[cid] = cid
         ra = find(s.a); rb = find(s.b)
+        if ra != rb:
+            par[ra] = rb
+    for a, b in tailMates(P, list(par)):
+        ra = find(a); rb = find(b)
         if ra != rb:
             par[ra] = rb
     m = {}
@@ -542,13 +548,13 @@ def closeSmallHoles(faces, ok, maxN):
     for f in faces:
         for k, a in enumerate(f):
             kk = _ekey(a, f[(k + 1) % len(f)]); cnt[kk] = cnt.get(kk, 0) + 1
-    adj = {}; dir_ = set()                                          # open edges (undirected) + their face direction
+    adj = {}; dir_ = {}                                             # open edges (undirected) + their face direction (a dict: the Set's insertion order, which the cracks' loop follows)
     for f in faces:
         for k, a in enumerate(f):
             b = f[(k + 1) % len(f)]
             if cnt.get(_ekey(a, b)) != 1 or not ok(a) or not ok(b):
                 continue
-            dir_.add((a, b))
+            dir_[(a, b)] = True
             adj.setdefault(a, []).append(b); adj.setdefault(b, []).append(a)
     used = set(); res = []
 
@@ -678,11 +684,30 @@ def lockQuery(G, p):
 
 # Merge shared trunks (only between locks of one converted group that run along welded curves); the original's
 # comment block at 9050-9056 describes the three steps.
-def mergeTrunks(P, parts, grids, lockCurves, h, dbg=None):
-    # port of mergeTrunks (hair-modeler.clean.html:9057)
+def mergeTrunks(P, parts, grids, lockCurves, h, dbg=None, mergeDist=None):
+    # port of mergeTrunks (hair-modeler.clean.html:13933); mergeDist: CP.mergeDist of the original (the group's conv)
     dbg = dbg if dbg is not None else {'mergeOpts': {}, 'mergeWhy': {}}
     opts = dbg.setdefault('mergeOpts', {})
-    info = WeldInfo()
+    # Merge distance (Convert → Merge distance; typed in or picked with the brush): how far apart vertices of connected
+    # locks may lie to be welded; auto — ¼ loop step (the open edges after removing double walls: ×1.4)
+    md = mergeDist if _num(mergeDist) and mergeDist > 0 else None
+    gapTol = md if md is not None else h * nullish(opts.get('gap'), 0.25); snapTol = md * 1.4 if md else h * 0.35
+    # lock tips (the curves' last anchors) never take part: within a loop step of one nothing is welded across locks
+    tipA = {}
+    for cs in lockCurves:
+        for c in cs:
+            a = at(c.anchors, len(c.anchors) - 1)
+            if a is not None:
+                tipA[id(a)] = a
+    tips = [a.pos for a in tipA.values()]
+    hh = h * h
+
+    def nearTip(p):
+        for t in tips:
+            if t.distanceToSquared(p) < hh:
+                return True
+        return False
+    info = WeldInfo(alone=nearTip)
     m = mergeWeld(parts, h * 0.06, info)
     NP = len(parts)
     why = {'gapWelds': 0, 'identical': 0, 'inside': 0, 'snapped': 0, 'filled': 0}; dbg['mergeWhy'] = why
@@ -776,8 +801,8 @@ def mergeTrunks(P, parts, grids, lockCurves, h, dbg=None):
         info.vsrc = vs
         wasOpen = {rep(v) for v in wasOpen}
     # 1) small gaps along the trunk: vertices of connected locks closer than ¼ step become one
-    cand = [v for v, p in enumerate(m.pos) if (s := info.vsrc.get(v)) and any(len(conn[li]) and nearTrunk(li, p) for li in s)]
-    gw = weldClusters(cand, m.pos, h * nullish(opts.get('gap'), 0.25), linked, [f['v'] for f in F])
+    cand = [v for v, p in enumerate(m.pos) if (s := info.vsrc.get(v)) and not nearTip(p) and any(len(conn[li]) and nearTrunk(li, p) for li in s)]
+    gw = weldClusters(cand, m.pos, gapTol, linked, [f['v'] for f in F])
     why['gapWelds'] = gw['merged']; remap(gw['rep'])
     # 2) identical faces, then trunk faces inside a connected lock
     same = {}
@@ -832,10 +857,10 @@ def mergeTrunks(P, parts, grids, lockCurves, h, dbg=None):
     for key, c in ec.items():
         if c == 1:
             for i in key:
-                if i not in wasOpen:
+                if i not in wasOpen and not nearTip(m.pos[i]):
                     bv[i] = True
     if opts.get('snap') is not False:
-        sn = weldClusters(list(bv), m.pos, h * 0.35, linked, [f['v'] for f in F]); why['snapped'] = sn['merged']; remap(sn['rep'])
+        sn = weldClusters(list(bv), m.pos, snapTol, linked, [f['v'] for f in F]); why['snapped'] = sn['merged']; remap(sn['rep'])
     if jPts and opts.get('snap') is not False:                      # along junction lines the locks' loops land further apart
         ec2 = {}
         for f in F:
@@ -845,7 +870,7 @@ def mergeTrunks(P, parts, grids, lockCurves, h, dbg=None):
         for key, c in ec2.items():
             if c == 1:
                 for i in key:
-                    if i not in wasOpen and nearJunc(m.pos[i]):
+                    if i not in wasOpen and not nearTip(m.pos[i]) and nearJunc(m.pos[i]):
                         jv[i] = True
         sn = weldClusters(list(jv), m.pos, h * 0.55, linked, [f['v'] for f in F]); why['snapped'] += sn['merged']; remap(sn['rep'])
     seen = set(); faces = []
@@ -873,10 +898,10 @@ def mergeTrunks(P, parts, grids, lockCurves, h, dbg=None):
 # Every lock is welded within itself (its walls, its tip). Neighbouring locks are not stitched — they get matching
 # loops instead. Exception ("Merge shared trunks"): where locks run along welded curves, their geometry coincides.
 def buildGroupMesh(P, surfs, T, dbg=None):
-    # port of buildGroupMesh (hair-modeler.clean.html:8898); T must come from buildRowTables (computed once per
+    # port of buildGroupMesh (hair-modeler.clean.html:13769); T must come from buildRowTables (computed once per
     # project, where the original recomputes it per call — same table)
     parts = []; grids = []; lockCurves = []
-    for walls in lockGroups(wallsOf(surfs)):
+    for walls in lockGroups(P, wallsOf(surfs)):
         CP = convOf(P, P.items.get(walls[0].a) or walls[0]); hL = levelH_of(P, CP)
         g = lockGrid(P, walls, T); eps = hL * 0.04
         if g and CP.get('tipMode') == 'gradual':
@@ -892,8 +917,231 @@ def buildGroupMesh(P, surfs, T, dbg=None):
     CP = convOf(P, surfs[0]) if surfs else settings_conv(P)
     if truthy(CP.get('mergeTrunks')) and len(parts) > 1:
         _br('buildGroupMesh.mergeTrunks')
-        return mergeTrunks(P, parts, grids, lockCurves, levelH_of(P, CP), dbg)
-    return concatMeshes(parts)
+        out = mergeTrunks(P, parts, grids, lockCurves, levelH_of(P, CP), dbg, CP.get('mergeDist'))
+    else:
+        out = concatMeshes(parts)
+    opts = dbg.get('mergeOpts', {}) if dbg is not None else {}
+    if opts.get('sew') is not False:                                # seams along shared anchors; slivers; seams again
+        h = levelH_of(P, CP)
+        out = sewAnchorSeams(out, h, dbg)
+        for _pass in range(2):
+            if opts.get('slivers') is False:
+                break
+            o2 = dropSliverFaces(out, h)
+            if o2 is out:
+                break
+            out = sewAnchorSeams(o2, h, dbg)
+    return out
+
+
+def _num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _ek(a, b):
+    # the original's edge key `Math.min(a, b) + '_' + Math.max(a, b)`: a tuple serves the same lookups
+    return (a, b) if a < b else (b, a)
+
+
+# Open edges of the mesh lying on other open edges (seams along anchors two locks share, each lock with loops of its
+# own there) are sewn: a vertex close along the other edge is welded to it, else it is put into that edge.
+def sewAnchorSeams(d, h, dbg=None):
+    # port of sewAnchorSeams (hair-modeler.clean.html:13669)
+    onTol = 0.06 * h; tolS = 0.4 * h
+    ec = {}
+    for f in d.faces:
+        n = len(f)
+        for k, a in enumerate(f):
+            kk = _ek(a, f[(k + 1) % n]); ec[kk] = ec.get(kk, 0) + 1
+    # every open edge: only the ones lying on another open edge get sewn (a lock's own open end lies on nothing)
+    edges = [kk for kk, c in ec.items() if c == 1]
+    if not edges:
+        return d
+    # chains: open edges along curves joined end to end (a vertex with more than two such edges ends them)
+    adj = {}
+    for a, b in edges:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    usedE = set(); chains = []
+
+    def walk(s0, nx):
+        vs = [s0]; cur = nx; usedE.add(_ek(s0, nx))
+        while True:
+            vs.append(cur)
+            lc = adj[cur]
+            nb = [w for w in lc if _ek(cur, w) not in usedE]
+            if len(lc) != 2 or not nb:
+                break
+            usedE.add(_ek(cur, nb[0])); cur = nb[0]
+            if cur == s0:
+                vs.append(s0); break
+        return vs
+    for v, l in adj.items():
+        if len(l) != 2:
+            for w in l:
+                if _ek(v, w) not in usedE:
+                    chains.append(walk(v, w))
+    for v, l in adj.items():                                        # (closed loops)
+        for w in l:
+            if _ek(v, w) not in usedE:
+                chains.append(walk(v, w))
+    pos0 = d.pos
+    C = []
+    for vs in chains:
+        L = [0]
+        for i in range(1, len(vs)):
+            L.append(L[i - 1] + pos0[vs[i]].distanceTo(pos0[vs[i - 1]]))
+        C.append((vs, L))
+
+    # where vertex v lies on chain B: its position along B, or None (farther than onTol). On its own chain (the two
+    # sides of a slit are one chain, joined at the slit's ends) the edges at v itself don't count
+    def onChain(B, v):
+        Bv, BL = B
+        p = pos0[v]; best = None
+        for i in range(len(Bv) - 1):
+            if Bv[i] == v or Bv[i + 1] == v:
+                continue
+            a = pos0[Bv[i]]; b = pos0[Bv[i + 1]]; ab = b.clone().sub(a); l2 = ab.lengthSq()
+            t = clamp(p.clone().sub(a).dot(ab) / l2, 0, 1) if l2 > 0 else 0
+            dd = a.clone().addScaledVector(ab, t).distanceTo(p)
+            if dd < onTol and (best is None or dd < best[2]):
+                best = (BL[i] + t * (BL[i + 1] - BL[i]), i, dd)
+        return best
+    boxes = []
+    for vs, _L in C:
+        bx = Box3()
+        for v in vs:
+            bx.expandByPoint(pos0[v])
+        boxes.append(bx.expandByScalar(onTol))
+    par = {}
+
+    def fd(x):
+        while x in par and par[x] != x:
+            x = par[x]
+        return x
+    split = {}                                                      # edge key -> [(v, t (0..1 along the edge from its smaller id))]
+    nC = len(C)
+    for i in range(nC):
+        for j in range(nC):
+            if not boxes[i].intersectsBox(boxes[j]):
+                continue
+            A = C[i]; B = C[j]; self_ = i == j
+            Bv, BL = B
+            # A's vertices lying on B, in B's terms
+            hits = [(v, on) for v, on in ((v, onChain(B, v)) for v in A[0]) if on is not None]
+            if len(hits) < (1 if self_ else 2):
+                continue
+            nB = len(Bv); closed = Bv[0] == Bv[nB - 1]
+            for xv, on in hits:
+                if fd(xv) == fd(Bv[on[1]]) or fd(xv) == fd(Bv[on[1] + 1]):
+                    continue
+                # a B vertex close along B (on its own chain: not v nor its neighbours there): weld; else into B's edge i
+                kv = index_of(Bv, xv) if self_ else -1
+                near = None; nd = 0
+                for k in range(nB):
+                    if self_ and (Bv[k] == xv or abs(k - kv) <= 1 or (closed and abs(k - kv) >= nB - 2)):
+                        continue
+                    dk = abs(BL[k] - on[0])
+                    if dk < tolS and (near is None or dk < nd):
+                        near = k; nd = dk
+                if near is not None and i <= j:
+                    a_ = fd(xv); b_ = fd(Bv[near])
+                    if a_ != b_:
+                        par[a_] = b_
+                    continue
+                if near is not None:
+                    continue                                        # (the pair is welded from the other side)
+                e0 = Bv[on[1]]; e1 = Bv[on[1] + 1]; kk = _ek(e0, e1); ln = BL[on[1] + 1] - BL[on[1]]
+                t = (on[0] - BL[on[1]]) / ln if ln > 0 else 0.5
+                tt = t if e0 < e1 else 1 - t
+                if tt <= 1e-6 or tt >= 1 - 1e-6:
+                    continue
+                split.setdefault(kk, []).append((xv, tt))
+    if dbg is not None:
+        dbg['sew'] = {'edges': len(edges), 'chains': [len(vs) for vs, _L in C], 'welds': len(par), 'splits': len(split)}
+    pos = [q.clone() for q in pos0]
+    groups = {}
+    for v in par:
+        r = fd(v)
+        if r not in groups:
+            groups[r] = [r]
+        if v != r:
+            groups[r].append(v)
+    for r, l in groups.items():
+        acc = V3()
+        for v in l:
+            acc.add(pos0[v])
+        pos[r] = acc.divideScalar(len(l))
+    faces = []
+    for f in d.faces:
+        out = []; n = len(f)
+        for k in range(n):
+            a = f[k]; b = f[(k + 1) % n]; out.append(a)
+            ins = split.get(_ek(a, b))
+            if not ins:
+                continue
+            for q in sorted(ins, key=lambda q: q[1], reverse=not (a < b)):
+                out.append(q[0])
+        faces.append(out)
+    seen = set(); kept = []
+    for f in faces:
+        g0 = [fd(x) for x in f]; n = len(g0)
+        g = [x for k, x in enumerate(g0) if x != g0[(k + n - 1) % n]]
+        if len(g) < 3 or len(set(g)) != len(g):
+            continue
+        key = tuple(sorted(g))
+        if key in seen:
+            continue
+        seen.add(key); kept.append(g)
+    faces = kept
+    sv = set()
+    for vs, _L in C:
+        for v in vs:
+            sv.add(fd(v))
+    faces.extend(closeSmallHoles(faces, lambda i: i in sv, 6))
+    mp = {}; outp = []
+    nf = []
+    for f in faces:
+        g = []
+        for i in f:
+            j = mp.get(i)
+            if j is None:
+                j = len(outp); mp[i] = j; outp.append(pos[i])
+            g.append(j)
+        nf.append(g)
+    return M.MeshData(pos=outp, faces=nf)
+
+
+# A small face on an edge of three or more faces lying on top of one of them (nearly parallel, its centre close to that
+# face's plane) is a sliver of a seam: dropped.
+def dropSliverFaces(d, h):
+    # port of dropSliverFaces (hair-modeler.clean.html:13743)
+    ef = {}
+    for i, f in enumerate(d.faces):
+        n = len(f)
+        for k, a in enumerate(f):
+            ef.setdefault(_ek(a, f[(k + 1) % n]), []).append(i)
+    N = [faceNormal(d.pos, f) for f in d.faces]; C = [faceCenter(d.pos, f) for f in d.faces]
+
+    # f lies on face g of one of its 3+-face edges: nearly parallel, its centre close to g's plane
+    def onTop(i, g):
+        a = N[i].clone().normalize(); b = N[g].clone().normalize()
+        return abs(a.dot(b)) > 0.85 and abs(C[i].clone().sub(d.pos[d.faces[g][0]]).dot(b)) < 0.15 * h
+    drop = set()
+    big = 0.6 * h * h; tiny = 0.05 * h * h; mid = 0.15 * h * h
+    for i, f in enumerate(d.faces):
+        A = N[i].length() / 2; n = len(f)
+        es = [ef[_ek(a, f[(k + 1) % n])] for k, a in enumerate(f)]
+        if A >= big or not any(len(l) > 2 for l in es):
+            continue
+        open_ = any(len(l) == 1 for l in es)
+        if A < tiny:                                                # (next to nothing: its normal means nothing)
+            drop.add(i); continue
+        if A >= mid and not open_:                                  # (a bigger face only when it hangs: an open edge too)
+            continue
+        if any(len(l) > 2 and any(g != i and g not in drop and onTop(i, g) for g in l) for l in es):
+            drop.add(i)
+    return M.MeshData(pos=d.pos, faces=[f for i, f in enumerate(d.faces) if i not in drop]) if drop else d
 
 
 def mergeUnits(P, surfs, rootId):
@@ -962,7 +1210,7 @@ def buildConvMesh(P, mesh, T, dbg=None, crown_data=None):
 
 
 def fillConvs(P, mesh):
-    """ours (3.7): what buildConvMesh (9998) does to the model besides the mesh — convOf (1596) on the first wall of
+    """ours (3.7): what buildConvMesh (14231) does to the model besides the mesh — convOf (1596) on the first wall of
     every lock of every merge unit and on the unit's first wall, as buildGroupMesh does: groupConv fills the conv of
     those groups (and may bump gen). For a mesh whose data is reused instead of built (conversion.startConversion), so
     the project comes out as the original's."""
@@ -971,14 +1219,14 @@ def fillConvs(P, mesh):
         return
     units = mergeUnits(P, surfs, mesh.parent)
     for u in (units if len(units) > 1 else [surfs]):
-        for walls in lockGroups(wallsOf(u)):
+        for walls in lockGroups(P, wallsOf(u)):
             convOf(P, P.items.get(walls[0].a) or walls[0])
         convOf(P, u[0])
 
 
 def conversionPlan(P, gids=None):
     """ours (U7 A, docs/fase-3-ux-revisao.md): the meshes Convert makes, without building any — the loop of
-    startConversion (10010) on ids alone: [(group, walls, crowns)] for each ticked group whose collect (9133) finds a
+    startConversion (14243) on ids alone: [(group, walls, crowns)] for each ticked group whose collect (13214) finds a
     wall or a crown, in the order convert_groups makes them (tests: the same names)"""
     gids = [i for i in (gids if gids is not None else P.settings.convChecked) if i in P.items]
     checked = set(gids)
@@ -992,7 +1240,7 @@ def conversionPlan(P, gids=None):
 
 def meshPieces(P, g):
     """ours (U7 A): how the walls of g's mesh come out, with the current ticks — (pieces, carried): the units
-    mergeUnits (9987) makes of what collect (9133) finds (1: one piece; more: a Container on the way), and whether
+    mergeUnits (14220) makes of what collect (13214) finds (1: one piece; more: a Container on the way), and whether
     some of those walls lie in a sub-group (they came with g). Ids only, nothing built."""
     checked = {i for i in P.settings.convChecked if i in P.items}
     surfs = collect(P, g.id, checked, ['surface'])
