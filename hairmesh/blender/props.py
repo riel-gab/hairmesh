@@ -338,7 +338,7 @@ def _group_flag(what):
         elif what in ('container', 'loose'):
             G.setLabel(P, g, what, v); G.panelsRendered(P, g.id)    # S.surfDirty (8662) regenerates the conversion: the row tables don't read the labels
         elif what == 'sym_on':
-            G.setSym(P, g, on=v); G.panelsRendered(P, g.id)         # symChanged (14066): the live mirror is phase 5; the tables don't read sym
+            G.setSym(P, g, on=v); G.panelsRendered(P, g.id)         # symChanged (14066): the live meshes show the mirror (live.rebuild); the tables don't read sym
         else:
             G.tickGroup(P, g, bool(v))                                # the conversion list's checkbox (9036)
             t = G.convTargets(P)
@@ -629,7 +629,7 @@ class HairMeshSceneProps(PropertyGroup):
     group_guides: EnumProperty(name='Curves & Anchors', description='Auto: curves and anchors are shown only while working with something inside this group', items=GUIDE_MODE_ITEMS, get=_group_enum('guides')[0], set=_group_enum('guides')[1])
     group_container: BoolProperty(name='Container', description='Sub-groups inside are converted each on its own (never merged with each other)', get=_group_flag('container')[0], set=_group_flag('container')[1])
     group_loose: BoolProperty(name='Free Curves Visible', description='Curves joined to no wall and no modifier stay shown while the group is not worked on (Auto mode)', get=_group_flag('loose')[0], set=_group_flag('loose')[1])
-    group_sym_on: BoolProperty(name='Symmetry', description='Mirror everything inside this group on Convert, or click Apply Symmetry to make real curves', get=_group_flag('sym_on')[0], set=_group_flag('sym_on')[1])
+    group_sym_on: BoolProperty(name='Symmetry', description='Mirror everything inside this group: the mirrored half shows live and goes into the mesh on Convert (a group converted inside one above it is mirrored by the Symmetry of that group there)', get=_group_flag('sym_on')[0], set=_group_flag('sym_on')[1])
     group_sym_axis: EnumProperty(name='Axis', description='The mirror axis (the plane goes through the head center)', items=SYM_AXIS_ITEMS, get=_group_enum('sym_axis')[0], set=_group_enum('sym_axis')[1])
     group_ticked: BoolProperty(name='Convert This Group', description='Ticked for conversion: the Conversion sliders edit it and Convert makes its mesh', get=_group_flag('ticked')[0], set=_group_flag('ticked')[1])
     # the project's view settings kept in the file (settings.xray, 11318): the curves and anchors drawn through the head

@@ -945,7 +945,66 @@ class HAIRMESH_OT_apply_symmetry(bpy.types.Operator):
         return {'FINISHED'}
 
 
-_CLASSES = (HAIRMESH_OT_apply_symmetry, HAIRMESH_OT_add_group, HAIRMESH_OT_select_group, HAIRMESH_OT_delete_group, HAIRMESH_OT_move_to_group, HAIRMESH_OT_parent_to_last, HAIRMESH_OT_unparent,
+SNAP_NONE = 'Nothing to snap: select the anchors to put on the mirror plane'
+SNAP_ON = 'Nothing to snap: the selected anchors already lie on the mirror plane'
+SNAP_ATT = 'Nothing to snap: the selected anchors are attached to a crown connector and follow it'
+
+
+class HAIRMESH_OT_snap_mirror_plane(bpy.types.Operator):
+    """Put the selected anchors exactly on the mirror plane of their group's Symmetry (none: the head center's X), so Apply Symmetry keeps them shared between both halves"""
+    bl_idname = 'hairmesh.snap_mirror_plane'
+    bl_label = 'Snap to Mirror Plane'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    # ours (lot 1.2e): core/symmetry.snapToMirrorPlane; applySymmetry (14074) shares an anchor only within S.scale * 1e-4
+    @classmethod
+    def poll(cls, context):
+        return owner.visible(context) and session.find_root(context) is not None
+
+    @staticmethod
+    def why_not(context):
+        """the reason it would change nothing now (core/effects.snapActs), else None"""
+        from ..core import effects as E
+        _root, P, sel = select.current(context)
+        anchors = select.anchors_of(P, sel) if P is not None else []
+        if not anchors:
+            return SNAP_NONE
+        if E.snapActs(P, anchors):
+            return None
+        from ..core.symmetry import snapFree
+        return SNAP_ON if snapFree(anchors) else SNAP_ATT
+
+    @classmethod
+    def description(cls, context, properties):
+        return cls.why_not(context) or cls.__doc__
+
+    def execute(self, context):
+        from ..core import symmetry as SYM
+        why = self.why_not(context)
+        if why:
+            self.report({'INFO'}, why)
+            return {'CANCELLED'}                                    # (dimmed: it only says why, no undo step)
+        root, P, sel = select.current(context)
+        anchors = select.anchors_of(P, sel)
+        free = SYM.snapFree(anchors)
+        planes = {a.id: SYM.snapPlane(P, a) for a in free}
+        SYM.snapToMirrorPlane(P, anchors)
+        session.save_project(root, P)                               # (its sync may move an anchor that follows something else back)
+        live.update(context, root)
+        select.redraw(context)
+        n = sum(1 for a in free if getattr(a.pos, planes[a.id][0]) == planes[a.id][1])
+        ax, plane = min(planes.values())
+        where = f'{ax.upper()} = {round(plane, 2) + 0.0:.2f}' if len(set(planes.values())) == 1 else 'of each one'
+        rest = []
+        if len(free) > n:
+            rest.append(f'{len(free) - n} kept off it by what they follow')
+        if len(anchors) > len(free):
+            rest.append(f'{len(anchors) - len(free)} attached to a crown connector, left there')
+        self.report({'INFO'}, f'{n} anchor{"" if n == 1 else "s"} on the mirror plane {where}' + (f' ({"; ".join(rest)})' if rest else ''))
+        return {'FINISHED'}
+
+
+_CLASSES = (HAIRMESH_OT_apply_symmetry, HAIRMESH_OT_snap_mirror_plane, HAIRMESH_OT_add_group, HAIRMESH_OT_select_group, HAIRMESH_OT_delete_group, HAIRMESH_OT_move_to_group, HAIRMESH_OT_parent_to_last, HAIRMESH_OT_unparent,
             HAIRMESH_OT_match_project_step, HAIRMESH_OT_detach_group, HAIRMESH_OT_tick_group, HAIRMESH_OT_tick_all, HAIRMESH_OT_tick_top, HAIRMESH_OT_clear_group_color,
             HAIRMESH_OT_step_from_object, HAIRMESH_OT_merge_dist_auto)
 

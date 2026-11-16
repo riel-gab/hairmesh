@@ -2,17 +2,19 @@
 # Copyright (C) 2026 Riel
 # Ported from Stylized HairMesh Creator 1.0.3 by catarackta (https://catarackta.netlify.app/), used with the author's permission.
 """Symmetry applied once (4.10): port of applySymmetry (hair-modeler.clean.html:14074), the group panel's
-"Apply symmetry" button (8687-8689). The live mirrored display (syncMirrors, 14047) is the Blender side's; the mirror
-of the converted meshes at conversion time (mirrorData) lives in convert.py.
+"Apply symmetry" button (8687-8689). The live mirrored display (syncMirrors, 14044) is the Blender side's (draw.py, the
+curves and guides; live.py, the walls and the Profile modifiers); the mirror of the converted meshes at conversion
+time (mirrorData) lives in convert.py. Snap to Mirror Plane (snapToMirrorPlane, lot 1.2e) is ours.
 
 Pure Python, no bpy. Ids come from Project.uid and names from nextNumber, as in the original, so the parity scripts
 (tests/test_symmetry_parity.py) get the very same project file. The toast, the undo step (commit) and the display
 objects (setItemObj, renderOutliner) are the caller's."""
 from . import model as M
 from .conversion import new_token
-from .convert import mirrorPt
+from .convert import mirrorPt, symOf
+from .curves import markAnchorsDirty
 from .duplicate import makeGuide
-from .edit import addItem, makeCurve, newAnchor
+from .edit import addItem, curvesWith, makeCurve, newAnchor
 from .js import index_of
 from .tube import extrasOf
 
@@ -145,3 +147,38 @@ def applySymmetry(P, g):
         c.dirty = True
     P.gen += 1; P.rev += 1
     return mg, symmetryMessage(mg)
+
+
+# ---- Snap to Mirror Plane (ours, lot 1.2e: not in the original) ----
+# applySymmetry keeps an anchor shared across both halves only when it lies within S.scale * 1e-4 of the plane (cpA,
+# 14092); an anchor put on the plane by eye becomes two and the halves are not joined. The snap puts it there exactly.
+
+def snapPlane(P, a):
+    """(axis, plane coordinate) an anchor snaps to: the Symmetry its curves follow (symOf 14035) — the first of its
+    curves, in scene order (curvesWith), whose group or a group above has Symmetry on —; none: the head center's X
+    (the plane the group sheet shows with the Symmetry off, groups.symInfo)"""
+    for c in curvesWith(P, a):
+        sym = symOf(P, c)
+        if sym is not None:
+            ax = sym.get('axis') or 'x'
+            return ax, getattr(P.S.center, ax)
+    return 'x', P.S.center.x
+
+
+def snapFree(anchors):
+    """the anchors a snap may move: not the ones attached to a crown connector (a.att), which follow it
+    (crowntool.updateAttachments, run by every save, would put them back, slid along the connector)"""
+    return [a for a in anchors if a.att is None]
+
+
+def snapToMirrorPlane(P, anchors):
+    """Puts every free anchor (snapFree) exactly on its mirror plane (snapPlane): only the axis coordinate changes, to
+    the plane's own value (the double, never the sheet's rounding); the curves through them are dirty, as after a move.
+    Returns how many anchors it took (on the plane already: they stay)."""
+    free = snapFree(anchors)
+    for a in free:
+        ax, plane = snapPlane(P, a)
+        setattr(a.pos, ax, plane)
+    if free:
+        markAnchorsDirty(P, free); P.rev += 1
+    return len(free)

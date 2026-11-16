@@ -7,7 +7,7 @@
       "id": "hairmesh",
       "name": "HairMesh",
       "tagline": "Port of Stylized HairMesh Creator by catarackta",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "type": "add-on",
       "maintainer": "Riel",
       "license": [
@@ -27,9 +27,9 @@
         "Object",
         "Import-Export"
       ],
-      "archive_url": "./hairmesh-1.1.0.zip",
-      "archive_size": 870032,
-      "archive_hash": "sha256:b4406525c5a3f6d28773e733377c37159bab6d1c61e1733a68d5b37bf3fc2100"
+      "archive_url": "./hairmesh-1.1.1.zip",
+      "archive_size": 873882,
+      "archive_hash": "sha256:9ed6ed94df389a65309f8965a309482740ea0286f454560fdcd43128810e0e89"
     }
   ]
 }

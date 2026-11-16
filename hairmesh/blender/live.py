@@ -55,6 +55,12 @@ The painted weights of the Extras show on these very meshes (lot 4.8b, item 5: P
 modifiers' own vertices), only while the weight brush runs: nothing is drawn over the mesh, so the colors have the shape
 the mesh has (a surface on top of it fought it where the twist and the mask moved the rings) and the wire stays on top.
 
+The live mirror (lot 1.2e, syncMirrors 14044): in a group that follows a Symmetry (symOf 14035, its own or a group's
+above), the mesh holds, after everything else, the walls and the Profile modifiers mirrored across S.center[axis], the
+faces reversed and nothing stitched on the plane (mirrorData 14067), each face owned by its item's id; a crown's
+surface and the Caps' and Fill holes' previews are not mirrored, as in the original. The axis and the plane are part of
+what the mesh shows (SHOWN_KEY), so a Symmetry switched, an axis changed or the head moved refills it.
+
 In background mode timers never fire: update() is synchronous there as everywhere else."""
 import hashlib
 import itertools
@@ -66,6 +72,7 @@ import bpy
 import numpy as np
 from bpy.app.handlers import persistent
 
+from ..core import convert as CV
 from ..core import edit
 from ..core import rows as RW
 from ..core import scene as SC
@@ -1342,8 +1349,10 @@ def rebuild(context, root, P=None):
         # what the mesh must show, so it is refilled
         ks = [k for k in by_crown.get(gid, ()) if k.visible and crowns[k.id][1] is not None and crowns[k.id][1].faces]
         ts = [k for k in by_topo.get(gid, ()) if k.visible and topo[k.id][1] is not None and topo_shown(P, k)]
+        sym = CV.symOf(P, grp) if grp is not None else None         # (lot 1.2e: syncMirrors 14044 — the walls and modifiers of a group with Symmetry, its own or above, mirrored)
+        mirror = (sym.get('axis') or 'x', getattr(P.S.center, sym.get('axis') or 'x')) if sym is not None else None
         want = (shown_key({sf.id: rev.get(sf.id, 0) for sf in surfs if sf.visible}) + (json.dumps([[k.id, crowns[k.id][0]] for k in ks]) if ks else '')
-                + (json.dumps([[k.id, topo[k.id][0]] for k in ts]) if ts else ''))
+                + (json.dumps([[k.id, topo[k.id][0]] for k in ts]) if ts else '') + (f'|mirror {mirror[0]} {mirror[1]!r}' if mirror else ''))
         if ob is not None and ob.data is not None and ob.data.get(SHOWN_KEY) == want and (TUBES_KEY in ob.data) == any(k.type == 'tube' for k in ts):   # (the second test: a mesh of a file older than TUBES_KEY, refilled once)
             if ob.name != name and bpy.data.objects.get(name) is None:   # (a name still held: the last loop below, or never when it is not ours)
                 ob.name = name
@@ -1353,11 +1362,12 @@ def rebuild(context, root, P=None):
                 _paint_clear(ob.data)                               # (colors that came back with an undo, or in a file saved with the brush on)
             out[gid] = ob
             continue                                                # it shows these very grids: the mesh stays
-        verts = []; faces = []; owners = []; spots = []
+        verts = []; faces = []; owners = []; spots = []; halves = []
         for sf in surfs:
             d = g.get(sf.id)
             if d is None or not sf.visible:
                 continue
+            halves.append((d.pos, d.faces, sf.id, None))
             base = len(verts)
             verts.extend(to_blender(p) for p in d.pos)
             faces.extend([v + base for v in f] for f in d.faces)
@@ -1376,6 +1386,15 @@ def rebuild(context, root, P=None):
             owners.extend([k.id] * len(d['faces']))
             if k.type == 'tube':
                 spots.append([k.id, base, len(d['pos']), d['n']])
+                halves.append((d['pos'], d['faces'], k.id, d['n']))
+        if mirror is not None:                                      # after every original (the spots above stay where they are)
+            for pos, fs, iid, n in halves:
+                base = len(verts)
+                verts.extend(mirrored(pos, *mirror))
+                faces.extend([v + base for v in f][::-1] for f in fs)   # (mirrorData 14067: the faces reversed, no auto stitching on the plane)
+                owners.extend([iid] * len(fs))
+                if n is not None:
+                    spots.append([iid, base, len(pos), n])          # (the painted weights on the mirrored modifier too: the original's copy shares the geometry)
         try:
             if ob is None or ob.data is None:
                 me = bpy.data.meshes.new(name) if ob is None else ob.data
@@ -1421,6 +1440,17 @@ def rebuild(context, root, P=None):
             ob.name = name
         naming.rename_data(ob, name)                                # (3.8a: the data too, or its old name kept holding the group's)
     return out
+
+
+def mirrored(pos, axis, plane):
+    """the points (the original's space) mirrored across axis = plane, as Blender tuples: mirrorPt (14039: 2 * S.center[axis]
+    - q[axis]) then to_blender, one tuple per point, never a clone"""
+    p2 = 2 * plane
+    if axis == 'x':
+        return [(p2 - p.x, -p.z, p.y) for p in pos]
+    if axis == 'y':
+        return [(p.x, -p.z, p2 - p.y) for p in pos]
+    return [(p.x, -(p2 - p.z), p.y) for p in pos]
 
 
 def shown_key(want):

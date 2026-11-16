@@ -40,6 +40,22 @@ Three keys open everything else:
 - **Q** opens the sub-tool pie (Select, Draw, Scissors, and more).
 - **O** opens the HairMesh Outliner.
 
+### Try the example project
+
+To see a finished model first, open the example project of the original app. It does not ship with the add-on: it
+comes with the browser version of the original app, as a free download from its author.
+
+1. Open the author's post [Stylized HairMesh Creator 1.0.2 — update](https://boosty.to/catarackta/posts/37965bca-46bf-4e65-8ef5-3e460e858675)
+   and download the attachment `Stylized HairMesh Creator HTML V1.0.2.zip`. The download is free.
+2. Extract the zip. The example is `Examples/ExampleProject-Wolfcut.hairmesh`.
+3. In Blender, choose File > Import > HairMesh Project (.hairmesh) and pick that file. The defaults are fine:
+   **Scale** Automatic sizes the head to between 0.1 m and 1 m tall, and **Import Head** brings the head with the
+   hair.
+4. The head appears with the hair's walls on it. Press **Shift+Alt+H** to turn the tool on: **O** lists the groups in
+   the HairMesh Outliner, and **Convert**, in the Conversion tab of the HairMesh Menu (**D**), turns them into meshes.
+
+Example model by catarackta, hair concept by TKY_6a. More from the author: <https://boosty.to/catarackta>.
+
 ## 3. Start a project with a head
 
 HairMesh draws hair on a mesh you choose as the head.
@@ -144,5 +160,4 @@ meshes changed. Click **Convert** again: only those are rebuilt.
 - [Shortcuts](shortcuts.md): every key.
 - [Troubleshooting](troubleshooting.md): when something does not respond, and how to report a bug.
 
-Want to study a finished model? Download the example file from the author's page, <https://boosty.to/catarackta>,
-and import it with File > Import > HairMesh Project (.hairmesh). The example does not ship with the add-on.
+Want to study a finished model? See [Try the example project](#try-the-example-project).

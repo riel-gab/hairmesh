@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import bpy
 from mathutils import Vector
 
-from ..core import edit, groups as G
+from ..core import convert as CV, edit, groups as G
 from ..core.curves import rebuild_dirty
 from ..core.js import truthy
 from . import errorlog, live, owner, pick, select, session, slow, tool
@@ -199,13 +199,17 @@ def guide_geometry(P, matrix, guides, sel_items=()):
     sel = set(sel_items)
     op = P.settings.guideOpacity if P.settings.guideOpacity is not None else 1.0
     strokes = {}; fills = []
+    syms = {}
 
     def w(p):
         return tuple(matrix @ Vector(to_blender(p)))
 
-    def stroke(kind, selected, colour, pts):
+    def stroke(kind, selected, colour, pts, it=None):
         key = (GUIDE_PX[kind][1 if selected else 0], (*(GUIDE_SEL if selected else colour), op))
         strokes.setdefault(key, []).extend(pts)
+        m = mirror_of(P, it, syms) if it is not None else None
+        if m is not None and pts:                                   # (lot 1.2e: syncMirrors 14044 — a guide line, a ring curve, a disc's cut lines: their obj)
+            strokes[key].extend(mirror_world(pts, matrix, *m))
 
     def polyline(pts):
         out = []
@@ -217,12 +221,12 @@ def guide_geometry(P, matrix, guides, sel_items=()):
         if g.kind != 'disc':
             pts = [q for q in (pointOnCurve(P.items.get(h.get('c')), h.get('t', 0)) for h in g.hits) if q is not None]
             if len(pts) >= 2:
-                stroke('line', s, GUIDE, polyline([w(q) for q in pts]))
+                stroke('line', s, GUIDE, polyline([w(q) for q in pts]), g)
             continue
         rs = discRings(P, g)
         for c in rs:
             if len(c.samples) >= 2:                                 # (4.2c, item 5, ours: a ring selected by itself is yellow too)
-                stroke('ring', s or c.id in sel, RING, polyline([w(q.p) for q in c.samples]))
+                stroke('ring', s or c.id in sel, RING, polyline([w(q.p) for q in c.samples]), c)
         if len(rs) >= 2 and all(len(c.samples) >= 4 for c in rs):
             A = [w(q) for q in resample([x.p for x in rs[0].samples], DISC_NR + 1)]
             B = [w(q) for q in resample([x.p for x in rs[1].samples], DISC_NR + 1)]
@@ -236,8 +240,49 @@ def guide_geometry(P, matrix, guides, sel_items=()):
             if sf.a in hp and sf.b in hp:
                 cut += [w(hp[sf.a]), w(hp[sf.b])]
         if cut:
-            stroke('cut', s, GUIDE, cut)
+            stroke('cut', s, GUIDE, cut, g)                         # (the disc's annulus, g.surf, is not mirrored: the original mirrors its obj, the cut lines)
     return {'strokes': strokes, 'fills': fills}
+
+
+def mirror_of(P, it, memo=None):
+    """(axis, plane) of the Symmetry an item follows (symOf 14035: its group's or the nearest group above with it on),
+    or None; `memo`: by parent id, for a loop over many items"""
+    key = it.parent
+    if memo is not None and key in memo:
+        return memo[key]
+    sym = CV.symOf(P, it)
+    m = None if sym is None else (sym.get('axis') or 'x', getattr(P.S.center, sym.get('axis') or 'x'))
+    if memo is not None:
+        memo[key] = m
+    return m
+
+
+def mirrored_grid(d, axis, plane):
+    """a wall's grid mirrored (the original's space): the points by mirrorPt (14039), the faces reversed (mirrorData 14067)"""
+    from ..core.model import MeshData
+    p2 = 2 * plane
+    pos = []
+    for p in d.pos:
+        q = p.clone(); setattr(q, axis, p2 - getattr(q, axis)); pos.append(q)
+    return MeshData(pos=pos, faces=[list(f)[::-1] for f in d.faces])
+
+
+def mirror_world(pts, matrix, axis, plane):
+    """world points (Blender, under `matrix`) mirrored across the model's plane axis = plane (mirrorPt 14039; the
+    mirrorMatrix of the original's copies, 14040): back to the model's space, mirrored, out again"""
+    inv = matrix.inverted_safe()
+    out = []
+    p2 = 2 * plane
+    for q in pts:
+        x, y, z = inv @ Vector(q)                                   # (Blender local = to_blender: x_m, -z_m, y_m)
+        if axis == 'x':
+            x = p2 - x
+        elif axis == 'y':
+            z = p2 - z
+        else:
+            y = -(p2 + y)                                           # (z_m = -y; mirrored: p2 - z_m; back: -(p2 - z_m))
+        out.append(tuple(matrix @ Vector((x, y, z))))
+    return out
 
 
 def sel_colors(context=None):
@@ -280,9 +325,11 @@ def geometry(P, matrix, sel=None, snap=None, weld=None, walls=None, shown=None, 
     asel = set(sel.anchors) if sel is not None else set()
     last = sel.last_anchor if sel is not None else None
     lines = []; line_colors = []; sel_lines = []; sel_line_colors = []
+    m_lines = []; m_colors = []; m_ids = []; m_sel = []; m_sel_colors = []; m_sel_ids = []
     a_pos = []; a_col = []; a_size = []; a_shape = []; a_kind = []
     seen = set()
     pulled = []
+    syms = {}
 
     def anchor_of(a):
         """(position, color, size, shape, kind) of an anchor"""
@@ -311,6 +358,17 @@ def geometry(P, matrix, sel=None, snap=None, weld=None, walls=None, shown=None, 
             if picked:
                 sel_lines.append(pts[i]); sel_lines.append(pts[i + 1])
                 sel_line_colors.append(col); sel_line_colors.append(col)
+        m = mirror_of(P, c, syms) if len(pts) >= 2 else None
+        if m is not None:                                           # (lot 1.2e: syncMirrors 14044 — the copy shares the curve's material: the same colour, selected too; no anchors)
+            q = [tuple(matrix @ Vector(t)) for t in live.mirrored([s.p for s in c.samples], *m)]
+            for i in range(len(q) - 1):
+                m_lines.append(q[i]); m_lines.append(q[i + 1])
+                m_colors.append(col); m_colors.append(col)
+                m_ids.append(c.id); m_ids.append(c.id)
+                if picked:
+                    m_sel.append(q[i]); m_sel.append(q[i + 1])
+                    m_sel_colors.append(col); m_sel_colors.append(col)
+                    m_sel_ids.append(c.id); m_sel_ids.append(c.id)
         for a in c.anchors:
             if a.id in seen:
                 continue
@@ -324,6 +382,8 @@ def geometry(P, matrix, sel=None, snap=None, weld=None, walls=None, shown=None, 
                            'size': max((Vector(q) - Vector(mid)).length for q in pts),
                            'anchors': {'pos': [x[0] for x in A], 'col': [x[1] for x in A], 'size': [x[2] for x in A], 'shape': [x[3] for x in A], 'kind': [x[4] for x in A]}})
     return {'lines': lines, 'line_colors': line_colors, 'sel_lines': sel_lines, 'sel_line_colors': sel_line_colors,
+            'mirror_lines': m_lines, 'mirror_line_colors': m_colors, 'mirror_ids': m_ids,
+            'mirror_sel_lines': m_sel, 'mirror_sel_line_colors': m_sel_colors, 'mirror_sel_ids': m_sel_ids,
             'anchors': {'pos': a_pos, 'col': a_col, 'size': a_size, 'shape': a_shape, 'kind': a_kind}, 'over': pulled,
             'walls': wall_geometry(walls, matrix) if walls else {'tris': [], 'lines': []},
             'guides': guide_geometry(P, matrix, guides, sel_items) if guides else {'strokes': {}, 'fills': []}}
@@ -446,6 +506,8 @@ def _batches(root, P, matrix, sel, snap, weld, active_group=None, drawing_id=Non
     # (a selected wall hidden by its eye, or by its group's, has no outline: syncVisuals leaves its object invisible, 12005)
     wall_ids = [i for i in sel.items if (it := P.items.get(i)) is not None and it.type == 'surface' and edit.isVisible(P, it)]
     walls = [live.grid_of(root, P, i) for i in wall_ids] if wall_ids else None
+    if walls:                                                       # (lot 1.2e: the copy of a selected wall shares its material, the tint too — syncMirrors 14044)
+        walls += [mirrored_grid(d, *m) for i, d in zip(wall_ids, list(walls)) if d is not None and (m := mirror_of(P, P.items[i])) is not None]
     # the curves the groups' modes show (3.6): a selected group is part of the selection (U1), the curve being drawn counts
     cs, act, loose = G.shownCurves(P, sel.items, sel.anchors, P.items.get(drawing_id) if drawing_id is not None else None, active_group, snap)
     if connectors_on:                                               # (4.4: every crown's connectors while an end is dragged)
@@ -459,7 +521,7 @@ def _batches(root, P, matrix, sel, snap, weld, active_group=None, drawing_id=Non
     gkey = tuple((g.id, g.hitPts) for g in guides)
     colors = sel_colors()
     key = (id(P), P.gen, P.rev, mt, tuple(sel.items), tuple(sel.anchors), snap, weld, live.revision(root) if wall_ids else 0, shown, gkey,
-           tuple(colors[k] for k in ('curve', 'anchor', 'mark')), tuple(sorted(over.items())))
+           tuple(colors[k] for k in ('curve', 'anchor', 'mark')), tuple(sorted(over.items())), (P.S.center.x, P.S.center.y, P.S.center.z))   # (the plane of the live mirror)
     c = _cache.get(root.name)
     if c is not None and c[0] == key:
         return c[1], c[2]
@@ -469,11 +531,10 @@ def _batches(root, P, matrix, sel, snap, weld, active_group=None, drawing_id=Non
         u = gpu.shader.from_builtin('UNIFORM_COLOR'); pl = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
         b['guide_fills'] = [(rgba, batch_for_shader(u, 'TRIS', {'pos': tris})) for rgba, tris in g['guides']['fills']]
         b['guide_strokes'] = [(px, rgba, batch_for_shader(pl, 'LINES', {'pos': pts})) for (px, rgba), pts in g['guides']['strokes'].items()]
-    if g['lines']:
-        sh = _line_shader()
-        b['lines'] = batch_for_shader(sh, 'LINES', {'pos': g['lines'], 'color': [(*col, 1.0) for col in g['line_colors']]})
-    if g['sel_lines']:
-        b['sel_lines'] = batch_for_shader(_line_shader(), 'LINES', {'pos': g['sel_lines'], 'color': [(*col, 1.0) for col in g['sel_line_colors']]})
+    for which in ('lines', 'sel_lines'):                            # (the curves, then their live mirror: one batch, the same look)
+        pos, cols = line_data(g, which)
+        if pos:
+            b[which] = batch_for_shader(_line_shader(), 'LINES', {'pos': pos, 'color': [(*col, 1.0) for col in cols]})
     b['mark'] = (*colors['mark'], 1.0)
     if g['walls']['tris']:
         b['wall_tris'] = batch_for_shader(gpu.shader.from_builtin('UNIFORM_COLOR'), 'TRIS', {'pos': g['walls']['tris']})
@@ -1526,9 +1587,15 @@ def _draw_lines_faded(b, g, sh, alpha, which='lines'):
     from gpu_extras.batch import batch_for_shader
     key = ('faded', which, alpha)
     if key not in b:
-        cols = g['line_colors'] if which == 'lines' else g['sel_line_colors']
-        b[key] = batch_for_shader(sh, 'LINES', {'pos': g[which], 'color': [(*col, alpha) for col in cols]})
+        pos, cols = line_data(g, which)
+        b[key] = batch_for_shader(sh, 'LINES', {'pos': pos, 'color': [(*col, alpha) for col in cols]})
     b[key].draw(sh)
+
+
+def line_data(g, which):
+    """(points, colours) of a line batch of geometry `g`: 'lines' or 'sel_lines', then the same of their live mirror"""
+    cols = 'line_colors' if which == 'lines' else 'sel_line_colors'
+    return g[which] + g.get('mirror_' + which, []), g[cols] + g.get('mirror_' + cols, [])
 
 
 def overlay_points(shape):

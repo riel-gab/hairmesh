@@ -149,11 +149,31 @@ A crown builds the hair around the whorl and the parting. Press **5** for the Cr
 With a crown selected, the Shift+RMB pie selects its **Parting Line**, **Lower Connector** or **Crown Curves**, adds a
 **+ Crown Curve**, switches symmetry, and sets **Rings** (0 takes the value from the loop step).
 
-## Symmetry and duplication
+## Symmetric hair
 
-**Symmetry of a group.** Select a group and open its **Symmetry** block. Turn on **Symmetry** and pick the **Axis**.
-The group is mirrored on Convert. **Apply Symmetry** turns the mirrored copy into real curves and walls in a new group
-named "<group> mirror".
+Model one side and let the group mirror it. The mirror plane goes through the head center.
+
+1. **Turn on the Symmetry.** Select the group, press **D**, and in the **Selection** tab open the group's **Symmetry**
+   block. Tick the box in its header and pick the **Axis**. Groups inside this group are mirrored too.
+2. **Watch the mirror.** The mirrored half shows live while you edit: its curves, guides, walls and profile tubes, in
+   the same colors. It is only a view: it cannot be clicked or selected, and it follows every edit, Ctrl+Z and
+   Ctrl+Shift+Z. Untick the box and it goes away.
+3. **Put the center anchors on the plane.** Anchors that should meet their mirror (the roots at the parting, the
+   middle of a bang) must lie exactly on the plane. Select them, press **Shift+RMB** and choose **Weld / Split /
+   Curves** > **Snap to Mirror Plane**. Only the coordinate along the axis changes. The same action is in the
+   **Weld / Split / Curves** block of the anchors' sheet.
+4. **Convert, then Confirm.** The group's mesh has both halves. Like the original app, Convert does not weld them:
+   the vertices on the plane are doubled. A group converted inside a group above it (for example after **Tick Top
+   Groups**) is mirrored in the mesh by the Symmetry of that group; the **i** of the Symmetry block says so.
+5. **Weld the seam.** Select the confirmed mesh, press **Tab** for Edit Mode, select all (**A**), and use Blender's
+   **Mesh > Clean Up > Merge by Distance**. The snapped anchors make the two halves meet exactly, so a small distance
+   is enough.
+
+**Apply Symmetry** (same block) turns the mirrored half into real curves and walls now, in a new group named
+"<group> mirror", and turns the Symmetry off. Anchors on the plane stay shared between both halves; an anchor off the
+plane becomes two, one on each side.
+
+## Duplication
 
 **Duplicate.** **Shift+D** duplicates the selected curves, walls and groups. Duplicate is also in the **Transform**
 block of the sheets.
@@ -240,8 +260,8 @@ groups and the head. The scale is automatic by default.
 To bring the hair of another `.hairmesh` into the project you already have, use **File > Import > HairMesh: Migrate
 Hair (.hairmesh)**, or **Migrate Hair from .hairmesh...** in the Project tab.
 
-Want an example? Download the example file from the author's page, <https://boosty.to/catarackta>, and import it. It
-does not ship with the add-on.
+Want an example? See [Try the example project](getting-started.md#try-the-example-project). It does not ship with the
+add-on.
 
 ## The project lives in the .blend
 

@@ -19,7 +19,12 @@ everything to a clean quad mesh with evenly spread loops.
   fill, density).
 - Work inside Blender: the project lives in the `.blend` file, and `.hairmesh` files import directly.
 
-Requires Blender 5.1 or later.
+Requires Blender 5.1 or later. Current version: 1.1.1.
+
+What's new in 1.1: flat locks and volume branches, Extrude Curve, Split Ends, X junctions, Detect Fill Outline Here,
+Detail Proxy, Merge Distance with Pick, and updates from Blender. In 1.1.1, group Symmetry shows the mirrored half
+live, and Snap to Mirror Plane puts the center anchors on the plane. See the
+[1.1.0 release](https://github.com/riel-gab/hairmesh/releases/tag/v1.1.0) and the [changelog](CHANGELOG.md).
 
 ## Install
 
@@ -41,8 +46,8 @@ Blender does not update it by itself: to update, download the new zip and instal
 
 The [Getting started](docs/getting-started.md) page walks through it step by step.
 
-To learn from a finished model, download the example file from the author's page, <https://boosty.to/catarackta>,
-and import it with File > Import. The example does not ship with the add-on.
+To learn from a finished model, see [Try the example project](docs/getting-started.md#try-the-example-project). The
+example does not ship with the add-on.
 
 ## Documentation
 

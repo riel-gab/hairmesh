@@ -25,7 +25,7 @@ of D11 (step 3.8); "Detach from the connector" is the crown's (phase 4)."""
 import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty
 
-from ..core import curves as CM, edit, weld as W
+from ..core import curves as CM, edit, effects as E, weld as W
 from ..core.js import index_of
 from ..core.selection import Selection
 from . import live, owner, select, session
@@ -386,6 +386,7 @@ def _anchor_more(P, anchors, short):
         out.append(('op', 'hairmesh.curve_through', 'Through' if short else f'Create Curve Through the Anchors ({n})', 'OUTLINER_OB_CURVE', {}))
     from .tool import act, dim_op                                   # (lot 1.2b: E, the extrude from the end anchors; dimmed where they cannot grow, the tooltip says why)
     out.append(dim_op(act('extrude', short=short), edit.extrudeTargets(P, [x.id for x in anchors])[1] is None))
+    out.append(dim_op(act('snap_mirror', short=short), E.snapActs(P, anchors)))   # (ours, lot 1.2e: next to the extrude, the other move of the anchors; dimmed with every one on its plane already)
     from .ops_xjunc import separate_item
     if (sx := separate_item(P, a, short)) is not None:              # (1.1f: the anchor pie's "Separate the zones at this X", 10124: an X with walls across)
         out.append(sx)

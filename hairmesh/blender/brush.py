@@ -961,6 +961,7 @@ def _paint_tip(op, context, root, P, sel, project, m, how, amt, bp):
         occ.aim(context, project)
         cache['occ'] = occ
         cache['tips'] = set()
+        cache['screen'] = occ.screen                                # (what _foresee projected from this very view: aim emptied it for another one; the points are checked by identity)
     sc = cache.setdefault('screen', {})
 
     def screen(p):                                                  # (the view stays through the stroke: each point projected once)

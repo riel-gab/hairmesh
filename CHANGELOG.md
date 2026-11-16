@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1 (2026-11-15)
+
+What you will notice:
+
+- Group Symmetry now shows the mirrored half live while you edit, as in the original; before, it appeared only after Convert.
+- Snap to Mirror Plane (anchor pie): puts the selected anchors exactly on the symmetry plane, so Apply Symmetry keeps them shared between both halves.
+
 ## 1.1.0 (2026-11-14)
 
 What you will notice:

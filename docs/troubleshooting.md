@@ -67,10 +67,43 @@ That is by design: a confirmed mesh stays as it is. The Conversion tab tells you
 - Slow actions print a line starting with **HairMesh slow** in the system console (see below). Include these lines in a
   bug report about speed.
 
+## The mesh of an older project changed when I converted it again
+
+Since 1.1, **Detail Proxy** is on by default. Where a lock has detail on it (a dent, a groove, curves forking inside
+it), the loops are placed as on the simple tube around the detail, so they no longer run in chevrons. A project made
+before 1.1 gets these loops the next time it is converted. To keep the previous loops, untick **Detail Proxy** in the
+Conversion tab (D), or in the **Conversion — This Group Only** block of a group's sheet for that group alone, then
+Convert again.
+
+## The mirrored half does not meet the other half
+
+- **The anchors at the center are off the plane.** Select them and use Shift+RMB > **Weld / Split / Curves** >
+  **Snap to Mirror Plane**. See [Symmetric hair](workflow.md#symmetric-hair).
+- **The mesh has a seam on the plane.** Convert does not weld the two halves, as in the original app. After Confirm,
+  weld them in Edit Mode with Blender's **Mesh > Clean Up > Merge by Distance**.
+
+## Walls stay on screen after I deleted the project
+
+Deleting a project's root with Blender's own delete (for example A, then X in Object Mode) leaves the project's live
+walls on screen, larger than the head and with no parent. They are removed at the next HairMesh action that updates a
+preview, for example **New Project** or **Import .hairmesh...**. This is expected. HairMesh has no Delete Project
+command yet.
+
+## Blender does not offer the new version
+
+- **Did you turn updates on?** In Edit > Preferences > System, turn on **Allow Online Access**. Then in Edit >
+  Preferences > Add-ons > HairMesh, click **Enable Updates** in the Updates box.
+- **Check now.** Open Edit > Preferences > Get Extensions, open the drop-down menu at the top right and choose
+  **Refresh Remote**. When a newer version is listed, the Updates box says "HairMesh <version> Is Available", with a
+  button to Get Extensions.
+- **Installed from the zip?** Blender updates an extension only from the repository it was installed from. Uninstall
+  HairMesh once in Get Extensions and install it again from the HairMesh repository listed there. See
+  [Install](getting-started.md#1-install).
+
 ## I cannot find the example file
 
-The example does not ship with the add-on. Download it from the author's page, <https://boosty.to/catarackta>, and
-import it with File > Import > HairMesh Project (.hairmesh).
+The example does not ship with the add-on. See
+[Try the example project](getting-started.md#try-the-example-project) for where to download it and how to import it.
 
 ## Reporting a bug
 

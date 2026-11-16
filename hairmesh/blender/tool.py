@@ -496,6 +496,7 @@ ACT = {
     'duplicate': ('hairmesh.duplicate', 'Duplicate', 'Duplicate', 'DUPLICATE', {}),
     # lot 1.2b (ours): E, the curve extruded from its end anchor (in the anchor's Weld / Split / Curves: the menu and the block)
     'extrude': ('hairmesh.extrude_anchor', 'Extrude Curve', 'Extrude Curve', 'PARTICLE_TIP', {}),
+    'snap_mirror': ('hairmesh.snap_mirror_plane', 'Snap to Mirror Plane', 'Snap to Plane', 'SNAP_MIDPOINT', {}),   # (ours, lot 1.2e)
     # 4.0 (D4.3): the original's F and P / Shift+P (8007, 8014-8015), contextual keys of the tool
     'frame': ('hairmesh.frame_selection', 'Frame Selection (F)', 'Frame (F)', 'ZOOM_SELECTED', {}),
     'parent_last': ('hairmesh.parent_to_last', 'Parent to Last Selected Group (P)', 'Parent (P)', 'CON_CHILDOF', {}),
@@ -1427,8 +1428,7 @@ def group_rows(context, P, room=ROOM):
                 [buttons(context, ('prop', 'group_merge_trunks', 'Merge Shared Trunks', *dim(mwhy is None)), ('prop', 'group_container', 'Container', *dim(cont_ok)))]]   # (lot 1.2a, decision 16: Merge Shared Trunks a checkbox, as Detail Proxy; Container one too since rule 7 of lot 1.2b)
         rows.append(block('group_conversion', 'Conversion — This Group Only', 'MOD_REMESH', conv, True, conversion_why(P, g, lock_ok, step_ok, mwhy, cont_ok, state) or None))   # 1c (21/10/2026): selecting a group does not tick it; these sliders edit it alone (setGroupConv), the Conversion tab the ticked groups
     on, ax, plane = G.symInfo(P, g)
-    swhy = E.symWhy(P, g)
-    axis_ok = on and swhy is None
+    axis_ok = on                                                    # (the switch always acts, as the original's checkbox: the live mirror)
     # the switch is the checkbox of the block's header; inside, its controls alone, in fixed columns: the label outside
     # the field, X Y Z packed at their own width (never stretched over the row), a gap between the two families, and
     # Apply Symmetry under X Y Z at the width of its text
@@ -1436,11 +1436,11 @@ def group_rows(context, P, room=ROOM):
     sym_apply = ('op', 'hairmesh.apply_symmetry', 'Apply Symmetry', 'MOD_MIRROR', {}, {'active': bool(on)})   # 4.10: applySymmetry (12646: disabled while off — dimmed, its tooltip says why; `active` in both states: the same row, lot 1.2a)
     label_w = fit.label_need('Axis:', False)
     sym = [[cols((label_w, [('label', 'Axis:', 'NONE')]), (item_need(context, sym_axis), [sym_axis]),
-                 (None, [why_or_slot(None if axis_ok else sym_why_text(g, swhy) if swhy else SYM_AXIS_OFF)]))],   # (a property has no dynamic tooltip: the "i" of the row says why, G2; its place kept when there is none, lot 1.2a)
+                 (None, [why_or_slot(None if axis_ok else SYM_AXIS_OFF)]))],   # (a property has no dynamic tooltip: the "i" of the row says why, G2; its place kept when there is none, lot 1.2a)
            [GAP],
            [cols((label_w, []), (item_need(context, sym_apply), [sym_apply]), (None, []))]]
-    say = f'Mirror Plane: {ax.upper()} = {round(plane, 2) + 0.0:.2f} (Head Center). ' + (sym_why_text(g, swhy) if swhy else SYM_ON_CONVERT)   # (it acts, but only on Convert: when it shows)
-    rows.append(block('group_symmetry', 'Symmetry', 'MOD_MIRROR', sym, False, say, ('toggle', 'group_sym_on', '', 'NONE', *dim(swhy is None))))
+    say = f'Mirror Plane: {ax.upper()} = {round(plane, 2) + 0.0:.2f} (Head Center). ' + sym_live_text(g, E.symConvertWhy(P, g))
+    rows.append(block('group_symmetry', 'Symmetry', 'MOD_MIRROR', sym, False, say, ('toggle', 'group_sym_on', '', 'NONE')))
     return align_fields(rows), g.name
 
 
@@ -1479,23 +1479,27 @@ def conversion_why(P, g, lock_ok, step_ok, mwhy, cont_ok, state):
     return ' '.join(out)
 
 
-SYM_ON_CONVERT = 'Mirror this group on Convert, or click Apply Symmetry to generate editable curves now'
+SYM_LIVE = 'The mirrored half shows live while editing and goes into the mesh on Convert; Apply Symmetry makes it editable curves now'
 SYM_AXIS_OFF = 'Symmetry is off: switch it on above to mirror this group across the axis'
+
+
+def sym_live_text(g, why):
+    """what the Symmetry of a group does: the live mirror always; the mesh unless Convert reads another group's switch
+    (core/effects.symConvertWhy)"""
+    if why is None:
+        return SYM_LIVE
+    if why[0] == 'mesh':
+        on_convert = (f'On Convert, {g.name} goes into the mesh of {why[1].name}, which is mirrored by the Symmetry of '
+                      f'{why[1].name} (with it off, of the nearest group above it with Symmetry on): switch it there for the mesh')
+    else:
+        on_convert = f'On Convert, the meshes inside follow {why[1].name}, whose own Symmetry is on'
+    return f'The mirrored half shows live while editing. {on_convert}. Apply Symmetry makes it editable curves now'
 # 3b of the lot ux8: in a ticked group with no walls the Loop Step stays live — setConv (13186) makes it the project loop
 # step S.step too, which the welded-trunk backfill between locks reads (backfillTrunk with CP = S, 2726) and the groups
 # made from now on start with (createGroup -> groupConv -> defaultStep)
 STEP_LIVE_HINT = ('The ticked groups have no walls yet: these values apply to the walls made in them. The Loop Step stays live: '
                   'it also sets the project loop step, used by the welded-trunk backfill between locks and by the groups made from now on.')
 RECALC_HINT = 'Recalculate: nothing to reset. It acts only on a handle frozen by "Delete Anchor, Keep Shape" or on a Smoothness below 1.'
-
-
-def sym_why_text(g, why):
-    """why the Symmetry switch of a group changes nothing now (core/effects.symWhy)"""
-    if why[0] == 'mesh':
-        return f'{g.name} goes into the mesh of {why[1].name}, which follows the Symmetry of {why[1].name} (and of the groups above it): switch it there.'
-    if why[0] == 'inside':
-        return f'The meshes inside follow {why[1].name}, whose own Symmetry is on.'
-    return f'Symmetry acts on Convert: tick {g.name} or a parent group in Conversion'
 
 
 def label_and(label, item, width=ROOM, *more):

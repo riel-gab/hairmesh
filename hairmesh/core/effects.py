@@ -268,12 +268,14 @@ def containerActs(P, g):
     return False
 
 
-def symActs(P, g):
-    """whether g's Symmetry switch changes a mesh Convert makes: buildConvMesh (14231) mirrors a mesh by the nearest
-    group with symmetry on, from the mesh's group up (symOf 14035) — g counts for the meshes of g and of the groups
-    inside it with no group switched on between. The original also shows a live mirrored copy (symChanged 14066),
-    which the port makes in phase 5: until then the switch acts on Convert alone."""
-    for m, surfs in _meshes(P):
+# (lot 1.2e: the Symmetry switch is never dimmed, as the original's checkbox (12637): with the live mirror (syncMirrors
+# 14044) it always acts on the curves, walls, guides and tubes inside the group, now and later. What it does not always
+# do is mirror the mesh: symConvertWhy says when Convert reads another group's switch.)
+
+def _mirrors_a_mesh(P, g):
+    """whether g's switch decides how a mesh Convert makes is mirrored: buildConvMesh (14231) mirrors a mesh by the
+    nearest group with symmetry on, from the mesh's group up (symOf 14035)"""
+    for m, _surfs in _meshes(P):
         p = m
         while p is not None:
             if p is g:
@@ -284,24 +286,23 @@ def symActs(P, g):
     return False
 
 
-def symWhy(P, g):
-    """why g's Symmetry switch changes nothing (None: it acts): ('off', None) — no mesh Convert makes holds g's walls
-    or its sub-groups'; ('mesh', m) — g's walls go into the mesh of m, a group above g, which follows its own
-    symmetry and its ancestors'; ('inside', X) — every mesh of g and of the groups inside it follows a nearer group X
-    with symmetry on"""
-    if symActs(P, g):
+def symConvertWhy(P, g):
+    """why the mesh is not mirrored by g's switch, though the live mirror is (None: it is, or g goes into no mesh):
+    ('mesh', m) — g's walls go into the mesh of m, a group above g, mirrored by m's Symmetry and its ancestors';
+    ('inside', X) — every mesh of g and of the groups inside it follows a nearer group X with symmetry on"""
+    if _mirrors_a_mesh(P, g):
         return None
     mine = [mesh for mesh, _s in _meshes(P) if mesh is g or isAbove(P, g, mesh)]
+    for mesh in mine:
+        p = mesh
+        while p is not None and p is not g:
+            if p.type == 'group' and p.sym and p.sym.get('on'):
+                return ('inside', p)
+            p = P.parentOf(p)
     if mine:
-        for mesh in mine:
-            p = mesh
-            while p is not None and p is not g:
-                if p.type == 'group' and p.sym and p.sym.get('on'):
-                    return ('inside', p)
-                p = P.parentOf(p)
-        return ('off', None)
+        return None
     m = meshOf(P, g)
-    return ('mesh', m) if m is not None else ('off', None)
+    return ('mesh', m) if m is not None and m is not g else None   # (g itself ticked, no wall yet: its own switch mirrors that mesh)
 
 
 def isAbove(P, g, it):
@@ -378,6 +379,18 @@ def smoothActs(P, anchors):
     frozen and attached anchors included —; only a junction curve (juncHandles 976) never reads it"""
     ids = {a.id for a in anchors}
     return any(not c.junc for c in P.curves() if any(a.id in ids for a in c.anchors))
+
+
+def snapActs(P, anchors):
+    """whether Snap to Mirror Plane (ours, symmetry.snapToMirrorPlane) moves an anchor: one off the plane of its
+    curve's Symmetry (symmetry.snapPlane) and not attached to a connector (symmetry.snapFree); none selected, or all on
+    it already or attached, it would change nothing"""
+    from .symmetry import snapFree, snapPlane
+    for a in snapFree(anchors):
+        ax, plane = snapPlane(P, a)
+        if getattr(a.pos, ax) != plane:
+            return True
+    return False
 
 
 def recalcActs(P, anchors):
